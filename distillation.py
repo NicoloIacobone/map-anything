@@ -133,16 +133,21 @@ def main():
 
     # Modello + freeze
     model = MapAnything.from_pretrained("facebook/map-anything").to(device)
+    print("1")
     model.instance_head = InstanceSegmentationHead(in_dim=256).to(device)
+    print("2")
     if not hasattr(model, "instance_head"):
         raise AttributeError("Il modello non ha 'instance_head'.")
     for name, p in model.named_parameters():
         if not name.startswith("instance_head"):
             p.requires_grad = False
+    print("3")
 
     # Optimizer (solo head)
     params = [p for p in model.parameters() if p.requires_grad]
+    print("4")
     optimizer = optim.AdamW(params, lr=LR, weight_decay=WEIGHT_DECAY, betas=(0.9, 0.95))
+    print("5")
     # print(optimizer)
 
     # Scheduler ReduceLROnPlateau opzionale
@@ -150,11 +155,15 @@ def main():
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode="min", factor=LR_ON_PLATEAU_FACTOR, patience=LR_ON_PLATEAU_PATIENCE, min_lr=MIN_LR
         )
+    print("6")
 
     # Caricamento checkpoint se richiesto
     start_epoch = 0
+    print("7")
     best_loss = None # per early stopping
+    print("8")
     epochs_no_improve = 0 # contatore early stopping
+    print("9")
     if LOAD_CHECKPOINT is not None:
         ckpt_path = Path(OUTPUT_DIR) / LOAD_CHECKPOINT
         if not ckpt_path.exists():
