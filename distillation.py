@@ -36,6 +36,11 @@ import sys
 
 disable_tqdm = not sys.stdout.isatty() # flag used to understand if I'm working on cluster or locally (lab)
 
+if disable_tqdm:
+    os.environ["TORCH_HOME"] = "/cluster/work/igp_psr/niacobone/torch_cache"
+    torch.hub.set_dir(os.environ["TORCH_HOME"])
+    print(f"[INFO] Torch hub cache dir set to {torch.hub.get_dir()}")
+
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
 if disable_tqdm:
