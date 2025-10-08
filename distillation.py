@@ -34,12 +34,15 @@ import random
 from tqdm import tqdm
 import sys
 
+print("0")
 disable_tqdm = not sys.stdout.isatty() # flag used to understand if I'm working on cluster or locally (lab)
+print("0.1")
 
 if disable_tqdm:
-    os.environ["TORCH_HOME"] = "/cluster/work/igp_psr/niacobone/torch_cache"
+    os.environ["TORCH_HOME"] = "/cluster/home/niacobone/torch_cache"
     torch.hub.set_dir(os.environ["TORCH_HOME"])
     print(f"[INFO] Torch hub cache dir set to {torch.hub.get_dir()}")
+print("0.2")
 
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
@@ -47,6 +50,7 @@ if disable_tqdm:
     INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
     OUTPUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"         # Directory per log / checkpoint
     COCO2017_ROOT = "/cluster/scratch/niacobone/distillation/coco2017"  # root che contiene 'train' e 'val'
+    print("0.3")
 else:
     INPUT_DIR = "/scratch2/nico/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
     OUTPUT_DIR = "/scratch2/nico/distillation/output"         # Directory per log / checkpoint
@@ -68,8 +72,8 @@ AMP = True                                  # Abilita autocast mixed precision
 NORM = True                                # Normalizza embeddings prima della loss
 SINGLE_IMAGE = True                         # Carica e processa una immagine per volta (batch size 1)
 BATCH_SIZE_IMAGES = 1                       # Numero di immagini per batch (per sfruttare meglio la GPU)
-DEBUG_MAX_TRAIN_IMAGES = 1000               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
-DEBUG_MAX_VAL_IMAGES = 50                   # opzionale: limita anche la val (None o 0 per disabilitare)
+DEBUG_MAX_TRAIN_IMAGES = 100               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
+DEBUG_MAX_VAL_IMAGES = 5                   # opzionale: limita anche la val (None o 0 per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
 # LOAD_CHECKPOINT = "checkpoint_epoch24.pth"  # es: "checkpoint_final.pth" oppure None
@@ -102,12 +106,18 @@ def is_image_file(name: str) -> bool:
 
 def main():
     # Setup
+    print("0.3")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print("0.4")
     np.random.seed(SEED) # numpy seed
+    print("0.5")
     torch.manual_seed(SEED) # torch seed
+    print("1")
 
     if OUTPUT_DIR:
         Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True) # crea cartella output se non esiste
+
+    print("lala")
 
     # wandb.init(
     #     project="Run 3 - mapanything-distillation",
