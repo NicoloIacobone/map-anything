@@ -68,7 +68,7 @@ AMP = True                                  # Abilita autocast mixed precision
 NORM = True                                # Normalizza embeddings prima della loss
 SINGLE_IMAGE = True                         # Carica e processa una immagine per volta (batch size 1)
 BATCH_SIZE_IMAGES = 1                       # Numero di immagini per batch (per sfruttare meglio la GPU)
-DEBUG_MAX_TRAIN_IMAGES = 250               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
+DEBUG_MAX_TRAIN_IMAGES = 100               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
 DEBUG_MAX_VAL_IMAGES = 5                   # opzionale: limita anche la val (None o 0 per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
