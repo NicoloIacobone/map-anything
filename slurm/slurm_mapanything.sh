@@ -19,7 +19,7 @@
 #SBATCH --ntasks=1
 #
 # Specify number of CPU cores per task.
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=1
 #
 # Specify memory limit per CPU core.
 #SBATCH --mem-per-cpu=8192
