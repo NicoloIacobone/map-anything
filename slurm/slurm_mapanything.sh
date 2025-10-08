@@ -13,7 +13,7 @@
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=00:30:00
+#SBATCH --time=08:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -44,6 +44,8 @@ echo "Activated Python venv: $(which python)"
 # Execute
 cd /cluster/scratch/niacobone/map-anything
 echo "Starting MapAnything distillation..."
+
+export WANDB_API_KEY=$(cat "/cluster/home/niacobone/.config/wandb/wandb_api_key.txt")
 
 python -u distillation.py
 
