@@ -34,16 +34,18 @@ import random
 from tqdm import tqdm
 import sys
 
-disable_tqdm = not sys.stdout.isatty()
+disable_tqdm = not sys.stdout.isatty() # flag used to understand if I'm working on cluster or locally (lab)
 
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
-INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
-OUTPUT_DIR = "/cluster/scratch/niacobone/distillation/output"         # Directory per log / checkpoint
-COCO2017_ROOT = "/cluster/scratch/niacobone/distillation/coco2017"  # root che contiene 'train' e 'val'
-# INPUT_DIR = "/scratch2/nico/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
-# OUTPUT_DIR = "/scratch2/nico/distillation/output"         # Directory per log / checkpoint
-# COCO2017_ROOT = "/scratch2/nico/distillation/coco2017"  # root che contiene 'train' e 'val'
+if disable_tqdm:
+    INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
+    OUTPUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"         # Directory per log / checkpoint
+    COCO2017_ROOT = "/cluster/scratch/niacobone/distillation/coco2017"  # root che contiene 'train' e 'val'
+else:
+    INPUT_DIR = "/scratch2/nico/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
+    OUTPUT_DIR = "/scratch2/nico/distillation/output"         # Directory per log / checkpoint
+    COCO2017_ROOT = "/scratch2/nico/distillation/coco2017"  # root che contiene 'train' e 'val'
 IMAGES_DIRNAME = "val2017"              # sottocartella immagini dentro ogni split
 FEATURES_DIRNAME = "teacher_features"   # sottocartella features dentro ogni split
 TRAIN_SPLIT = "train"
@@ -61,8 +63,8 @@ AMP = True                                  # Abilita autocast mixed precision
 NORM = True                                # Normalizza embeddings prima della loss
 SINGLE_IMAGE = True                         # Carica e processa una immagine per volta (batch size 1)
 BATCH_SIZE_IMAGES = 1                       # Numero di immagini per batch (per sfruttare meglio la GPU)
-DEBUG_MAX_TRAIN_IMAGES = 10               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
-DEBUG_MAX_VAL_IMAGES = 5                   # opzionale: limita anche la val (None o 0 per disabilitare)
+DEBUG_MAX_TRAIN_IMAGES = 1000               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
+DEBUG_MAX_VAL_IMAGES = 50                   # opzionale: limita anche la val (None o 0 per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
 # LOAD_CHECKPOINT = "checkpoint_epoch24.pth"  # es: "checkpoint_final.pth" oppure None
