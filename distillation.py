@@ -244,7 +244,14 @@ def main():
             train_cos_loss_acc = 0.0
             # shuffle train
             random.shuffle(train_image_paths)
-            for start_idx in tqdm(range(0, len(train_image_paths), BATCH_SIZE_IMAGES), disable=disable_tqdm, desc=f"Train Ep {epoch+1}"):
+
+            # select the iterator type based on disable_tqdm (cluster or local)
+            if disable_tqdm:
+                iterator = range(0, len(train_image_paths), BATCH_SIZE_IMAGES)
+            else:
+                iterator = tqdm(range(0, len(train_image_paths), BATCH_SIZE_IMAGES), desc=f"Train Ep {epoch+1}")
+
+            for start_idx in iterator:
                 batch_paths = train_image_paths[start_idx:start_idx + BATCH_SIZE_IMAGES]
                 views_list = load_images(batch_paths)
                 if len(views_list) == 0:
@@ -315,7 +322,12 @@ def main():
             val_mse_loss_acc = 0.0
             val_cos_loss_acc = 0.0
             with torch.no_grad():
-                for start_idx in tqdm(range(0, len(val_image_paths), BATCH_SIZE_IMAGES), disable=disable_tqdm, desc=f"Val Ep {epoch+1}"):
+                # select the iterator type based on disable_tqdm (cluster or local)
+                if disable_tqdm:
+                    iterator = range(0, len(val_image_paths), BATCH_SIZE_IMAGES)
+                else:
+                    iterator = tqdm(range(0, len(val_image_paths), BATCH_SIZE_IMAGES), desc=f"Val Ep {epoch+1}")
+                for start_idx in iterator:
                     batch_paths = val_image_paths[start_idx:start_idx + BATCH_SIZE_IMAGES]
                     views_list = load_images(batch_paths)
                     if len(views_list) == 0:
