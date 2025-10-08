@@ -34,15 +34,12 @@ import random
 from tqdm import tqdm
 import sys
 
-print("0")
 disable_tqdm = not sys.stdout.isatty() # flag used to understand if I'm working on cluster or locally (lab)
-print("0.1")
 
 if disable_tqdm:
     os.environ["TORCH_HOME"] = "/cluster/home/niacobone/torch_cache"
     torch.hub.set_dir(os.environ["TORCH_HOME"])
     print(f"[INFO] Torch hub cache dir set to {torch.hub.get_dir()}")
-print("0.2")
 
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
@@ -50,7 +47,6 @@ if disable_tqdm:
     INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
     OUTPUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"         # Directory per log / checkpoint
     COCO2017_ROOT = "/cluster/scratch/niacobone/distillation/coco2017"  # root che contiene 'train' e 'val'
-    print("0.3")
 else:
     INPUT_DIR = "/scratch2/nico/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
     OUTPUT_DIR = "/scratch2/nico/distillation/output"         # Directory per log / checkpoint
@@ -72,7 +68,7 @@ AMP = True                                  # Abilita autocast mixed precision
 NORM = True                                # Normalizza embeddings prima della loss
 SINGLE_IMAGE = True                         # Carica e processa una immagine per volta (batch size 1)
 BATCH_SIZE_IMAGES = 1                       # Numero di immagini per batch (per sfruttare meglio la GPU)
-DEBUG_MAX_TRAIN_IMAGES = 100               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
+DEBUG_MAX_TRAIN_IMAGES = 500               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
 DEBUG_MAX_VAL_IMAGES = 5                   # opzionale: limita anche la val (None o 0 per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
@@ -106,18 +102,13 @@ def is_image_file(name: str) -> bool:
 
 def main():
     # Setup
-    print("0.3")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print("0.4")
     np.random.seed(SEED) # numpy seed
-    print("0.5")
     torch.manual_seed(SEED) # torch seed
-    print("1")
 
     if OUTPUT_DIR:
         Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True) # crea cartella output se non esiste
 
-    print("lala")
 
     # wandb.init(
     #     project="Run 3 - mapanything-distillation",
@@ -148,21 +139,16 @@ def main():
 
     # Modello + freeze
     model = MapAnything.from_pretrained("facebook/map-anything").to(device)
-    print("1")
     model.instance_head = InstanceSegmentationHead(in_dim=256).to(device)
-    print("2")
     if not hasattr(model, "instance_head"):
         raise AttributeError("Il modello non ha 'instance_head'.")
     for name, p in model.named_parameters():
         if not name.startswith("instance_head"):
             p.requires_grad = False
-    print("3")
 
     # Optimizer (solo head)
     params = [p for p in model.parameters() if p.requires_grad]
-    print("4")
     optimizer = optim.AdamW(params, lr=LR, weight_decay=WEIGHT_DECAY, betas=(0.9, 0.95))
-    print("5")
     # print(optimizer)
 
     # Scheduler ReduceLROnPlateau opzionale
@@ -170,15 +156,11 @@ def main():
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode="min", factor=LR_ON_PLATEAU_FACTOR, patience=LR_ON_PLATEAU_PATIENCE, min_lr=MIN_LR
         )
-    print("6")
 
     # Caricamento checkpoint se richiesto
     start_epoch = 0
-    print("7")
     best_loss = None # per early stopping
-    print("8")
     epochs_no_improve = 0 # contatore early stopping
-    print("9")
     if LOAD_CHECKPOINT is not None:
         ckpt_path = Path(OUTPUT_DIR) / LOAD_CHECKPOINT
         if not ckpt_path.exists():
