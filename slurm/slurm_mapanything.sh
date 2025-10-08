@@ -35,12 +35,12 @@ module load stack/2024-06 python/3.12 cuda/12.4 eth_proxy
 echo "Loaded modules: $(module list 2>&1)"
 
 # Activate virtual environment for sam2.
-source /cluster/scratch/niacobone/mapanything/myenv/bin/activate
+source /cluster/scratch/niacobone/map-anything/myenv/bin/activate
 echo "Activated Python venv: $(which python)"
 
 # Execute
-cd /cluster/scratch/niacobone/mapanything
-echo "Starting mapanything distillation..."
+cd /cluster/scratch/niacobone/map-anything
+echo "Starting MapAnything distillation..."
 
 python distillation.py
 
