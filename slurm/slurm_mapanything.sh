@@ -13,19 +13,22 @@
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=00:10:00
+#SBATCH --time=00:30:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
 #
 # Specify number of CPU cores per task.
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=1
 #
 # Specify memory limit per CPU core.
-#SBATCH --mem-per-cpu=16384
+#SBATCH --mem-per-cpu=8192
 #
 # Specify number of required GPUs.
 #SBATCH --gpus=rtx_4090:1
+#
+# Specify disk limit on local scratch.
+#SBATCH --tmp=500000
 
 echo "=== Job starting on $(hostname) at $(date) ==="
 # DATE_VAR=$(date +%Y%m%d%H%M%S)
@@ -42,7 +45,7 @@ echo "Activated Python venv: $(which python)"
 cd /cluster/scratch/niacobone/map-anything
 echo "Starting MapAnything distillation..."
 
-python distillation.py
+python -u distillation.py
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
