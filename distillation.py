@@ -32,12 +32,18 @@ from nico.my_head import InstanceSegmentationHead
 from nico.utils import mean_std_difference, heatmap_sanity_check_single_channel, heatmap_sanity_check_avg_all_channels, create_student_original_teacher_side_by_side
 import random
 from tqdm import tqdm
+import sys
+
+disable_tqdm = not sys.stdout.isatty()
 
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
-INPUT_DIR = "/scratch2/nico/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
-OUTPUT_DIR = "/scratch2/nico/distillation/output"         # Directory per log / checkpoint
-COCO2017_ROOT = "/scratch2/nico/distillation/coco2017"  # root che contiene 'train' e 'val'
+INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
+OUTPUT_DIR = "/cluster/scratch/niacobone/distillation/output"         # Directory per log / checkpoint
+COCO2017_ROOT = "/cluster/scratch/niacobone/distillation/coco2017"  # root che contiene 'train' e 'val'
+# INPUT_DIR = "/scratch2/nico/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
+# OUTPUT_DIR = "/scratch2/nico/distillation/output"         # Directory per log / checkpoint
+# COCO2017_ROOT = "/scratch2/nico/distillation/coco2017"  # root che contiene 'train' e 'val'
 IMAGES_DIRNAME = "val2017"              # sottocartella immagini dentro ogni split
 FEATURES_DIRNAME = "teacher_features"   # sottocartella features dentro ogni split
 TRAIN_SPLIT = "train"
@@ -46,17 +52,17 @@ TRAIN_IMAGES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, IMAGES_DIRNAME)
 VAL_IMAGES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, IMAGES_DIRNAME)
 TRAIN_FEATURES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, FEATURES_DIRNAME)
 VAL_FEATURES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, FEATURES_DIRNAME)
-EPOCHS = 50                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
+EPOCHS = 5                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
 LR = 1e-4                                   # Learning rate
 WEIGHT_DECAY = 0.0                          # Weight decay AdamW
 EMB_POOL_SIZE = 64                          # (Non usato direttamente ora, placeholder se estendi pooling custom)
 SEED = 0                                    # Seed random
 AMP = True                                  # Abilita autocast mixed precision
-NORM = False                                # Normalizza embeddings prima della loss
+NORM = True                                # Normalizza embeddings prima della loss
 SINGLE_IMAGE = True                         # Carica e processa una immagine per volta (batch size 1)
 BATCH_SIZE_IMAGES = 1                       # Numero di immagini per batch (per sfruttare meglio la GPU)
-DEBUG_MAX_TRAIN_IMAGES = 1000               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
-DEBUG_MAX_VAL_IMAGES = 50                   # opzionale: limita anche la val (None o 0 per disabilitare)
+DEBUG_MAX_TRAIN_IMAGES = 10               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
+DEBUG_MAX_VAL_IMAGES = 5                   # opzionale: limita anche la val (None o 0 per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
 # LOAD_CHECKPOINT = "checkpoint_epoch24.pth"  # es: "checkpoint_final.pth" oppure None
@@ -96,30 +102,30 @@ def main():
     if OUTPUT_DIR:
         Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True) # crea cartella output se non esiste
 
-    wandb.init(
-        project="Run 2 - mapanything-distillation",
-        notes="test con meno immagini per epoca per plottare piu spesso, head più profonda, AMP=True",
-        config={
-            "learning_rate": LR,
-            "epochs": EPOCHS,
-            "batch_size": BATCH_SIZE_IMAGES,
-            "norm": NORM,
-            "amp": AMP,
-            "use_early_stopping": USE_EARLY_STOPPING,
-            "early_stopping_patience": EARLY_STOPPING_PATIENCE,
-            "use_lr_on_plateau": USE_LR_ON_PLATEAU,
-            "lr_on_plateau_patience": LR_ON_PLATEAU_PATIENCE,
-            "lr_on_plateau_factor": LR_ON_PLATEAU_FACTOR,
-            "min_lr": MIN_LR,
-            "single_image": SINGLE_IMAGE,
-            "debug_max_train_images": DEBUG_MAX_TRAIN_IMAGES,
-            "debug_max_val_images": DEBUG_MAX_VAL_IMAGES,
-            "loss_mix": "0.5_mse_0.5_cosine",
-            "train_mean_diff": None,
-            "train_std_diff": None,
-            "train_cos_sim": None
-        }
-    )
+    # wandb.init(
+    #     project="Run 3 - mapanything-distillation",
+    #     notes="primo test su euler, NORM=True",
+    #     config={
+    #         "learning_rate": LR,
+    #         "epochs": EPOCHS,
+    #         "batch_size": BATCH_SIZE_IMAGES,
+    #         "norm": NORM,
+    #         "amp": AMP,
+    #         "use_early_stopping": USE_EARLY_STOPPING,
+    #         "early_stopping_patience": EARLY_STOPPING_PATIENCE,
+    #         "use_lr_on_plateau": USE_LR_ON_PLATEAU,
+    #         "lr_on_plateau_patience": LR_ON_PLATEAU_PATIENCE,
+    #         "lr_on_plateau_factor": LR_ON_PLATEAU_FACTOR,
+    #         "min_lr": MIN_LR,
+    #         "single_image": SINGLE_IMAGE,
+    #         "debug_max_train_images": DEBUG_MAX_TRAIN_IMAGES,
+    #         "debug_max_val_images": DEBUG_MAX_VAL_IMAGES,
+    #         "loss_mix": "0.5_mse_0.5_cosine",
+    #         "train_mean_diff": None,
+    #         "train_std_diff": None,
+    #         "train_cos_sim": None
+    #     }
+    # )
 
     print(f"output_dir: {OUTPUT_DIR}")
 
@@ -236,7 +242,7 @@ def main():
             train_cos_loss_acc = 0.0
             # shuffle train
             random.shuffle(train_image_paths)
-            for start_idx in tqdm(range(0, len(train_image_paths), BATCH_SIZE_IMAGES), desc=f"Train Ep {epoch+1}"):
+            for start_idx in tqdm(range(0, len(train_image_paths), BATCH_SIZE_IMAGES), disable=disable_tqdm, desc=f"Train Ep {epoch+1}"):
                 batch_paths = train_image_paths[start_idx:start_idx + BATCH_SIZE_IMAGES]
                 views_list = load_images(batch_paths)
                 if len(views_list) == 0:
@@ -307,7 +313,7 @@ def main():
             val_mse_loss_acc = 0.0
             val_cos_loss_acc = 0.0
             with torch.no_grad():
-                for start_idx in tqdm(range(0, len(val_image_paths), BATCH_SIZE_IMAGES), desc=f"Val Ep {epoch+1}"):
+                for start_idx in tqdm(range(0, len(val_image_paths), BATCH_SIZE_IMAGES), disable=disable_tqdm, desc=f"Val Ep {epoch+1}"):
                     batch_paths = val_image_paths[start_idx:start_idx + BATCH_SIZE_IMAGES]
                     views_list = load_images(batch_paths)
                     if len(views_list) == 0:
@@ -389,23 +395,23 @@ def main():
                     ])
 
             # wandb logging
-            wandb.log({
-                "epoch": epoch+1,
-                "train_loss": train_loss_mean if 'train_loss_mean' in locals() else epoch_loss_mean,
-                "train_mse_loss": train_mse_loss_mean if 'train_mse_loss_mean' in locals() else None,
-                "train_cos_loss": train_cos_loss_mean if 'train_cos_loss_mean' in locals() else None,
-                "train_mean_diff": train_mean_diff,
-                "train_std_diff": train_std_diff,
-                "train_cos_sim": train_cos_sim,
-                "val_loss": val_loss_mean if 'val_loss_mean' in locals() else None,
-                "val_mse_loss": val_mse_loss_mean if 'val_mse_loss_mean' in locals() else None,
-                "val_cos_loss": val_cos_loss_mean if 'val_cos_loss_mean' in locals() else None,
-                "mean_diff": val_mean_diff if 'val_mean_diff' in locals() else mean_diff,
-                "std_diff": val_std_diff if 'val_std_diff' in locals() else std_diff,
-                "cosine_similarity": val_cos_sim if 'val_cos_sim' in locals() else avg_cosine_sim,
-                "lr": current_lr,
-                "epoch_time_sec": epoch_time
-            })
+            # wandb.log({
+            #     "epoch": epoch+1,
+            #     "train_loss": train_loss_mean if 'train_loss_mean' in locals() else epoch_loss_mean,
+            #     "train_mse_loss": train_mse_loss_mean if 'train_mse_loss_mean' in locals() else None,
+            #     "train_cos_loss": train_cos_loss_mean if 'train_cos_loss_mean' in locals() else None,
+            #     "train_mean_diff": train_mean_diff,
+            #     "train_std_diff": train_std_diff,
+            #     "train_cos_sim": train_cos_sim,
+            #     "val_loss": val_loss_mean if 'val_loss_mean' in locals() else None,
+            #     "val_mse_loss": val_mse_loss_mean if 'val_mse_loss_mean' in locals() else None,
+            #     "val_cos_loss": val_cos_loss_mean if 'val_cos_loss_mean' in locals() else None,
+            #     "mean_diff": val_mean_diff if 'val_mean_diff' in locals() else mean_diff,
+            #     "std_diff": val_std_diff if 'val_std_diff' in locals() else std_diff,
+            #     "cosine_similarity": val_cos_sim if 'val_cos_sim' in locals() else avg_cosine_sim,
+            #     "lr": current_lr,
+            #     "epoch_time_sec": epoch_time
+            # })
 
             # Scheduler & Early Stopping sulla val_loss
             target_loss = val_loss_mean
@@ -441,7 +447,7 @@ def main():
             print(f"Epoch {epoch+1}/{EPOCHS}")
             model.train(True) # modalità training (abilita dropout, batchnorm, ecc.)
 
-            for folder in tqdm(folders, desc=f"Epoch {epoch+1}"):
+            for folder in tqdm(folders, disable=disable_tqdm, desc=f"Epoch {epoch+1}"):
                 # Path cartella immagini
                 img_dir = str(folder)
 
@@ -530,18 +536,18 @@ def main():
                 ])
 
             # wandb logging
-            wandb.log({
-                "epoch": epoch+1,
-                "train_loss": train_loss_mean if 'train_loss_mean' in locals() else epoch_loss_mean,
-                "train_mse_loss": mse_loss.item() if 'mse_loss' in locals() else None,
-                "train_cos_loss": cos_loss.item() if 'cos_loss' in locals() else None,
-                "val_loss": val_loss_mean if 'val_loss_mean' in locals() else None,
-                "mean_diff": val_mean_diff if 'val_mean_diff' in locals() else mean_diff,
-                "std_diff": val_std_diff if 'val_std_diff' in locals() else std_diff,
-                "cosine_similarity": val_cos_sim if 'val_cos_sim' in locals() else avg_cosine_sim,
-                "lr": current_lr,
-                "epoch_time_sec": epoch_time
-            })
+            # wandb.log({
+            #     "epoch": epoch+1,
+            #     "train_loss": train_loss_mean if 'train_loss_mean' in locals() else epoch_loss_mean,
+            #     "train_mse_loss": mse_loss.item() if 'mse_loss' in locals() else None,
+            #     "train_cos_loss": cos_loss.item() if 'cos_loss' in locals() else None,
+            #     "val_loss": val_loss_mean if 'val_loss_mean' in locals() else None,
+            #     "mean_diff": val_mean_diff if 'val_mean_diff' in locals() else mean_diff,
+            #     "std_diff": val_std_diff if 'val_std_diff' in locals() else std_diff,
+            #     "cosine_similarity": val_cos_sim if 'val_cos_sim' in locals() else avg_cosine_sim,
+            #     "lr": current_lr,
+            #     "epoch_time_sec": epoch_time
+            # })
 
             # Scheduler LR on plateau
             if USE_LR_ON_PLATEAU:
@@ -685,4 +691,4 @@ if __name__ == "__main__":
     finally:
         # chiusura sicura di wandb
         print("[CLEANUP] Chiusura sessione wandb e salvataggio stato finale.")
-        wandb.finish()
+        # wandb.finish()
