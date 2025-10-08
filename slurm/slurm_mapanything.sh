@@ -22,7 +22,7 @@
 #SBATCH --cpus-per-task=4
 #
 # Specify memory limit per CPU core.
-#SBATCH --mem-per-cpu=16384
+#SBATCH --mem-per-cpu=8192
 #
 # Specify number of required GPUs.
 #SBATCH --gpus=rtx_4090:1
@@ -42,7 +42,7 @@ echo "Activated Python venv: $(which python)"
 cd /cluster/scratch/niacobone/map-anything
 echo "Starting MapAnything distillation..."
 
-python distillation.py
+python -u distillation.py
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
