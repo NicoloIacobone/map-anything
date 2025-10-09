@@ -43,6 +43,7 @@ if disable_tqdm:
 
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
+USE_WANDB = True                       # Abilita logging su wandb
 if disable_tqdm:
     INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
     OUTPUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"         # Directory per log / checkpoint
@@ -110,30 +111,31 @@ def main():
         Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True) # crea cartella output se non esiste
 
 
-    wandb.init(
-        project="Run 3 - mapanything-distillation",
-        notes="primo test su euler, NORM=True",
-        config={
-            "learning_rate": LR,
-            "epochs": EPOCHS,
-            "batch_size": BATCH_SIZE_IMAGES,
-            "norm": NORM,
-            "amp": AMP,
-            "use_early_stopping": USE_EARLY_STOPPING,
-            "early_stopping_patience": EARLY_STOPPING_PATIENCE,
-            "use_lr_on_plateau": USE_LR_ON_PLATEAU,
-            "lr_on_plateau_patience": LR_ON_PLATEAU_PATIENCE,
-            "lr_on_plateau_factor": LR_ON_PLATEAU_FACTOR,
-            "min_lr": MIN_LR,
-            "single_image": SINGLE_IMAGE,
-            "debug_max_train_images": DEBUG_MAX_TRAIN_IMAGES,
-            "debug_max_val_images": DEBUG_MAX_VAL_IMAGES,
-            "loss_mix": "0.5_mse_0.5_cosine",
-            "train_mean_diff": None,
-            "train_std_diff": None,
-            "train_cos_sim": None
-        }
-    )
+    if USE_WANDB:
+        wandb.init(
+            project="Run 3 - mapanything-distillation",
+            notes="primo test su euler, NORM=True",
+            config={
+                "learning_rate": LR,
+                "epochs": EPOCHS,
+                "batch_size": BATCH_SIZE_IMAGES,
+                "norm": NORM,
+                "amp": AMP,
+                "use_early_stopping": USE_EARLY_STOPPING,
+                "early_stopping_patience": EARLY_STOPPING_PATIENCE,
+                "use_lr_on_plateau": USE_LR_ON_PLATEAU,
+                "lr_on_plateau_patience": LR_ON_PLATEAU_PATIENCE,
+                "lr_on_plateau_factor": LR_ON_PLATEAU_FACTOR,
+                "min_lr": MIN_LR,
+                "single_image": SINGLE_IMAGE,
+                "debug_max_train_images": DEBUG_MAX_TRAIN_IMAGES,
+                "debug_max_val_images": DEBUG_MAX_VAL_IMAGES,
+                "loss_mix": "0.5_mse_0.5_cosine",
+                "train_mean_diff": None,
+                "train_std_diff": None,
+                "train_cos_sim": None
+            }
+        )
 
     print(f"output_dir: {OUTPUT_DIR}")
 
@@ -415,23 +417,24 @@ def main():
                     ])
 
             # wandb logging
-            wandb.log({
-                "epoch": epoch+1,
-                "train_loss": train_loss_mean if 'train_loss_mean' in locals() else epoch_loss_mean,
-                "train_mse_loss": train_mse_loss_mean if 'train_mse_loss_mean' in locals() else None,
-                "train_cos_loss": train_cos_loss_mean if 'train_cos_loss_mean' in locals() else None,
-                "train_mean_diff": train_mean_diff,
-                "train_std_diff": train_std_diff,
-                "train_cos_sim": train_cos_sim,
-                "val_loss": val_loss_mean if 'val_loss_mean' in locals() else None,
-                "val_mse_loss": val_mse_loss_mean if 'val_mse_loss_mean' in locals() else None,
-                "val_cos_loss": val_cos_loss_mean if 'val_cos_loss_mean' in locals() else None,
-                "mean_diff": val_mean_diff if 'val_mean_diff' in locals() else mean_diff,
-                "std_diff": val_std_diff if 'val_std_diff' in locals() else std_diff,
-                "cosine_similarity": val_cos_sim if 'val_cos_sim' in locals() else avg_cosine_sim,
-                "lr": current_lr,
-                "epoch_time_sec": epoch_time
-            })
+            if USE_WANDB:
+                wandb.log({
+                    "epoch": epoch+1,
+                    "train_loss": train_loss_mean if 'train_loss_mean' in locals() else epoch_loss_mean,
+                    "train_mse_loss": train_mse_loss_mean if 'train_mse_loss_mean' in locals() else None,
+                    "train_cos_loss": train_cos_loss_mean if 'train_cos_loss_mean' in locals() else None,
+                    "train_mean_diff": train_mean_diff,
+                    "train_std_diff": train_std_diff,
+                    "train_cos_sim": train_cos_sim,
+                    "val_loss": val_loss_mean if 'val_loss_mean' in locals() else None,
+                    "val_mse_loss": val_mse_loss_mean if 'val_mse_loss_mean' in locals() else None,
+                    "val_cos_loss": val_cos_loss_mean if 'val_cos_loss_mean' in locals() else None,
+                    "mean_diff": val_mean_diff if 'val_mean_diff' in locals() else mean_diff,
+                    "std_diff": val_std_diff if 'val_std_diff' in locals() else std_diff,
+                    "cosine_similarity": val_cos_sim if 'val_cos_sim' in locals() else avg_cosine_sim,
+                    "lr": current_lr,
+                    "epoch_time_sec": epoch_time
+                })
 
             # Scheduler & Early Stopping sulla val_loss
             target_loss = val_loss_mean
@@ -556,18 +559,19 @@ def main():
                 ])
 
             # wandb logging
-            wandb.log({
-                "epoch": epoch+1,
-                "train_loss": train_loss_mean if 'train_loss_mean' in locals() else epoch_loss_mean,
-                "train_mse_loss": mse_loss.item() if 'mse_loss' in locals() else None,
-                "train_cos_loss": cos_loss.item() if 'cos_loss' in locals() else None,
-                "val_loss": val_loss_mean if 'val_loss_mean' in locals() else None,
-                "mean_diff": val_mean_diff if 'val_mean_diff' in locals() else mean_diff,
-                "std_diff": val_std_diff if 'val_std_diff' in locals() else std_diff,
-                "cosine_similarity": val_cos_sim if 'val_cos_sim' in locals() else avg_cosine_sim,
-                "lr": current_lr,
-                "epoch_time_sec": epoch_time
-            })
+            if USE_WANDB:
+                wandb.log({
+                    "epoch": epoch+1,
+                    "train_loss": train_loss_mean if 'train_loss_mean' in locals() else epoch_loss_mean,
+                    "train_mse_loss": mse_loss.item() if 'mse_loss' in locals() else None,
+                    "train_cos_loss": cos_loss.item() if 'cos_loss' in locals() else None,
+                    "val_loss": val_loss_mean if 'val_loss_mean' in locals() else None,
+                    "mean_diff": val_mean_diff if 'val_mean_diff' in locals() else mean_diff,
+                    "std_diff": val_std_diff if 'val_std_diff' in locals() else std_diff,
+                    "cosine_similarity": val_cos_sim if 'val_cos_sim' in locals() else avg_cosine_sim,
+                    "lr": current_lr,
+                    "epoch_time_sec": epoch_time
+                })
 
             # Scheduler LR on plateau
             if USE_LR_ON_PLATEAU:
@@ -711,4 +715,5 @@ if __name__ == "__main__":
     finally:
         # chiusura sicura di wandb
         print("[CLEANUP] Chiusura sessione wandb e salvataggio stato finale.")
-        wandb.finish()
+        if USE_WANDB:
+            wandb.finish()
