@@ -8,6 +8,7 @@ import torch
 import time
 import numpy as np
 import rerun as rr
+from nico.my_head import InstanceSegmentationHead
 from mapanything.models import MapAnything
 from mapanything.utils.image import load_images
 from mapanything.utils.geometry import depthmap_to_world_frame
@@ -82,16 +83,20 @@ script_add_rerun_args(
 args = parser.parse_args()
 
 save_glb = False  # Whether to save the output as a GLB file
-input_path = "/scratch2/nico/examples/photos"
+input_path = "/scratch2/nico/distillation/coco2017/consistency"
 output_base_path = "/scratch2/nico/distillation/mapanything"
-folder_names = ["box_ufficio", "yokohama", "tenda_ufficio", "sedia_ufficio", "pianta", "car_drift"]
+# folder_names = ["box_ufficio", "yokohama", "tenda_ufficio", "sedia_ufficio", "pianta", "car_drift"]
+folder_names = ["original"]
+SINGLE_IMAGE = True
 
 load_weights = True
-ckpt_path = "/scratch2/nico/distillation/output/checkpoint_final.pth"
+ckpt_path = "/scratch2/nico/distillation/output/test_6/checkpoint_best.pth"
+# ckpt_path = "/scratch2/nico/distillation/output/test_7/checkpoint_best.pth"
 
 # Get inference device
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model = MapAnything.from_pretrained("facebook/map-anything").to(device)
+model.instance_head = InstanceSegmentationHead(in_dim=256).to(device)
 
 if load_weights:
     checkpoint = torch.load(ckpt_path, map_location=device) # carica su device
@@ -102,42 +107,93 @@ else:
     output_base_path = os.path.join(output_base_path, "not_distilled")
     print("[DEBUG] Using not trained additional head")
 
-for folder_name in folder_names:
-    output_path = os.path.join(output_base_path, folder_name)
-    images = os.path.join(input_path, folder_name)
+if SINGLE_IMAGE:
+    all_embeddings = []
+    for folder_name in folder_names:
+        output_path = os.path.join(output_base_path, folder_name)
+        images = os.path.join(input_path, folder_name)
+        images_paths = [os.path.join(images, f) for f in os.listdir(images) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
 
-    # Load and preprocess images from a folder or list of paths
-    print(f"Loading images from: {images}")
-    views = load_images(images)
-    print(f"Loaded {len(views)} views")
+        # Load and preprocess images from a folder or list of paths
+        print(f"Loading images from: {images}")
+        views = load_images(images_paths)
+        print(f"Loaded {len(views)} views")
 
-    # Run inference
-    print("Running inference...")
-    start_time = time.time()
-    predictions = model.infer(
-        views,
-        memory_efficient_inference=False,
-        use_amp=True,
-        amp_dtype="bf16",
-        apply_mask=True,
-        mask_edges=True,
-        apply_confidence_mask=False,
-        confidence_percentile=0,
-    )
-    elapsed_time = time.time() - start_time
-    print(f"Inference complete! Elapsed time: {elapsed_time:.2f} seconds")
+        for i, view in enumerate(views):
+            print(f"Processing image {i+1}/{len(views)}")
+            single_view = [view]  # Wrap in a list to create a batch of size 1
 
-    print('[DEBUG] Infer OK. Num views:', len(predictions))
+            # Run inference
+            print("Running inference...")
+            start_time = time.time()
+            predictions = model.infer(
+                single_view,
+                memory_efficient_inference=False,
+                use_amp=True,
+                amp_dtype="bf16",
+                apply_mask=True,
+                mask_edges=True,
+                apply_confidence_mask=False,
+                confidence_percentile=0,
+            )
+            elapsed_time = time.time() - start_time
+            print(f"Inference complete! Elapsed time: {elapsed_time:.2f} seconds")
 
-    # Save the last instance embeddings in a folder
-    embeddings = getattr(model, "_last_inst_embeddings", None)
-    if embeddings is not None:
-        embeddings_path = os.path.join(output_path, "student_embeddings.pt")
-        os.makedirs(os.path.dirname(embeddings_path), exist_ok=True)
-        torch.save(embeddings.cpu(), embeddings_path)
-        print(f"[DEBUG] Saved instance embeddings to {embeddings_path}")
-    else:
-        print("[DEBUG] No instance embeddings found to save.")
+            print('[DEBUG] Infer OK. Num views:', len(predictions))
+
+            # Collect the last instance embeddings
+            embeddings = getattr(model, "_last_inst_embeddings", None)
+            if embeddings is not None:
+                all_embeddings.append(embeddings.cpu())
+            else:
+                print(f"[DEBUG] No instance embeddings found for image {i+1}.")
+
+        # After all images, save stacked embeddings
+        if all_embeddings:
+            stacked_embeddings = torch.stack(all_embeddings, dim=0)  # Shape: (B, C, H, W)
+            embeddings_path = os.path.join(output_path, "student_embeddings.pt")
+            os.makedirs(os.path.dirname(embeddings_path), exist_ok=True)
+            torch.save(stacked_embeddings, embeddings_path)
+            print(f"[DEBUG] Saved stacked instance embeddings to {embeddings_path}")
+        else:
+            print("[DEBUG] No instance embeddings found to save.")
+else:
+    for folder_name in folder_names:
+        output_path = os.path.join(output_base_path, folder_name)
+        images = os.path.join(input_path, folder_name)
+
+        # Load and preprocess images from a folder or list of paths
+        print(f"Loading images from: {images}")
+        views = load_images(images)
+        print(f"Loaded {len(views)} views")
+
+        # Run inference
+        print("Running inference...")
+        start_time = time.time()
+        predictions = model.infer(
+            views,
+            memory_efficient_inference=False,
+            use_amp=True,
+            amp_dtype="bf16",
+            apply_mask=True,
+            mask_edges=True,
+            apply_confidence_mask=False,
+            confidence_percentile=0,
+        )
+        elapsed_time = time.time() - start_time
+        print(f"Inference complete! Elapsed time: {elapsed_time:.2f} seconds")
+
+        print('[DEBUG] Infer OK. Num views:', len(predictions))
+
+        # Save the last instance embeddings in a folder
+        embeddings = getattr(model, "_last_inst_embeddings", None)
+        if embeddings is not None:
+            embeddings_path = os.path.join(output_path, "student_embeddings.pt")
+            os.makedirs(os.path.dirname(embeddings_path), exist_ok=True)
+            torch.save(embeddings.cpu(), embeddings_path)
+            print(f"[DEBUG] Saved instance embeddings to {embeddings_path}")
+        else:
+            print("[DEBUG] No instance embeddings found to save.")
 
 # Access results for each view - Complete list of metric outputs
 # for i, pred in enumerate(predictions):

@@ -43,7 +43,7 @@ if disable_tqdm:
 
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
-USE_WANDB = True                       # Abilita logging su wandb
+USE_WANDB = False                       # Abilita logging su wandb
 if disable_tqdm:
     INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
     OUTPUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"         # Directory per log / checkpoint
@@ -60,7 +60,7 @@ TRAIN_IMAGES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, IMAGES_DIRNAME)
 VAL_IMAGES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, IMAGES_DIRNAME)
 TRAIN_FEATURES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, FEATURES_DIRNAME)
 VAL_FEATURES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, FEATURES_DIRNAME)
-EPOCHS = 50                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
+EPOCHS = 2                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
 LR = 1e-4                                   # Learning rate
 WEIGHT_DECAY = 0.0                          # Weight decay AdamW
 EMB_POOL_SIZE = 64                          # (Non usato direttamente ora, placeholder se estendi pooling custom)
@@ -69,8 +69,8 @@ AMP = True                                  # Abilita autocast mixed precision
 NORM = True                                # Normalizza embeddings prima della loss
 SINGLE_IMAGE = True                         # Carica e processa una immagine per volta (batch size 1)
 BATCH_SIZE_IMAGES = 1                       # Numero di immagini per batch (per sfruttare meglio la GPU)
-DEBUG_MAX_TRAIN_IMAGES = None               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
-DEBUG_MAX_VAL_IMAGES = 500                   # opzionale: limita anche la val (None o 0 per disabilitare)
+DEBUG_MAX_TRAIN_IMAGES = 10               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
+DEBUG_MAX_VAL_IMAGES = 5                   # opzionale: limita anche la val (None o 0 per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
 # LOAD_CHECKPOINT = "checkpoint_epoch24.pth"  # es: "checkpoint_final.pth" oppure None
