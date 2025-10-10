@@ -381,6 +381,15 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 self.dpt_feature_head, self.dpt_regressor_head
             )
 
+            # [NICO] Seconda DPT head parallela - mi dovrebbe servire solo dpt_featuer_head dato che devo produrre degli embeddings
+            # if pred_head_config.get("enable_second_dense_head", False):
+            #     self.dpt_feature_head_2 = DPTFeature(**pred_head_config["feature_head_2"])
+
+            if pred_head_config.get("enable_second_dense_head", False):
+                self.dpt_feature_head_2 = DPTFeature(**pred_head_config["feature_head_2"])
+                # self.dpt_regressor_head_2 = DPTRegressionProcessor(**pred_head_config["regressor_head_2"])
+                # self.dense_head_2 = nn.Sequential(self.dpt_feature_head_2, self.dpt_regressor_head_2)
+
             # Add your head with in_dim inferred
             # dpt_feat_dim = pred_head_config["feature_head"]["feature_dim"]
             # self.instance_head = InstanceSegmentationHead(in_dim=dpt_feat_dim)
@@ -489,6 +498,11 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 **pred_head_config["pose_adaptor"]
             )
             self.scene_rep_type = "raydirs+depth+pose+confidence+mask"
+
+            # [NICO] Aggiungo un nuovo tipo di adaptor che restituisce anche le istanze
+            # non mi dovrebbero servire dato che devo usare solo dpt_feature_head per produrre embeddigns
+            # self.dense_adaptor_2 = RayDirectionsPlusDepthWithConfidenceAndMaskAdaptor(**pred_head_config["dpt_adaptor"])
+            # self.scene_rep_type_2 = "raydirs+depth+pose+confidence+mask"
         elif pred_head_config["adaptor_type"] == "campointmap+pose":
             assert self.pred_head_type == "dpt+pose", (
                 "Camera pointmap + pose can only be used as scene representation with dpt + pose head."
@@ -1326,88 +1340,31 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 )
             )
         elif self.pred_head_type in ["dpt", "dpt+pose"]:
-            # dense_head_outputs = self.dense_head(
-            #     PredictionHeadLayeredInput(
-            #         list_features=dense_head_inputs,
-            #         target_output_shape=img_shape,
-            #     )
-            # )
-            # dense_final_outputs = self.dense_adaptor(
-            #     AdaptorInput(
-            #         adaptor_feature=dense_head_outputs.decoded_channels,
-            #         output_shape_hw=img_shape,
-            #     )
-            # )
-
-            # 1) Decodifica DPT per ottenere il feature map ricco per-pixel (H×W)
-            dpt_features = self.dpt_feature_head(
+            dense_head_outputs = self.dense_head(
                 PredictionHeadLayeredInput(
                     list_features=dense_head_inputs,
                     target_output_shape=img_shape,
                 )
             )
-            dense_feat = dpt_features.features_upsampled_8x  # (B*V, 256, H, W) con il tuo config
-
-            # DEBUG: stampa shape delle feature DPT per-pixel
-            # print(f"[debug] dense_feat shape: {tuple(dense_feat.shape)} "
-            #     f"(expect: (B*V, {self.pred_head_config['feature_head']['feature_dim']}, H, W))")
-
-            # Esegui l'instance segmentation head se presente direttamente sul feature map (B*V, C, H, W)
-            if hasattr(self, "instance_head"):
-                try:
-                    inst_feat = self.instance_head(dense_feat)  # atteso (B*V, C_out, 64, 64) con head attuale
-                    # Salva per forward: mantieni shape per ricostruire per-view
-                    self._last_inst_embeddings = inst_feat  # tensor 4D
-                    self._last_inst_emb_shape = inst_feat.shape  # (BV, C_out, 64, 64)
-                    # Nessun fg_logit nella versione corrente della head
-                    # if hasattr(self, "_last_inst_fg_logit"):
-                    #     del self._last_inst_fg_logit
-                    # print(f"[debug] instance_head output shape: {tuple(inst_feat.shape)} (B*V, {inst_feat.shape[1]}, 64, 64)")
-                except Exception as e:
-                    print(f"[warn] instance_head failed: {e}")
-
-            # Intercettazione embeddings per distillazione
-            # ATTENZIONE: questo flatten completo può essere costoso in memoria; valuta un subsampling se necessario
-            # if hasattr(self, "instance_head"):
-            #     bv, c, h, w = dense_feat.shape
-            #     per_pixel = dense_feat.permute(0, 2, 3, 1).reshape(-1, c)
-
-            #     out = self.instance_head(per_pixel)
-            #     if isinstance(out, tuple):
-            #         emb, fg_logit = out                   # emb: (BV*H*W, emb_dim), fg_logit: (BV*H*W,)
-            #     else:
-            #         emb, fg_logit = out, None
-
-            #     self._last_inst_embeddings = emb
-            #     if fg_logit is not None:
-            #         self._last_inst_fg_logit = fg_logit   # foreground map
-
-            #     # Salva info per ricostruire la griglia per-view
-            #     self._last_inst_emb_shape = (bv, h, w)
-            #     self._last_inst_emb_dim = emb.shape[1]
-
-            #     print(f"[debug] _last_inst_embeddings shape: {tuple(self._last_inst_embeddings.shape)} "
-            #         f"(expect: ({bv*h*w}, emb_dim) per view; totale BV*H*W)")
-
-            # 2) Regressione ai canali finali e adattatore
-            dpt_regressed = self.dpt_regressor_head(dpt_features)
-            # print(f"[debug] dpt_regressed.decoded_channels shape: {tuple(dpt_regressed.decoded_channels.shape)} "
-            #     "(expect: (B*V, C_out, H, W))")
             dense_final_outputs = self.dense_adaptor(
                 AdaptorInput(
-                    adaptor_feature=dpt_regressed.decoded_channels,
+                    adaptor_feature=dense_head_outputs.decoded_channels,
                     output_shape_hw=img_shape,
                 )
             )
-            # DEBUG: stampa shape finale densità (prima della scomposizione per view a valle)
-            # print(f"[debug] dense_final_outputs.value shape: {tuple(dense_final_outputs.value.shape)} "
-            #     "(expect: (B*V, C_out, H, W))")
+            # [NICO] seconda head
+            if hasattr(self, "dense_head_2") and self.dense_adaptor_2 is not None:
+                print(">>> [NICO] Using second dense head and adaptor!")
+                dpt_features_2 = self.dpt_feature_head_2(
+                    PredictionHeadLayeredInput(
+                        list_features=dense_head_inputs,
+                        target_output_shape=img_shape,
+                    )
+                )
+                self._last_feat2_8x = dpt_features_2.features_upsampled_8x  # (B*V, C2, H, W)
 
-            # # print("value:", tuple(dense_final_outputs.value.shape))  # atteso (BV, 4, H, W)
-            # for k, v in dense_final_outputs.__dict__.items():
-            #     if hasattr(v, "shape"):
-            #         print(k, tuple(v.shape))  # cerca 'confidence', 'mask', 'logits'
-            # # print("value:", tuple(dense_final_outputs.value.shape))  # atteso (BV, 4, H, W)
+                print("[SHAPE] self._last_feat2_8x", tuple(self._last_feat2_8x.shape))
+                raise Exception
         else:
             raise ValueError(
                 f"Invalid pred_head_type: {self.pred_head_type}. Valid options: ['linear', 'dpt', 'dpt+pose']"
@@ -1475,10 +1432,6 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                     if not hasattr(self, "_inst_emb_accum"):
                         self._inst_emb_accum = []
                     self._inst_emb_accum.append(self._last_inst_embeddings)
-                # if hasattr(self, "_last_inst_fg_logit"):
-                #     if not hasattr(self, "_inst_fg_accum"):
-                #         self._inst_fg_accum = []
-                #     self._inst_fg_accum.append(self._last_inst_fg_logit)
 
                 # Pose prediction (mini-batched)
                 if self.pred_head_type == "dpt+pose":
@@ -1510,9 +1463,6 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
             if hasattr(self, "_inst_emb_accum"):
                 self._last_inst_embeddings = torch.cat(self._inst_emb_accum, dim=0)
                 del self._inst_emb_accum
-            # if hasattr(self, "_inst_fg_accum"):
-            #     self._last_inst_fg_logit = torch.cat(self._inst_fg_accum, dim=0)
-            #     del self._inst_fg_accum
 
             # Concatenate the pose prediction head outputs from all mini-batches
             pose_final_outputs = None
@@ -1606,6 +1556,8 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
 
         # Run the image encoder on all the input views
         all_encoder_features_across_views = self._encode_n_views(views)
+        print("[SHAPE] all_encoder_features_across_views shapes:",
+              [x.shape for x in all_encoder_features_across_views])
 
         # Encode the optional geometric inputs and fuse with the encoded features from the N input views
         # Use high precision to prevent NaN values after layer norm in dense representation encoder (due to high variance in last dim of features)
@@ -1636,6 +1588,13 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 final_info_sharing_multi_view_feat,
                 intermediate_info_sharing_multi_view_feat,
             ) = self.info_sharing(info_sharing_input)
+
+        print("[SHAPE] final_info_sharing_multi_view_feat.features shapes:",
+              [x.shape for x in final_info_sharing_multi_view_feat.features])
+        print("[SHAPE] intermediate_info_sharing_multi_view_feat[0].features shapes:",
+              [x.shape for x in intermediate_info_sharing_multi_view_feat[0].features])
+        print("[SHAPE] intermediate_info_sharing_multi_view_feat[1].features shapes:",
+              [x.shape for x in intermediate_info_sharing_multi_view_feat[1].features])
 
         if self.pred_head_type == "linear":
             # Stack the features for all views
@@ -1702,6 +1661,9 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 final_info_sharing_multi_view_feat.additional_token_features
             )
 
+            print("[SHAPE] dense_head_inputs shapes:",
+                  [x.shape for x in dense_head_inputs] if isinstance(dense_head_inputs, list) else dense_head_inputs.shape)
+        
             # Run the downstream heads
             dense_final_outputs, pose_final_outputs, scale_final_output = (
                 self.downstream_head(
@@ -1987,20 +1949,6 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 emb_per_view = emb_map.chunk(num_views, dim=0)
                 for i in range(num_views):
                     res[i]["inst_embeddings_8x"] = emb_per_view[i]
-            # if hasattr(self, "_last_inst_fg_logit"):
-            #     # Support legacy format if foreground logits were computed (flattened or 4D)
-            #     fg = self._last_inst_fg_logit
-            #     if fg.dim() == 2:  # (BV, H*W)
-            #         # Cannot reliably reshape without stored shape; skip
-            #         pass
-            #     elif fg.dim() == 4:  # (BV, 1, H, W) or (BV, H, W, 1)
-            #         if fg.shape[1] == 1:  # (BV,1,H,W)
-            #             fg_map = fg[:, 0]
-            #         else:
-            #             fg_map = fg.squeeze(-1) if fg.shape[-1] == 1 else fg
-            #         fg_per_view = fg_map.chunk(num_views, dim=0)
-            #         for i in range(num_views):
-            #             res[i]["fg_logit_8x"] = fg_per_view[i]
 
             # Get the output masks (and logits) for all views (if available) and add them to the result
             if "mask" in self.scene_rep_type:
@@ -2180,6 +2128,13 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         # Validate the input views
         validated_views = validate_input_views_for_inference(views)
 
+        print("[SHAPE] views shape(s) after validation:")
+        for i, v in enumerate(validated_views):
+            if "img" in v:
+                print(f"  validated_view[{i}]['img']: {tuple(v['img'].shape)}")
+            else:
+                print(f"  validated_view[{i}]: no 'img' key")
+
         # Transfer the views to the same device as the model
         ignore_keys = set(
             [
@@ -2197,6 +2152,13 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
 
         # Pre-process the input views
         processed_views = preprocess_input_views_for_inference(validated_views)
+
+        print("[SHAPE] views shape(s) after preprocessing:")
+        for i, v in enumerate(processed_views):
+            if "img" in v:
+                print(f"  processed_view[{i}]['img']: {tuple(v['img'].shape)}")
+            else:
+                print(f"  processed_view[{i}]: no 'img' key")
 
         # Set the model input probabilities based on input args for ignoring inputs
         self._configure_geometric_input_config(

@@ -143,16 +143,12 @@ def main():
 
     # Modello + freeze
     # Config file path: /scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a/config.json
-    model = MapAnything.from_pretrained("facebook/map-anything", strict=False).to(device)
-
-    # Sanity check: esistenza e parametri della seconda head
-    print("[MODEL] pred_head_type:", getattr(model, "pred_head_type", None))
-    print("[MODEL] has dpt_feature_head_2:", hasattr(model, "dpt_feature_head_2"))
-    print("[MODEL] has dense_head_2:", hasattr(model, "dense_head_2"))
-    print("[MODEL] has instance_head:", hasattr(model, "instance_head"))
-
+    model = MapAnything.from_pretrained("facebook/map-anything").to(device)
+    model.instance_head = InstanceSegmentationHead(in_dim=256).to(device)
+    if not hasattr(model, "instance_head"):
+        raise AttributeError("Il modello non ha 'instance_head'.")
     for name, p in model.named_parameters():
-        if not name.startswith("feature_head_2"):
+        if not name.startswith("instance_head"):
             p.requires_grad = False
 
     # Optimizer (solo head)
@@ -268,9 +264,13 @@ def main():
 
             for start_idx in iterator:
                 batch_paths = train_image_paths[start_idx:start_idx + BATCH_SIZE_IMAGES]
+                # Leggi la prima immagine del batch e stampa la sua shape originale
+                # first_img_path = batch_paths[0]
+                # with Image.open(first_img_path) as img:
+                #     print(f"[DEBUG] Shape originale immagine: {img.size} (W, H), mode: {img.mode}")
                 views_list = load_images(batch_paths)
+                # print(f"[DEBUG] Shape prima immagine dopo load_images: {views_list[0]['img'].shape} (N, C, H, W), data_norm_type: {views_list[0]['data_norm_type']}")
                 if len(views_list) == 0:
-                    print("[WARN] Nessuna immagine caricata correttamente, salto batch.")
                     continue
                 imgs = torch.cat([v["img"] for v in views_list], dim=0).to(device, non_blocking=True)
                 batched_view = [{"img": imgs, "data_norm_type": views_list[0]["data_norm_type"]}]
@@ -288,7 +288,6 @@ def main():
                         skip = True; break
                     teacher_tensors.append(t)
                 if skip or len(teacher_tensors) == 0:
-                    print(f"[WARN] Teacher features mancanti o malformate per alcune immagini, salto batch.")
                     continue
                 teacher_batch = torch.cat(teacher_tensors, dim=0).to(device)
                 optimizer.zero_grad(set_to_none=True)

@@ -83,11 +83,12 @@ script_add_rerun_args(
 args = parser.parse_args()
 
 save_glb = False  # Whether to save the output as a GLB file
-input_path = "/scratch2/nico/distillation/coco2017/consistency"
+# input_path = "/scratch2/nico/distillation/coco2017/consistency"
+input_path = "/scratch2/nico/examples/photos"
 output_base_path = "/scratch2/nico/distillation/mapanything"
-# folder_names = ["box_ufficio", "yokohama", "tenda_ufficio", "sedia_ufficio", "pianta", "car_drift"]
-folder_names = ["original"]
-SINGLE_IMAGE = True
+folder_names = ["box_ufficio", "yokohama", "tenda_ufficio", "sedia_ufficio", "pianta", "car_drift"]
+# folder_names = ["original"]
+SINGLE_IMAGE = False
 
 load_weights = True
 ckpt_path = "/scratch2/nico/distillation/output/test_6/checkpoint_best.pth"
