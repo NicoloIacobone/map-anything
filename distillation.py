@@ -15,6 +15,7 @@ Assunzioni:
 """
 
 import os
+from xml.parsers.expat import model
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 from pathlib import Path
 import time
@@ -43,15 +44,18 @@ if disable_tqdm:
 
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
-USE_WANDB = False                       # Abilita logging su wandb
+USE_WANDB = True                       # Abilita logging su wandb
+WANDB_NOTES = "run_1"
 if disable_tqdm:
     INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
-    OUTPUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"         # Directory per log / checkpoint
+    BASE_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"         # Directory per log / checkpoint
     COCO2017_ROOT = "/cluster/scratch/niacobone/distillation/coco2017"  # root che contiene 'train' e 'val'
 else:
     INPUT_DIR = "/scratch2/nico/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
-    OUTPUT_DIR = "/scratch2/nico/distillation/output"         # Directory per log / checkpoint
+    BASE_DIR = "/scratch2/nico/distillation/output"         # Directory per log / checkpoint
     COCO2017_ROOT = "/scratch2/nico/distillation/coco2017"  # root che contiene 'train' e 'val'
+OUTPUT_DIR = os.path.join(BASE_DIR, WANDB_NOTES)
+CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
 IMAGES_DIRNAME = "val2017"              # sottocartella immagini dentro ogni split
 FEATURES_DIRNAME = "teacher_features"   # sottocartella features dentro ogni split
 TRAIN_SPLIT = "train"
@@ -60,7 +64,7 @@ TRAIN_IMAGES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, IMAGES_DIRNAME)
 VAL_IMAGES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, IMAGES_DIRNAME)
 TRAIN_FEATURES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, FEATURES_DIRNAME)
 VAL_FEATURES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, FEATURES_DIRNAME)
-EPOCHS = 0                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
+EPOCHS = 200                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
 LR = 1e-4                                   # Learning rate
 WEIGHT_DECAY = 0.0                          # Weight decay AdamW
 EMB_POOL_SIZE = 64                          # (Non usato direttamente ora, placeholder se estendi pooling custom)
@@ -69,12 +73,13 @@ AMP = True                                  # Abilita autocast mixed precision
 NORM = False                                # Normalizza embeddings prima della loss
 SINGLE_IMAGE = True                         # Carica e processa una immagine per volta (batch size 1)
 BATCH_SIZE_IMAGES = 1                       # Numero di immagini per batch (per sfruttare meglio la GPU)
-DEBUG_MAX_TRAIN_IMAGES = 1               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
-DEBUG_MAX_VAL_IMAGES = 1                   # opzionale: limita anche la val (None o 0 per disabilitare)
-NUM_HEATMAPS = 1                          # Numero di heatmaps da salvare dopo il training
+DEBUG_MAX_TRAIN_IMAGES = None               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
+DEBUG_MAX_VAL_IMAGES = 50                   # opzionale: limita anche la val (None o 0 per disabilitare)
+NUM_HEATMAPS = 10                          # Numero di heatmaps da salvare dopo il training
+VALIDATION = True                          # Esegui validazione ad ogni epoca
 # ===============================================================
 # Riprendi da checkpoint (se non None)
-# LOAD_CHECKPOINT = "checkpoint_epoch24.pth"  # es: "checkpoint_final.pth" oppure None
+# LOAD_CHECKPOINT = "checkpoint_final.pth"  # es: "checkpoint_final.pth" oppure None
 LOAD_CHECKPOINT = None
 # ===============================================================
 # Early stopping e ReduceLROnPlateau (impostare a True/False per abilitare/disabilitare)
@@ -107,14 +112,16 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     np.random.seed(SEED) # numpy seed
     torch.manual_seed(SEED) # torch seed
+    random.seed(SEED) # random seed
 
-    if OUTPUT_DIR:
-        Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True) # crea cartella output se non esiste
+    if CHECKPOINT_DIR:
+        Path(CHECKPOINT_DIR).mkdir(parents=True, exist_ok=True) # crea cartella output se non esiste
 
 
     if USE_WANDB:
         wandb.init(
             project="mapanything-distillation",
+            notes=WANDB_NOTES if 'WANDB_NOTES' in os.environ else None,
             config={
                 "learning_rate": LR,
                 "epochs": EPOCHS,
@@ -183,7 +190,7 @@ def main():
     best_loss = None # per early stopping
     epochs_no_improve = 0 # contatore early stopping
     if LOAD_CHECKPOINT is not None:
-        ckpt_path = Path(OUTPUT_DIR) / LOAD_CHECKPOINT
+        ckpt_path = Path(CHECKPOINT_DIR) / LOAD_CHECKPOINT
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint {ckpt_path} non trovato!")
         checkpoint = torch.load(ckpt_path, map_location=device) # carica su device
@@ -258,6 +265,7 @@ def main():
             # Campiona DEBUG_MAX_TRAIN_IMAGES immagini casuali dal training set
             if DEBUG_MAX_TRAIN_IMAGES and len(train_image_paths_full) > DEBUG_MAX_TRAIN_IMAGES:
                 train_image_paths = random.sample(train_image_paths_full, DEBUG_MAX_TRAIN_IMAGES)
+                # train_image_paths = train_image_paths_full[:DEBUG_MAX_TRAIN_IMAGES] # debug --> overfit on the first image
                 print(f"[DEBUG] Epoca {epoch+1}: campiono {len(train_image_paths)} immagini train casuali.")
             else:
                 train_image_paths = train_image_paths_full.copy()
@@ -280,6 +288,7 @@ def main():
 
             for start_idx in iterator:
                 batch_paths = train_image_paths[start_idx:start_idx + BATCH_SIZE_IMAGES]
+                # print(f"[DEBUG] batch_paths: {batch_paths}")
                 views_list = load_images(batch_paths)
                 if len(views_list) == 0:
                     print("[WARN] Nessuna immagine caricata correttamente, salto batch.")
@@ -305,12 +314,11 @@ def main():
                 teacher_batch = torch.cat(teacher_tensors, dim=0).to(device)
                 optimizer.zero_grad(set_to_none=True)
                 with torch.amp.autocast(device_type='cuda', enabled=AMP, dtype=autocast_dtype):
-                    outputs = model.forward(batched_view)
-                    o = outputs[0]
-                    if "_last_feat2_8x" not in o:
-                        raise KeyError("_last_feat2_8x mancante nell'output (train).")
-                    student_batch = o["_last_feat2_8x"]
-                    student_batch = resize_to_64x64(student_batch) # ridimensiona a 64x64 per allineare a teacher
+                    _ = model.forward(batched_view)
+                    student_batch = getattr(model, "_last_feat2_8x", None)
+                    if student_batch is None:
+                        raise KeyError("_last_feat2_8x mancante (train).")
+                    student_batch = resize_to_64x64(student_batch)
                     if teacher_batch.shape[1:] != student_batch.shape[1:]:
                         raise ValueError(f"Shape mismatch teacher {teacher_batch.shape} vs student {student_batch.shape}")
                     if NORM:
@@ -319,6 +327,14 @@ def main():
                     else:
                         student_norm = student_batch
                         teacher_norm = teacher_batch
+
+                    # create_student_original_teacher_side_by_side(student_norm, teacher_norm, "/scratch2/nico/distillation/coco2017/train/val2017/000000000724.jpg", epoch, "/scratch2/nico/distillation/output/heatmaps")
+                    # Salva gli embeddings student e teacher su disco per analisi/debug
+                    # embeddings_dir = os.path.join(OUTPUT_DIR, "embeddings")
+                    # student_save_path = os.path.join(embeddings_dir, f"student_embeddings.pt")
+                    # teacher_save_path = os.path.join(embeddings_dir, f"teacher_embeddings.pt")
+                    # torch.save(student_norm.detach().cpu(), student_save_path)
+                    # torch.save(teacher_norm.detach().cpu(), teacher_save_path)
 
                     cos_loss = 1 - F.cosine_similarity(student_norm, teacher_norm, dim=1).mean() # cosine loss for "teaching the same semantic language"
                     mse_loss = F.mse_loss(student_norm, teacher_norm) # mse loss for the same spatial structure/shape
@@ -351,58 +367,59 @@ def main():
             val_cos_sim_acc = 0.0
             val_mse_loss_acc = 0.0
             val_cos_loss_acc = 0.0
-            with torch.no_grad():
-                # select the iterator type based on disable_tqdm (cluster or local)
-                if disable_tqdm:
-                    iterator = range(0, len(val_image_paths), BATCH_SIZE_IMAGES)
-                else:
-                    iterator = tqdm(range(0, len(val_image_paths), BATCH_SIZE_IMAGES), desc=f"Val Ep {epoch+1}")
-                for start_idx in iterator:
-                    batch_paths = val_image_paths[start_idx:start_idx + BATCH_SIZE_IMAGES]
-                    views_list = load_images(batch_paths)
-                    if len(views_list) == 0:
-                        continue
-                    imgs = torch.cat([v["img"] for v in views_list], dim=0).to(device, non_blocking=True)
-                    batched_view = [{"img": imgs, "data_norm_type": views_list[0]["data_norm_type"]}]
-                    teacher_tensors = []
-                    skip = False
-                    for p in batch_paths:
-                        base = os.path.splitext(os.path.basename(p))[0]
-                        t_path = Path(VAL_FEATURES_DIR) / f"{base}.pt"
-                        if not t_path.is_file(): skip = True; break
-                        t = torch.load(str(t_path), map_location="cpu")
-                        if t.dim() == 3: t = t.unsqueeze(0)
-                        if t.dim() != 4 or t.shape[0] != 1: skip = True; break
-                        teacher_tensors.append(t)
-                    if skip or len(teacher_tensors) == 0: continue
-                    teacher_batch = torch.cat(teacher_tensors, dim=0).to(device)
-                    with torch.amp.autocast(device_type='cuda', enabled=AMP, dtype=autocast_dtype):
-                        outputs = model.forward(batched_view)
-                        o = outputs[0]
-                        if "_last_feat2_8x" not in o:
-                            raise KeyError("_last_feat2_8x mancante nell'output (val).")
-                        student_batch = o["_last_feat2_8x"]
-                        student_batch = resize_to_64x64(student_batch) # ridimensiona a 64x64 per allineare a teacher
-                        if teacher_batch.shape[1:] != student_batch.shape[1:]:
-                            raise ValueError(f"Shape mismatch (val) teacher {teacher_batch.shape} vs student {student_batch.shape}")
-                        if NORM:
-                            student_norm = F.normalize(student_batch, dim=1)
-                            teacher_norm = F.normalize(teacher_batch, dim=1)
-                        else:
-                            student_norm = student_batch
-                            teacher_norm = teacher_batch
 
-                        cos_loss = 1 - F.cosine_similarity(student_norm, teacher_norm, dim=1).mean()
-                        mse_loss = F.mse_loss(student_norm, teacher_norm)
-                        vloss = 0.5 * mse_loss + 0.5 * cos_loss
-                    val_loss_acc += float(vloss.detach().cpu()) * student_batch.shape[0]
-                    val_samples += student_batch.shape[0]
-                    val_mse_loss_acc += float(mse_loss.detach().cpu()) * student_batch.shape[0]
-                    val_cos_loss_acc += float(cos_loss.detach().cpu()) * student_batch.shape[0]
-                    md, sd, cs = mean_std_difference(student_batch, teacher_batch)
-                    val_mean_diff_acc += float(md) * student_batch.shape[0]
-                    val_std_diff_acc  += float(sd) * student_batch.shape[0]
-                    val_cos_sim_acc   += float(cs) * student_batch.shape[0]
+            if VALIDATION:
+                with torch.no_grad():
+                    # select the iterator type based on disable_tqdm (cluster or local)
+                    if disable_tqdm:
+                        iterator = range(0, len(val_image_paths), BATCH_SIZE_IMAGES)
+                    else:
+                        iterator = tqdm(range(0, len(val_image_paths), BATCH_SIZE_IMAGES), desc=f"Val Ep {epoch+1}")
+                    for start_idx in iterator:
+                        batch_paths = val_image_paths[start_idx:start_idx + BATCH_SIZE_IMAGES]
+                        views_list = load_images(batch_paths)
+                        if len(views_list) == 0:
+                            continue
+                        imgs = torch.cat([v["img"] for v in views_list], dim=0).to(device, non_blocking=True)
+                        batched_view = [{"img": imgs, "data_norm_type": views_list[0]["data_norm_type"]}]
+                        teacher_tensors = []
+                        skip = False
+                        for p in batch_paths:
+                            base = os.path.splitext(os.path.basename(p))[0]
+                            t_path = Path(VAL_FEATURES_DIR) / f"{base}.pt"
+                            if not t_path.is_file(): skip = True; break
+                            t = torch.load(str(t_path), map_location="cpu")
+                            if t.dim() == 3: t = t.unsqueeze(0)
+                            if t.dim() != 4 or t.shape[0] != 1: skip = True; break
+                            teacher_tensors.append(t)
+                        if skip or len(teacher_tensors) == 0: continue
+                        teacher_batch = torch.cat(teacher_tensors, dim=0).to(device)
+                        with torch.amp.autocast(device_type='cuda', enabled=AMP, dtype=autocast_dtype):
+                            _ = model.forward(batched_view)
+                            student_batch = getattr(model, "_last_feat2_8x", None)
+                            if student_batch is None:
+                                raise KeyError("_last_feat2_8x mancante (val).")
+                            student_batch = resize_to_64x64(student_batch) # ridimensiona a 64x64 per allineare a teacher
+                            if teacher_batch.shape[1:] != student_batch.shape[1:]:
+                                raise ValueError(f"Shape mismatch (val) teacher {teacher_batch.shape} vs student {student_batch.shape}")
+                            if NORM:
+                                student_norm = F.normalize(student_batch, dim=1)
+                                teacher_norm = F.normalize(teacher_batch, dim=1)
+                            else:
+                                student_norm = student_batch
+                                teacher_norm = teacher_batch
+
+                            cos_loss = 1 - F.cosine_similarity(student_norm, teacher_norm, dim=1).mean()
+                            mse_loss = F.mse_loss(student_norm, teacher_norm)
+                            vloss = 0.5 * mse_loss + 0.5 * cos_loss
+                        val_loss_acc += float(vloss.detach().cpu()) * student_batch.shape[0]
+                        val_samples += student_batch.shape[0]
+                        val_mse_loss_acc += float(mse_loss.detach().cpu()) * student_batch.shape[0]
+                        val_cos_loss_acc += float(cos_loss.detach().cpu()) * student_batch.shape[0]
+                        md, sd, cs = mean_std_difference(student_batch, teacher_batch)
+                        val_mean_diff_acc += float(md) * student_batch.shape[0]
+                        val_std_diff_acc  += float(sd) * student_batch.shape[0]
+                        val_cos_sim_acc   += float(cs) * student_batch.shape[0]
             val_loss_mean = val_loss_acc / val_samples if val_samples > 0 else 0.0
             val_mean_diff = val_mean_diff_acc / val_samples if val_samples > 0 else 0.0
             val_std_diff  = val_std_diff_acc  / val_samples if val_samples > 0 else 0.0
@@ -466,7 +483,7 @@ def main():
             improved = best_loss is None or target_loss < best_loss - 1e-6
             if improved:
                 best_loss = target_loss; epochs_no_improve = 0
-                save_checkpoint(model, optimizer, epoch+1, target_loss, OUTPUT_DIR, tag="best")
+                save_checkpoint(model, optimizer, epoch+1, target_loss, CHECKPOINT_DIR, tag="best")
             else:
                 epochs_no_improve += 1
                 print(f"[INFO] Nessun miglioramento val ({epochs_no_improve}/{EARLY_STOPPING_PATIENCE}).")
@@ -474,7 +491,8 @@ def main():
                 print(f"[EARLY STOP] Stoppo a epoch {epoch+1}.")
                 break
 
-            save_checkpoint(model, optimizer, epoch+1, target_loss, OUTPUT_DIR, tag=f"epoch{epoch+1}")
+            if VALIDATION:
+                save_checkpoint(model, optimizer, epoch+1, target_loss, CHECKPOINT_DIR, tag=f"epoch{epoch+1}")
 
     else:
         print("[DEBUG] SINGLE_IMAGE=False: Carico e processo tutte le immagini per ogni cartella.")
@@ -613,7 +631,7 @@ def main():
                 break
 
             # Salva checkpoint ogni epoca
-            save_checkpoint(model, optimizer, epoch+1, epoch_loss_mean, OUTPUT_DIR, tag=f"epoch{epoch+1}")
+            save_checkpoint(model, optimizer, epoch+1, epoch_loss_mean, CHECKPOINT_DIR, tag=f"epoch{epoch+1}")
 
     total_time = time.time() - start_time
     print(f"Training completed in {total_time/60:.2f} min")
@@ -625,7 +643,7 @@ def main():
         else:
             final_loss = epoch_loss_mean if 'epoch_loss_mean' in locals() else (best_loss if best_loss is not None else 0.0)
         final_epoch = (epoch + 1) if 'epoch' in locals() else start_epoch
-        save_checkpoint(model, optimizer, final_epoch, final_loss, OUTPUT_DIR, tag="final")
+        save_checkpoint(model, optimizer, final_epoch, final_loss, CHECKPOINT_DIR, tag="final")
 
     # Analisi finale con heatmap
     if SINGLE_IMAGE:
@@ -653,11 +671,11 @@ def main():
                 img_name = os.path.splitext(os.path.basename(img_path))[0]
                 print(f"Analisi heatmap per immagine: {img_name}")
                 # Caricamento singola immagine mantenendo compatibilità con load_images
-                with Image.open(img_path) as img:
-                    print(f"[SHAPE] Shape originale immagine: {img.size} (W, H), mode: {img.mode}")
+                # with Image.open(img_path) as img:
+                #     print(f"[SHAPE] Shape originale immagine: {img.size} (W, H), mode: {img.mode}")
                 view = load_images([str(img_path)])
-                if len(view) > 0 and "img" in view[0]:
-                    print(f"[SHAPE] Shape dopo load_images: {view[0]['img'].shape} (N, C, H, W), data_norm_type: {view[0]['data_norm_type']}")
+                # if len(view) > 0 and "img" in view[0]:
+                #     print(f"[SHAPE] Shape dopo load_images: {view[0]['img'].shape} (N, C, H, W), data_norm_type: {view[0]['data_norm_type']}")
                 view = load_images([str(img_path)])
                 if len(view) == 0:
                     print(f"[WARN] Nessuna immagine caricata da {img_path}")
@@ -686,7 +704,7 @@ def main():
 
                 student_embeddings = resize_to_64x64(student_embeddings) # (B*V, 256, 64, 64)
 
-                print("[SHAPE] Student embeddings shape:", student_embeddings.shape)
+                # print("[SHAPE] Student embeddings shape:", student_embeddings.shape)
 
                 # Path teacher: prima prova nello split di validazione, poi fallback al train
                 candidate_teacher_paths = [

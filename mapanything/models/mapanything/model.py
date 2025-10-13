@@ -1352,7 +1352,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
             )
             # [NICO] seconda head
             if hasattr(self, "dpt_feature_head_2"):
-                print(">>> [NICO] Using second dense head and adaptor!")
+                # print(">>> [NICO] Using second dense head and adaptor!")
                 dpt_features_2 = self.dpt_feature_head_2(
                     PredictionHeadLayeredInput(
                         list_features=dense_head_inputs,
@@ -1361,7 +1361,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 )
                 self._last_feat2_8x = dpt_features_2.features_upsampled_8x  # (B*V, C2, H, W)
 
-                print("[SHAPE] self._last_feat2_8x", tuple(self._last_feat2_8x.shape))
+                # print("[SHAPE] self._last_feat2_8x", tuple(self._last_feat2_8x.shape))
         else:
             raise ValueError(
                 f"Invalid pred_head_type: {self.pred_head_type}. Valid options: ['linear', 'dpt', 'dpt+pose']"
@@ -1555,8 +1555,8 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
 
         # Run the image encoder on all the input views
         all_encoder_features_across_views = self._encode_n_views(views)
-        print("[SHAPE] all_encoder_features_across_views shapes:",
-              [x.shape for x in all_encoder_features_across_views])
+        # print("[SHAPE] all_encoder_features_across_views shapes:",
+            #   [x.shape for x in all_encoder_features_across_views])
 
         # Encode the optional geometric inputs and fuse with the encoded features from the N input views
         # Use high precision to prevent NaN values after layer norm in dense representation encoder (due to high variance in last dim of features)
@@ -1592,12 +1592,12 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 intermediate_info_sharing_multi_view_feat,
             ) = self.info_sharing(info_sharing_input)
 
-        print("[SHAPE] final_info_sharing_multi_view_feat.features shapes:",
-              [x.shape for x in final_info_sharing_multi_view_feat.features])
-        print("[SHAPE] intermediate_info_sharing_multi_view_feat[0].features shapes:",
-              [x.shape for x in intermediate_info_sharing_multi_view_feat[0].features])
-        print("[SHAPE] intermediate_info_sharing_multi_view_feat[1].features shapes:",
-              [x.shape for x in intermediate_info_sharing_multi_view_feat[1].features])
+        # print("[SHAPE] final_info_sharing_multi_view_feat.features shapes:",
+        #       [x.shape for x in final_info_sharing_multi_view_feat.features])
+        # print("[SHAPE] intermediate_info_sharing_multi_view_feat[0].features shapes:",
+        #       [x.shape for x in intermediate_info_sharing_multi_view_feat[0].features])
+        # print("[SHAPE] intermediate_info_sharing_multi_view_feat[1].features shapes:",
+        #       [x.shape for x in intermediate_info_sharing_multi_view_feat[1].features])
 
         ##################################################
 
@@ -1668,8 +1668,8 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 final_info_sharing_multi_view_feat.additional_token_features
             )
 
-            print("[SHAPE] dense_head_inputs shapes:",
-                  [x.shape for x in dense_head_inputs] if isinstance(dense_head_inputs, list) else dense_head_inputs.shape)
+            # print("[SHAPE] dense_head_inputs shapes:",
+            #       [x.shape for x in dense_head_inputs] if isinstance(dense_head_inputs, list) else dense_head_inputs.shape)
         
             # Run the downstream heads
             dense_final_outputs, pose_final_outputs, scale_final_output = (
@@ -2138,12 +2138,12 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         # Validate the input views
         validated_views = validate_input_views_for_inference(views)
 
-        print("[SHAPE] views shape(s) after validation:")
-        for i, v in enumerate(validated_views):
-            if "img" in v:
-                print(f"  validated_view[{i}]['img']: {tuple(v['img'].shape)}")
-            else:
-                print(f"  validated_view[{i}]: no 'img' key")
+        # print("[SHAPE] views shape(s) after validation:")
+        # for i, v in enumerate(validated_views):
+        #     if "img" in v:
+        #         print(f"  validated_view[{i}]['img']: {tuple(v['img'].shape)}")
+        #     else:
+        #         print(f"  validated_view[{i}]: no 'img' key")
 
         # Transfer the views to the same device as the model
         ignore_keys = set(
@@ -2163,7 +2163,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         # Pre-process the input views
         processed_views = preprocess_input_views_for_inference(validated_views)
 
-        print("[SHAPE] views shape(s) after preprocessing:")
+        # print("[SHAPE] views shape(s) after preprocessing:")
         for i, v in enumerate(processed_views):
             if "img" in v:
                 print(f"  processed_view[{i}]['img']: {tuple(v['img'].shape)}")

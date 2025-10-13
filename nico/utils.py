@@ -244,6 +244,7 @@ def create_student_original_teacher_side_by_side(
 
     # Save the combined image
     combined_path = os.path.join(output_heatmaps, f"{img_name}_student_original_teacher_side_by_side.png")
+    # combined_path = os.path.join(output_heatmaps, f"{img_name}.png")
     combined_img.save(combined_path)
     # print(f"[INFO] Saved side-by-side image: {combined_path}")
 
