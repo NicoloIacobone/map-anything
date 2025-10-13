@@ -6,6 +6,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 # Required imports
 import torch
 import time
+import cv2
 import numpy as np
 import rerun as rr
 import matplotlib.pyplot as plt
@@ -175,20 +176,28 @@ for view_idx, pred in enumerate(predictions):
 
     # === Semantic rendering section ===
     # === Load precomputed SAM segmentation masks ===
-    masks_path = os.path.join(images, "mask.npy")
+    masks_path = os.path.join(images, "masks.npy")
     if not os.path.exists(masks_path):
         raise FileNotFoundError(f"Missing SAM2 mask file: {masks_path}")
 
-    masks = np.load(masks_path, allow_pickle=True).item()  # Load saved mask list (list of dicts)
+    masks = np.load(masks_path, allow_pickle=True)  # Load saved mask list (list of dicts)
     seg_map = build_semantic_map(masks)
 
-    # Convert segmentation IDs to colors
-    seg_colors = colormap_from_segmentation(seg_map)
-    seg_colors = np.clip(seg_colors, 0, 1)  # Ensure valid RGB range
+    # Resize SAM segmentation to match MapAnything resolution
+    H_map, W_map = image_np.shape[:2]
+    seg_map_resized = cv2.resize(
+        seg_map.astype(np.uint8),
+        (W_map, H_map),
+        interpolation=cv2.INTER_NEAREST,  # Preserve discrete labels
+    )
+
+    # Convert segmentation IDs to colors (resized version)
+    seg_colors = colormap_from_segmentation(seg_map_resized)
+    seg_colors = np.clip(seg_colors, 0, 1)
 
     # Log the 2D segmentation image to Rerun for reference
     rr.log(f"mapanything/view_{view_idx}/pinhole/semantic_segmentation",
-           rr.SegmentationImage(seg_map))
+           rr.SegmentationImage(seg_map_resized))
 
     # Store data for GLB export if needed
     if save_glb:
@@ -206,7 +215,7 @@ for view_idx, pred in enumerate(predictions):
         mask=mask,
         base_name=f"mapanything/view_{view_idx}",
         pts_name=f"mapanything/pointcloud_view_{view_idx}_semantic",
-        viz_mask=seg_map,
+        viz_mask=seg_map_resized,
         semantic_colors=seg_colors,  # Use semantic colors for 3D rendering
     )
 
