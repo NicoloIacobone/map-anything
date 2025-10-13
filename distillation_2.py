@@ -15,7 +15,6 @@ Assunzioni:
 """
 
 import os
-from xml.parsers.expat import model
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 from pathlib import Path
 import time
@@ -676,7 +675,6 @@ def main():
                 view = load_images([str(img_path)])
                 # if len(view) > 0 and "img" in view[0]:
                 #     print(f"[SHAPE] Shape dopo load_images: {view[0]['img'].shape} (N, C, H, W), data_norm_type: {view[0]['data_norm_type']}")
-                view = load_images([str(img_path)])
                 if len(view) == 0:
                     print(f"[WARN] Nessuna immagine caricata da {img_path}")
                     continue
