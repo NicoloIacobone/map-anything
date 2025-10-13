@@ -8,7 +8,6 @@ import torch
 import time
 import numpy as np
 import rerun as rr
-import matplotlib.pyplot as plt
 from mapanything.models import MapAnything
 from mapanything.utils.image import load_images
 from mapanything.utils.geometry import depthmap_to_world_frame
@@ -17,15 +16,8 @@ from mapanything.utils.viz import (
     script_add_rerun_args,
 )
 
-def colormap_from_segmentation(seg_map):
-    """Convert segmentation map (H, W) to RGB color map."""
-    cmap = plt.get_cmap("tab20")
-    max_id = int(seg_map.max())
-    colors = cmap(np.linspace(0, 1, max_id + 1))[:, :3]
-    return colors[seg_map]
-
 def log_data_to_rerun(
-    image, depthmap, pose, intrinsics, pts3d, mask, base_name, pts_name, viz_mask=None, semantic_colors=None
+    image, depthmap, pose, intrinsics, pts3d, mask, base_name, pts_name, viz_mask=None
 ):
     """Log visualization data to Rerun"""
     # Log camera info and loaded data
@@ -61,15 +53,9 @@ def log_data_to_rerun(
             rr.SegmentationImage(viz_mask.astype(int)),
         )
 
-    # === Semantic rendering section ===
-    # Log points in 3D with semantic colors if provided
+    # Log points in 3D
     filtered_pts = pts3d[mask]
-
-    # Use semantic colors if provided, else fall back to RGB image colors
-    if semantic_colors is not None:
-        filtered_pts_col = semantic_colors[mask]
-    else:
-        filtered_pts_col = image[mask]
+    filtered_pts_col = image[mask]
 
     rr.log(
         pts_name,
@@ -95,7 +81,7 @@ script_add_rerun_args(
 args = parser.parse_args()
 
 save_glb = False  # Whether to save the output as a GLB file
-images = "/scratch2/nico/examples/photos/single_frame"
+images = "/scratch2/nico/examples/photos/car_drift"
 output_path = "/scratch2/nico/examples/photos/results"
 
 # Get inference device
@@ -126,6 +112,15 @@ predictions = model.infer(
 elapsed_time = time.time() - start_time
 print(f"Inference complete! Elapsed time: {elapsed_time:.2f} seconds")
 
+# print("##### Debug Info #####")
+# print('Infer OK. Num views:', len(predictions))
+# print('Keys view0:', predictions[0].keys())
+# has_attr = hasattr(model, '_last_inst_embeddings')
+# print('instance embeddings present:', has_attr)
+# if has_attr:
+#     print('emb shape:', model._last_inst_embeddings.shape)
+# print("######################")
+
 # Prepare lists for GLB export if needed
 world_points_list = []
 images_list = []
@@ -154,28 +149,13 @@ for view_idx, pred in enumerate(predictions):
     pts3d_np = pts3d_computed.cpu().numpy()
     image_np = pred["img_no_norm"][0].cpu().numpy()
 
-    # === Semantic rendering section ===
-    # === Mock SAM segmentation output ===
-    # For now, simulate a segmentation map with a few random regions
-    H, W, _ = image_np.shape
-    num_segments = 5
-    seg_map = np.random.randint(0, num_segments, size=(H, W)).astype(np.int32)
-
-    # Convert segmentation IDs to colors
-    seg_colors = colormap_from_segmentation(seg_map)
-    seg_colors = np.clip(seg_colors, 0, 1)  # Ensure valid RGB range
-
-    # Log the 2D segmentation image to Rerun for reference
-    rr.log(f"mapanything/view_{view_idx}/pinhole/semantic_segmentation",
-           rr.SegmentationImage(seg_map))
-
     # Store data for GLB export if needed
     if save_glb:
         world_points_list.append(pts3d_np)
         images_list.append(image_np)
         masks_list.append(mask)
 
-    # Log to Rerun for visualization with semantic colors
+    # Log to Rerun for visualization
     log_data_to_rerun(
         image=image_np,
         depthmap=depthmap_torch.cpu().numpy(),
@@ -184,9 +164,8 @@ for view_idx, pred in enumerate(predictions):
         pts3d=pts3d_np,
         mask=mask,
         base_name=f"mapanything/view_{view_idx}",
-        pts_name=f"mapanything/pointcloud_view_{view_idx}_semantic",
-        viz_mask=seg_map,
-        semantic_colors=seg_colors,  # Use semantic colors for 3D rendering
+        pts_name=f"mapanything/pointcloud_view_{view_idx}",
+        viz_mask=mask,
     )
 
 print("Visualization complete! Check the Rerun viewer.")
