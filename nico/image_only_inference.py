@@ -51,6 +51,12 @@ def log_data_to_rerun(
         f"{base_name}/pinhole/rgb",
         rr.Image(image),
     )
+    # Log semantic overlay as a separate layer if provided
+    if semantic_colors is not None:
+        rr.log(
+            f"{base_name}/pinhole/semantic_overlay",
+            rr.Image(semantic_colors),
+        )
     rr.log(
         f"{base_name}/pinhole/depth",
         rr.DepthImage(depthmap),
@@ -62,22 +68,25 @@ def log_data_to_rerun(
         )
 
     # === Semantic rendering section ===
-    # Log points in 3D with semantic colors if provided
+    # Log points in 3D with RGB colors
     filtered_pts = pts3d[mask]
-
-    # Use semantic colors if provided, else fall back to RGB image colors
-    if semantic_colors is not None:
-        filtered_pts_col = semantic_colors[mask]
-    else:
-        filtered_pts_col = image[mask]
-
+    filtered_pts_col_rgb = image[mask]
     rr.log(
         pts_name,
         rr.Points3D(
             positions=filtered_pts.reshape(-1, 3),
-            colors=filtered_pts_col.reshape(-1, 3),
+            colors=filtered_pts_col_rgb.reshape(-1, 3),
         ),
     )
+    # Log the semantic overlay as an additional 3D points layer if provided
+    if semantic_colors is not None:
+        rr.log(
+            f"{pts_name}_semantic_overlay",
+            rr.Points3D(
+                positions=filtered_pts.reshape(-1, 3),
+                colors=semantic_colors[mask].reshape(-1, 3),
+            ),
+        )
 
 def get_parser():
     """Create argument parser"""
