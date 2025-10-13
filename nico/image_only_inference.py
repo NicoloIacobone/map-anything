@@ -112,16 +112,14 @@ predictions = model.infer(
 elapsed_time = time.time() - start_time
 print(f"Inference complete! Elapsed time: {elapsed_time:.2f} seconds")
 
-print("##### Debug Info #####")
-print('Infer OK. Num views:', len(predictions))
-print('Keys view0:', predictions[0].keys())
-has_attr = hasattr(model, '_last_inst_embeddings')
-print('instance embeddings present:', has_attr)
-if has_attr:
-    print('emb shape:', model._last_inst_embeddings.shape)
-print("######################")
-
-raise Exception("STOP")
+# print("##### Debug Info #####")
+# print('Infer OK. Num views:', len(predictions))
+# print('Keys view0:', predictions[0].keys())
+# has_attr = hasattr(model, '_last_inst_embeddings')
+# print('instance embeddings present:', has_attr)
+# if has_attr:
+#     print('emb shape:', model._last_inst_embeddings.shape)
+# print("######################")
 
 # Prepare lists for GLB export if needed
 world_points_list = []

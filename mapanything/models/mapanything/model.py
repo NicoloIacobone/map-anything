@@ -77,7 +77,7 @@ from uniception.models.prediction_heads.linear import LinearFeature
 from uniception.models.prediction_heads.mlp_head import MLPHead
 from uniception.models.prediction_heads.pose_head import PoseHead
 
-from nico.my_head import InstanceSegmentationHead
+# from nico.my_head import InstanceSegmentationHead
 
 # Enable TF32 precision if supported (for GPU >= Ampere and PyTorch >= 1.12)
 if hasattr(torch.backends.cuda, "matmul") and hasattr(
