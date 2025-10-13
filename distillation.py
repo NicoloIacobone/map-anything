@@ -145,20 +145,31 @@ def main():
     # Config file path: /scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a/config.json
     model = MapAnything.from_pretrained("facebook/map-anything", strict=False).to(device)
 
+    names_head2 = [n for n, _ in model.named_parameters() if n.startswith("dpt_feature_head_2")]
+    print(f"[CHECK] num params dpt_feature_head_2: {len(names_head2)}")
+    if not names_head2:
+        raise RuntimeError("dpt_feature_head_2 non trovata: controlla init/config.")
+
+    # 2) Verifica se il ckpt ha caricato qualcosa per head2 (dovrebbe essere 0)
+    loaded_for_head2 = [k for k in getattr(model, "_last_loaded_keys", set()) if k.startswith("dpt_feature_head_2")]
+    print(f"[CHECK] loaded keys for head2 from ckpt: {len(loaded_for_head2)} (atteso 0)")
+
+    # 3) Verifica gradiente: marca head2 trainabile, fai un fwd+bwd dummy e controlla grad
+    for n, p in model.named_parameters():
+        p.requires_grad = n.startswith("dpt_feature_head_2")
+
     # Sanity check: esistenza e parametri della seconda head
-    print("[MODEL] pred_head_type:", getattr(model, "pred_head_type", None))
     print("[MODEL] has dpt_feature_head_2:", hasattr(model, "dpt_feature_head_2"))
-    print("[MODEL] has dense_head_2:", hasattr(model, "dense_head_2"))
-    print("[MODEL] has instance_head:", hasattr(model, "instance_head"))
 
     for name, p in model.named_parameters():
-        if not name.startswith("feature_head_2"):
+        if not name.startswith("dpt_feature_head_2"):
             p.requires_grad = False
 
     # Optimizer (solo head)
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.AdamW(params, lr=LR, weight_decay=WEIGHT_DECAY, betas=(0.9, 0.95))
-    # print(optimizer)
+
+    raise Exception
 
     # Scheduler ReduceLROnPlateau opzionale
     if USE_LR_ON_PLATEAU:

@@ -382,8 +382,6 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
             )
 
             # [NICO] Seconda DPT head parallela - mi dovrebbe servire solo dpt_featuer_head dato che devo produrre degli embeddings
-            # if pred_head_config.get("enable_second_dense_head", False):
-            #     self.dpt_feature_head_2 = DPTFeature(**pred_head_config["feature_head_2"])
 
             if pred_head_config.get("enable_second_dense_head", False):
                 self.dpt_feature_head_2 = DPTFeature(**pred_head_config["feature_head_2"])
@@ -2191,3 +2189,42 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         self._restore_original_geometric_input_config()
 
         return preds
+
+    @classmethod
+    def _load_as_safetensor(cls, model, model_file: str, map_location: str, strict: bool):
+        """
+        Caricamento permissivo da safetensors: filtra alle sole chiavi presenti nel modello
+        e fa load_state_dict(strict=False) per evitare assert su chiavi mancanti (es. dpt_feature_head_2).
+        """
+        import safetensors.torch as st
+        sd = st.load_file(model_file, device=map_location)
+        # Alcuni checkpoint possono avere {"model": state_dict}
+        if isinstance(sd, dict) and "model" in sd and all(isinstance(k, str) for k in sd["model"].keys()):
+            sd = sd["model"]
+        model_keys = set(model.state_dict().keys())
+        filtered_sd = {k: v for k, v in sd.items() if k in model_keys} # pesi trovati nel checkpoint e caricati
+        missing = model_keys - set(filtered_sd.keys()) # pesi presenti nel modello ma non nel checkpoint (pesi di pdt_feature_head_2)
+        unexpected = set(sd.keys()) - model_keys # chiavi nel checkpoint che non esistono nel modello (dovrebbe essere sempre 0)
+        print(f"[HF LOAD] safetensors filtered: kept={len(filtered_sd)} missing={len(missing)} unexpected={len(unexpected)} (es. {next(iter(missing)) if missing else '—'})")
+        model.load_state_dict(filtered_sd, strict=False)
+        return model
+
+    @classmethod
+    def _load_as_pytorch(cls, model, model_file: str, map_location: str, strict: bool):
+        """
+        Analogo per pytorch_model.bin: carica lo state_dict e filtra alle chiavi note.
+        """
+        import torch
+        sd = torch.load(model_file, map_location=map_location)
+        # Supporta vari formati comuni
+        if isinstance(sd, dict) and "state_dict" in sd:
+            sd = sd["state_dict"]
+        elif isinstance(sd, dict) and "model" in sd and all(isinstance(k, str) for k in sd["model"].keys()):
+            sd = sd["model"]
+        model_keys = set(model.state_dict().keys())
+        filtered_sd = {k: v for k, v in sd.items() if k in model_keys}
+        missing = model_keys - set(filtered_sd.keys())
+        unexpected = set(sd.keys()) - model_keys
+        print(f"[HF LOAD] pytorch filtered: kept={len(filtered_sd)} missing={len(missing)} unexpected={len(unexpected)}")
+        model.load_state_dict(filtered_sd, strict=False)
+        return model
