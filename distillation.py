@@ -8,8 +8,8 @@ Per ogni cartella:
   - calcola una loss MSE tra embeddings student e teacher (dopo eventuale pooling / normalizzazione)
 
 Assunzioni:
-  - La head aggiuntiva (instance_head) è stata integrata in MapAnything e salva le sue uscite in
-    res[i]["inst_embeddings_8x"] durante il forward (NON infer, perché infer è in no_grad).
+  - La head aggiuntiva (dpt_feature_head_2) è stata integrata in MapAnything e salva le sue uscite in
+    res[i]["_last_feat2_8x"] durante il forward (NON infer, perché infer è in no_grad).
   - Le teacher features sono salvate con nome: <nome_immagine>_features.pt nella stessa cartella (o modificare pattern).
   - Ogni file teacher contiene un tensore shape (C, Ht, Wt) o (1, C, Ht, Wt).
 """
@@ -28,7 +28,6 @@ import wandb
 
 from mapanything.models import MapAnything
 from mapanything.utils.image import load_images
-from nico.my_head import InstanceSegmentationHead
 from nico.utils import mean_std_difference, heatmap_sanity_check_single_channel, heatmap_sanity_check_avg_all_channels, create_student_original_teacher_side_by_side, resize_to_64x64
 import random
 from tqdm import tqdm
@@ -88,9 +87,9 @@ MIN_LR = 1e-7                # learning rate minimo consentito
 # =================================================================
 
 def save_checkpoint(model, optimizer, epoch, loss, output_dir, tag="last"):
-    # Salva solo la instance_head e l'optimizer
+    # Salva solo la dpt_feature_head_2 e l'optimizer
     state = {
-        "instance_head": model.instance_head.state_dict(),
+        "dpt_feature_head_2": model.dpt_feature_head_2.state_dict(),
         "optimizer": optimizer.state_dict(),
         "epoch": epoch,
         "loss": loss,
@@ -115,8 +114,7 @@ def main():
 
     if USE_WANDB:
         wandb.init(
-            project="Run 3 - mapanything-distillation",
-            notes="primo test su euler, NORM=True",
+            project="mapanything-distillation",
             config={
                 "learning_rate": LR,
                 "epochs": EPOCHS,
@@ -145,6 +143,8 @@ def main():
     # Config file path: /scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a/config.json
     model = MapAnything.from_pretrained("facebook/map-anything", strict=False).to(device)
 
+    ############### DEBUG CHECKS ###############
+    """
     names_head2 = [n for n, _ in model.named_parameters() if n.startswith("dpt_feature_head_2")]
     print(f"[CHECK] num params dpt_feature_head_2: {len(names_head2)}")
     if not names_head2:
@@ -160,7 +160,10 @@ def main():
 
     # Sanity check: esistenza e parametri della seconda head
     print("[MODEL] has dpt_feature_head_2:", hasattr(model, "dpt_feature_head_2"))
+    """
+    ############################################
 
+    # freeze all parameters except the new head
     for name, p in model.named_parameters():
         if not name.startswith("dpt_feature_head_2"):
             p.requires_grad = False
@@ -184,7 +187,7 @@ def main():
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint {ckpt_path} non trovato!")
         checkpoint = torch.load(ckpt_path, map_location=device) # carica su device
-        model.instance_head.load_state_dict(checkpoint["instance_head"]) # carica solo head
+        model.dpt_feature_head_2.load_state_dict(checkpoint["dpt_feature_head_2"]) # carica solo head
         optimizer.load_state_dict(checkpoint["optimizer"]) # carica stato optimizer
         start_epoch = checkpoint.get("epoch", 0) # riprendi da epoch successiva
         best_loss = checkpoint.get("loss", None)
@@ -304,9 +307,10 @@ def main():
                 with torch.amp.autocast(device_type='cuda', enabled=AMP, dtype=autocast_dtype):
                     outputs = model.forward(batched_view)
                     o = outputs[0]
-                    if "inst_embeddings_8x" not in o:
-                        raise KeyError("inst_embeddings_8x mancante nell'output (train).")
-                    student_batch = o["inst_embeddings_8x"]
+                    if "_last_feat2_8x" not in o:
+                        raise KeyError("_last_feat2_8x mancante nell'output (train).")
+                    student_batch = o["_last_feat2_8x"]
+                    student_batch = resize_to_64x64(student_batch) # ridimensiona a 64x64 per allineare a teacher
                     if teacher_batch.shape[1:] != student_batch.shape[1:]:
                         raise ValueError(f"Shape mismatch teacher {teacher_batch.shape} vs student {student_batch.shape}")
                     if NORM:
@@ -375,9 +379,10 @@ def main():
                     with torch.amp.autocast(device_type='cuda', enabled=AMP, dtype=autocast_dtype):
                         outputs = model.forward(batched_view)
                         o = outputs[0]
-                        if "inst_embeddings_8x" not in o:
-                            raise KeyError("inst_embeddings_8x mancante nell'output (val).")
-                        student_batch = o["inst_embeddings_8x"]
+                        if "_last_feat2_8x" not in o:
+                            raise KeyError("_last_feat2_8x mancante nell'output (val).")
+                        student_batch = o["_last_feat2_8x"]
+                        student_batch = resize_to_64x64(student_batch) # ridimensiona a 64x64 per allineare a teacher
                         if teacher_batch.shape[1:] != student_batch.shape[1:]:
                             raise ValueError(f"Shape mismatch (val) teacher {teacher_batch.shape} vs student {student_batch.shape}")
                         if NORM:
@@ -524,9 +529,10 @@ def main():
                     outputs = model.forward(views) # produce embeddings dell'encoder di MapAnything (in training mode, quindi calcola i gradienti)
                     student_list = []
                     for o in outputs:
-                        if "inst_embeddings_8x" not in o:
-                            raise KeyError("Output della head 'inst_embeddings_8x' non trovato. Verifica integrazione.")
-                        emb = o["inst_embeddings_8x"] # filtra gli emebddings della head aggiuntiva
+                        if "_last_feat2_8x" not in o:
+                            raise KeyError("Output della head '_last_feat2_8x' non trovato. Verifica integrazione.")
+                        emb = o["_last_feat2_8x"] # filtra gli emebddings della head aggiuntiva
+                        emb = resize_to_64x64(emb) # ridimensiona a 64x64 per allineare a teacher
                         student_list.append(emb)
                     student_batch = torch.cat(student_list, dim=0) # concatena in un unico batch gli embeddings (B, C, H, W)
 
@@ -544,7 +550,6 @@ def main():
                     cos_loss = 1 - F.cosine_similarity(student_norm, teacher_norm, dim=1).mean()
                     mse_loss = F.mse_loss(student_norm, teacher_norm)
                     loss = 0.5 * mse_loss + 0.5 * cos_loss
-
 
                 loss.backward() # calcola i gradienti
                 optimizer.step() # aggiorna i pesi della head in base ai gradienti calcolati
@@ -674,10 +679,8 @@ def main():
                     apply_confidence_mask=False,
                     confidence_percentile=0,
                 )
-                # student_embeddings = getattr(model, "_last_inst_embeddings", None)
                 student_embeddings = getattr(model, "_last_feat2_8x", None)
                 if student_embeddings is None:
-                    # print("[HEATMAP][WARN] _last_inst_embeddings non presente dopo infer().")
                     print("[HEATMAP][WARN] _last_feat2_8x non presente dopo infer().")
                     continue
 
@@ -723,7 +726,8 @@ def main():
                 apply_confidence_mask=False,
                 confidence_percentile=0,
             )
-            student_embeddings = getattr(model, "_last_inst_embeddings", None)
+            student_embeddings = getattr(model, "_last_feat2_8x", None)
+            student_embeddings = resize_to_64x64(student_embeddings) # (B*V, 256, 64, 64)
 
             teacher_path = Path(folder) / "teacher_embeddings.pt"
             teacher_embeddings = torch.load(teacher_path, map_location="cpu")

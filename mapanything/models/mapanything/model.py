@@ -2217,7 +2217,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         filtered_sd = {k: v for k, v in sd.items() if k in model_keys} # pesi trovati nel checkpoint e caricati
         missing = model_keys - set(filtered_sd.keys()) # pesi presenti nel modello ma non nel checkpoint (pesi di pdt_feature_head_2)
         unexpected = set(sd.keys()) - model_keys # chiavi nel checkpoint che non esistono nel modello (dovrebbe essere sempre 0)
-        print(f"[HF LOAD] safetensors filtered: kept={len(filtered_sd)} missing={len(missing)} unexpected={len(unexpected)} (es. {next(iter(missing)) if missing else '—'})")
+        # print(f"[HF LOAD] safetensors filtered: kept={len(filtered_sd)} missing={len(missing)} unexpected={len(unexpected)} (es. {next(iter(missing)) if missing else '—'})")
         model.load_state_dict(filtered_sd, strict=False)
         return model
 
@@ -2237,6 +2237,6 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         filtered_sd = {k: v for k, v in sd.items() if k in model_keys}
         missing = model_keys - set(filtered_sd.keys())
         unexpected = set(sd.keys()) - model_keys
-        print(f"[HF LOAD] pytorch filtered: kept={len(filtered_sd)} missing={len(missing)} unexpected={len(unexpected)}")
+        # print(f"[HF LOAD] pytorch filtered: kept={len(filtered_sd)} missing={len(missing)} unexpected={len(unexpected)}")
         model.load_state_dict(filtered_sd, strict=False)
         return model
