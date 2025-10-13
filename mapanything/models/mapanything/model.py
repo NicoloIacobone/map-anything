@@ -1351,7 +1351,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 )
             )
             # [NICO] seconda head
-            if hasattr(self, "dense_head_2") and self.dense_adaptor_2 is not None:
+            if hasattr(self, "dpt_feature_head_2"):
                 print(">>> [NICO] Using second dense head and adaptor!")
                 dpt_features_2 = self.dpt_feature_head_2(
                     PredictionHeadLayeredInput(
@@ -1362,7 +1362,6 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 self._last_feat2_8x = dpt_features_2.features_upsampled_8x  # (B*V, C2, H, W)
 
                 print("[SHAPE] self._last_feat2_8x", tuple(self._last_feat2_8x.shape))
-                raise Exception
         else:
             raise ValueError(
                 f"Invalid pred_head_type: {self.pred_head_type}. Valid options: ['linear', 'dpt', 'dpt+pose']"
@@ -1552,6 +1551,8 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         img_shape = (int(height), int(width))
         num_views = len(views)
 
+        ############### Multi-Modal Encoders ###############
+
         # Run the image encoder on all the input views
         all_encoder_features_across_views = self._encode_n_views(views)
         print("[SHAPE] all_encoder_features_across_views shapes:",
@@ -1573,6 +1574,10 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
             .repeat(batch_size_per_view, 1, 1)
         )  # (B, C, 1)
 
+        ##################################################
+
+        ############### Multi-View Transformer ###############
+        
         # Combine all images into view-centric representation
         # Output is a list containing the encoded features for all N views after information sharing.
         info_sharing_input = MultiViewTransformerInput(
@@ -1593,6 +1598,10 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
               [x.shape for x in intermediate_info_sharing_multi_view_feat[0].features])
         print("[SHAPE] intermediate_info_sharing_multi_view_feat[1].features shapes:",
               [x.shape for x in intermediate_info_sharing_multi_view_feat[1].features])
+
+        ##################################################
+
+        ############### MLP, Single DPT Head, Pose Head ###############
 
         if self.pred_head_type == "linear":
             # Stack the features for all views
@@ -1917,6 +1926,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                             "metric_scaling_factor": scale_final_output,
                         }
                     )
+
             else:
                 raise ValueError(
                     f"Invalid scene_rep_type: {self.scene_rep_type}. \
@@ -1971,6 +1981,8 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                     res[i]["non_ambiguous_mask"] = output_masks_per_view[i]
                     res[i]["non_ambiguous_mask_logits"] = output_mask_logits_per_view[i]
 
+
+        ##################################################
         return res
 
     def _configure_geometric_input_config(

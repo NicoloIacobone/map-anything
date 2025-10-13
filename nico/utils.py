@@ -8,6 +8,15 @@ from PIL import Image, ImageDraw, ImageFont
 import shutil
 from pathlib import Path
 
+def resize_to_64x64(feat: torch.Tensor) -> torch.Tensor:
+    # feat: (B, C, H, W)
+    H, W = feat.shape[-2:]
+    if (H, W) == (64, 64):
+        return feat
+    # area solo per downsampling; bilinear per upsampling
+    mode = "area" if (H > 64 or W > 64) else "bilinear"
+    return F.interpolate(feat, size=(64, 64), mode=mode, align_corners=False if mode=="bilinear" else None, antialias=True if mode=="bilinear" else False)
+
 def split_dataset(dataset_path, images_postfix="val2017", features_postfix="teacher_features",
                   val_split=0.2, seed=0, move_instead_of_copy=False):
     """

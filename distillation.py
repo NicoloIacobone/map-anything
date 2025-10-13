@@ -29,7 +29,7 @@ import wandb
 from mapanything.models import MapAnything
 from mapanything.utils.image import load_images
 from nico.my_head import InstanceSegmentationHead
-from nico.utils import mean_std_difference, heatmap_sanity_check_single_channel, heatmap_sanity_check_avg_all_channels, create_student_original_teacher_side_by_side
+from nico.utils import mean_std_difference, heatmap_sanity_check_single_channel, heatmap_sanity_check_avg_all_channels, create_student_original_teacher_side_by_side, resize_to_64x64
 import random
 from tqdm import tqdm
 import sys
@@ -61,7 +61,7 @@ TRAIN_IMAGES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, IMAGES_DIRNAME)
 VAL_IMAGES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, IMAGES_DIRNAME)
 TRAIN_FEATURES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, FEATURES_DIRNAME)
 VAL_FEATURES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, FEATURES_DIRNAME)
-EPOCHS = 1                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
+EPOCHS = 0                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
 LR = 1e-4                                   # Learning rate
 WEIGHT_DECAY = 0.0                          # Weight decay AdamW
 EMB_POOL_SIZE = 64                          # (Non usato direttamente ora, placeholder se estendi pooling custom)
@@ -168,8 +168,6 @@ def main():
     # Optimizer (solo head)
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.AdamW(params, lr=LR, weight_decay=WEIGHT_DECAY, betas=(0.9, 0.95))
-
-    raise Exception
 
     # Scheduler ReduceLROnPlateau opzionale
     if USE_LR_ON_PLATEAU:
@@ -676,10 +674,16 @@ def main():
                     apply_confidence_mask=False,
                     confidence_percentile=0,
                 )
-                student_embeddings = getattr(model, "_last_inst_embeddings", None)
+                # student_embeddings = getattr(model, "_last_inst_embeddings", None)
+                student_embeddings = getattr(model, "_last_feat2_8x", None)
                 if student_embeddings is None:
-                    print("[HEATMAP][WARN] _last_inst_embeddings non presente dopo infer().")
+                    # print("[HEATMAP][WARN] _last_inst_embeddings non presente dopo infer().")
+                    print("[HEATMAP][WARN] _last_feat2_8x non presente dopo infer().")
                     continue
+
+                student_embeddings = resize_to_64x64(student_embeddings) # (B*V, 256, 64, 64)
+
+                print("[SHAPE] Student embeddings shape:", student_embeddings.shape)
 
                 # Path teacher: prima prova nello split di validazione, poi fallback al train
                 candidate_teacher_paths = [
