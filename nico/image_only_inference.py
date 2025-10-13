@@ -17,6 +17,16 @@ from mapanything.utils.viz import (
     script_add_rerun_args,
 )
 
+def build_semantic_map(masks):
+    H, W = masks[0]['segmentation'].shape
+    seg_map = np.zeros((H, W), dtype=np.int32)
+    for idx, m in enumerate(masks, start=1):  # id=0 sarà background
+        mask = m['segmentation']
+        score = m.get('predicted_iou', 1.0)
+        if score > 0.8:  # opzionale
+            seg_map[mask] = idx
+    return seg_map
+
 def colormap_from_segmentation(seg_map):
     """Convert segmentation map (H, W) to RGB color map."""
     cmap = plt.get_cmap("tab20")
@@ -164,11 +174,13 @@ for view_idx, pred in enumerate(predictions):
     image_np = pred["img_no_norm"][0].cpu().numpy()
 
     # === Semantic rendering section ===
-    # === Mock SAM segmentation output ===
-    # For now, simulate a segmentation map with a few random regions
-    H, W, _ = image_np.shape
-    num_segments = 5
-    seg_map = np.random.randint(0, num_segments, size=(H, W)).astype(np.int32)
+    # === Load precomputed SAM segmentation masks ===
+    masks_path = os.path.join(images, "mask.npy")
+    if not os.path.exists(masks_path):
+        raise FileNotFoundError(f"Missing SAM2 mask file: {masks_path}")
+
+    masks = np.load(masks_path, allow_pickle=True).item()  # Load saved mask list (list of dicts)
+    seg_map = build_semantic_map(masks)
 
     # Convert segmentation IDs to colors
     seg_colors = colormap_from_segmentation(seg_map)
