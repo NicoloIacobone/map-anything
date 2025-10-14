@@ -53,7 +53,7 @@ def parse_args():
     # parser.add_argument("--use_wandb", action="store_true", help="Enable wandb logging.")
     # parser.add_argument("--use_early_stopping", action="store_true", help="Enable early stopping.")
     # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
-    parser.add_argument("--wandb_name", type=str, default="ep5000_lr00005_normFalse", help="Wandb run name.")
+    parser.add_argument("--wandb_name", type=str, default="ep5000_lr00001_normFalse", help="Wandb run name.")
     args = parser.parse_args()
     return args
 
@@ -227,7 +227,7 @@ def main():
     epochs_no_improve = 0 # contatore early stopping
     if LOAD_CHECKPOINT is not None:
         # ckpt_path = Path(CHECKPOINT_DIR) / LOAD_CHECKPOINT
-        ckpt_path = Path(BASE_DIR) / "ep1000_lr00005_normFalse" / "checkpoints" / "checkpoint_final.pth"
+        ckpt_path = Path(BASE_DIR) / "ep1000_lr00001_normFalse" / "checkpoints" / "checkpoint_final.pth"
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint {ckpt_path} non trovato!")
         checkpoint = torch.load(ckpt_path, map_location=device) # carica su device
