@@ -26,12 +26,14 @@ for i, (epochs, lr, norm) in enumerate(grid):
         "distillation_overfit.py",
         "--epochs", str(epochs),
         "--lr", str(lr),
-        "--wandb_name", run_name,
-        "--norm", str(norm)
+        "--wandb_name", run_name
     ]
+    if norm:
+        cmd.append("--norm")
 
     # Esegui e reindirizza log
-    with open(log_file, "w") as out, open(err_file, "w") as err:
-        subprocess.run(cmd, stdout=out, stderr=err)
+    # with open(log_file, "w") as out, open(err_file, "w") as err:
+    #     subprocess.run(cmd, stdout=out, stderr=err)
+    subprocess.run(cmd)
 
 print("\n>>> All experiments completed.")

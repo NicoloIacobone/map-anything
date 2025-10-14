@@ -243,8 +243,8 @@ def create_student_original_teacher_side_by_side(
     draw.text((w * 2 + 10, 5), "TEACHER EMBEDDINGS", fill=(255, 255, 255), font=font)
 
     # Save the combined image
-    combined_path = os.path.join(output_heatmaps, f"{img_name}_student_original_teacher_side_by_side.png")
-    # combined_path = os.path.join(output_heatmaps, f"{img_name}.png")
+    # combined_path = os.path.join(output_heatmaps, f"{img_name}_student_original_teacher_side_by_side.png")
+    combined_path = os.path.join(output_heatmaps, f"{img_name}.png")
     combined_img.save(combined_path)
     # print(f"[INFO] Saved side-by-side image: {combined_path}")
 
