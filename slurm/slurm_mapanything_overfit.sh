@@ -47,8 +47,8 @@ echo "Starting MapAnything distillation..."
 
 export WANDB_API_KEY=$(cat "/cluster/home/niacobone/.config/wandb/wandb_api_key.txt")
 
-# python -u distillation_overfit.py
-python -u grid_search_overfit.py
+python -u distillation_overfit.py
+# python -u grid_search_overfit.py
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
