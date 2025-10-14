@@ -33,6 +33,31 @@ import random
 from tqdm import tqdm
 import sys
 from PIL import Image
+import argparse
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Distillation training script for MapAnything.")
+    # parser.add_argument("--input_dir", type=str, default=None, help="Directory containing image folders.")
+    # parser.add_argument("--output_dir", type=str, default=None, help="Directory for logs and checkpoints.")
+    parser.add_argument("--epochs", type=int, default=None, help="Number of training epochs.")
+    parser.add_argument("--lr", type=float, default=None, help="Learning rate.")
+    # parser.add_argument("--batch_size", type=int, default=None, help="Batch size for images.")
+    # parser.add_argument("--seed", type=int, default=None, help="Random seed.")
+    parser.add_argument("--norm", action="store_true", help="Normalize embeddings before loss.")
+    # parser.add_argument("--amp", action="store_true", help="Enable mixed precision training.")
+    # parser.add_argument("--single_image", action="store_true", help="Process one image at a time.")
+    # parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit number of train images for debugging.")
+    # parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit number of val images for debugging.")
+    # parser.add_argument("--validation", action="store_true", help="Run validation every epoch.")
+    # parser.add_argument("--load_checkpoint", type=str, default=None, help="Path to checkpoint to resume from.")
+    # parser.add_argument("--use_wandb", action="store_true", help="Enable wandb logging.")
+    # parser.add_argument("--use_early_stopping", action="store_true", help="Enable early stopping.")
+    # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
+    parser.add_argument("--wandb_name", type=str, default="overfit", help="Wandb run name.")
+    args = parser.parse_args()
+    return args
+
+args = parse_args()
 
 disable_tqdm = not sys.stdout.isatty() # flag used to understand if I'm working on cluster or locally (lab)
 
@@ -44,7 +69,7 @@ if disable_tqdm:
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
 USE_WANDB = False                       # Abilita logging su wandb
-WANDB_NOTES = "overfit_test"
+WANDB_NAME = args.wandb_name                     # Nome run wandb (None per default)
 if disable_tqdm:
     INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
     BASE_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"         # Directory per log / checkpoint
@@ -53,7 +78,7 @@ else:
     INPUT_DIR = "/scratch2/nico/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
     BASE_DIR = "/scratch2/nico/distillation/output"         # Directory per log / checkpoint
     COCO2017_ROOT = "/scratch2/nico/distillation/coco2017"  # root che contiene 'train' e 'val'
-OUTPUT_DIR = os.path.join(BASE_DIR, WANDB_NOTES)
+OUTPUT_DIR = os.path.join(BASE_DIR, WANDB_NAME)
 CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
 IMAGES_DIRNAME = "val2017"              # sottocartella immagini dentro ogni split
 FEATURES_DIRNAME = "teacher_features"   # sottocartella features dentro ogni split
@@ -63,13 +88,13 @@ TRAIN_IMAGES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, IMAGES_DIRNAME)
 VAL_IMAGES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, IMAGES_DIRNAME)
 TRAIN_FEATURES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, FEATURES_DIRNAME)
 VAL_FEATURES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, FEATURES_DIRNAME)
-EPOCHS = 1001                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
-LR = 1e-4                                   # Learning rate
+EPOCHS = args.epochs                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
+LR = args.lr                                   # Learning rate
 WEIGHT_DECAY = 0.0                          # Weight decay AdamW
 EMB_POOL_SIZE = 64                          # (Non usato direttamente ora, placeholder se estendi pooling custom)
 SEED = 0                                    # Seed random
 AMP = True                                  # Abilita autocast mixed precision
-NORM = False                                # Normalizza embeddings prima della loss
+NORM = args.norm                                # Normalizza embeddings prima della loss
 SINGLE_IMAGE = True                         # Carica e processa una immagine per volta (batch size 1)
 BATCH_SIZE_IMAGES = 1                       # Numero di immagini per batch (per sfruttare meglio la GPU)
 DEBUG_MAX_TRAIN_IMAGES = 1               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
@@ -120,7 +145,7 @@ def main():
     if USE_WANDB:
         wandb.init(
             project="mapanything-distillation",
-            notes=WANDB_NOTES if 'WANDB_NOTES' in os.environ else None,
+            name=WANDB_NAME if WANDB_NAME else "mapanything-distillation",
             config={
                 "learning_rate": LR,
                 "epochs": EPOCHS,
@@ -173,6 +198,8 @@ def main():
     for name, p in model.named_parameters():
         if not name.startswith("dpt_feature_head_2"):
             p.requires_grad = False
+        # else:
+        #     print(f"{name} | {p.shape}")
 
     # Optimizer (solo head)
     params = [p for p in model.parameters() if p.requires_grad]
