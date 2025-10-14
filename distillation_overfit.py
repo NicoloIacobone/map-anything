@@ -43,7 +43,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
     # parser.add_argument("--batch_size", type=int, default=None, help="Batch size for images.")
     # parser.add_argument("--seed", type=int, default=None, help="Random seed.")
-    parser.add_argument("--norm", action="store_true", default=False, help="Normalize embeddings before loss.")
+    parser.add_argument("--norm", action="store_true", default=True, help="Normalize embeddings before loss.")
     # parser.add_argument("--amp", action="store_true", help="Enable mixed precision training.")
     # parser.add_argument("--single_image", action="store_true", help="Process one image at a time.")
     # parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit number of train images for debugging.")
@@ -53,7 +53,7 @@ def parse_args():
     # parser.add_argument("--use_wandb", action="store_true", help="Enable wandb logging.")
     # parser.add_argument("--use_early_stopping", action="store_true", help="Enable early stopping.")
     # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
-    parser.add_argument("--wandb_name", type=str, default="ep5000_lr00001_normFalse", help="Wandb run name.")
+    parser.add_argument("--wandb_name", type=str, default="ep5000_lr00001_normTrue", help="Wandb run name.")
     args = parser.parse_args()
     return args
 
@@ -227,7 +227,7 @@ def main():
     epochs_no_improve = 0 # contatore early stopping
     if LOAD_CHECKPOINT is not None:
         # ckpt_path = Path(CHECKPOINT_DIR) / LOAD_CHECKPOINT
-        ckpt_path = Path(BASE_DIR) / "ep1000_lr00001_normFalse" / "checkpoints" / "checkpoint_final.pth"
+        ckpt_path = Path(BASE_DIR) / "ep1000_lr00001_normTrue" / "checkpoints" / "checkpoint_final.pth"
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint {ckpt_path} non trovato!")
         checkpoint = torch.load(ckpt_path, map_location=device) # carica su device
