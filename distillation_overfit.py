@@ -39,8 +39,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Distillation training script for MapAnything.")
     # parser.add_argument("--input_dir", type=str, default=None, help="Directory containing image folders.")
     # parser.add_argument("--output_dir", type=str, default=None, help="Directory for logs and checkpoints.")
-    parser.add_argument("--epochs", type=int, default=1001, help="Number of training epochs.")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
+    parser.add_argument("--epochs", type=int, default=5000, help="Number of training epochs.")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate.")
     # parser.add_argument("--batch_size", type=int, default=None, help="Batch size for images.")
     # parser.add_argument("--seed", type=int, default=None, help="Random seed.")
     parser.add_argument("--norm", action="store_true", default=False, help="Normalize embeddings before loss.")
@@ -53,7 +53,7 @@ def parse_args():
     # parser.add_argument("--use_wandb", action="store_true", help="Enable wandb logging.")
     # parser.add_argument("--use_early_stopping", action="store_true", help="Enable early stopping.")
     # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
-    parser.add_argument("--wandb_name", type=str, default="ep1000_lr00005_normTrue", help="Wandb run name.")
+    parser.add_argument("--wandb_name", type=str, default="ep5000_lr0001_normFalse", help="Wandb run name.")
     args = parser.parse_args()
     return args
 
@@ -68,7 +68,7 @@ if disable_tqdm:
 
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
-USE_WANDB = False                       # Abilita logging su wandb
+USE_WANDB = True                       # Abilita logging su wandb
 WANDB_NAME = args.wandb_name                     # Nome run wandb (None per default)
 if disable_tqdm:
     INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
@@ -123,6 +123,8 @@ MIN_LR = 1e-7                # learning rate minimo consentito
 # =================================================================
 Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 Path(HEATMAPS_DIR).mkdir(parents=True, exist_ok=True)
+Path(CHECKPOINT_DIR).mkdir(parents=True, exist_ok=True)
+Path(EMBEDDINGS_DIR).mkdir(parents=True, exist_ok=True)
 
 def save_checkpoint(model, optimizer, epoch, loss, output_dir, tag="last"):
     # Salva solo la dpt_feature_head_2 e l'optimizer
@@ -224,7 +226,8 @@ def main():
     best_loss = None # per early stopping
     epochs_no_improve = 0 # contatore early stopping
     if LOAD_CHECKPOINT is not None:
-        ckpt_path = Path(CHECKPOINT_DIR) / LOAD_CHECKPOINT
+        # ckpt_path = Path(CHECKPOINT_DIR) / LOAD_CHECKPOINT
+        ckpt_path = Path("/scratch2/nico/distillation/output/ep1000_lr0001_normFalse/checkpoints/checkpoint_final.pth")
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint {ckpt_path} non trovato!")
         checkpoint = torch.load(ckpt_path, map_location=device) # carica su device
@@ -366,8 +369,6 @@ def main():
 
                     # Salva gli embeddings student e teacher su disco per analisi/debug
                     if SAVE_STUDENT_EMBEDDINGS_EVERY and (epoch + 1) % SAVE_STUDENT_EMBEDDINGS_EVERY == 0:
-                        if not os.path.exists(EMBEDDINGS_DIR):
-                            os.makedirs(EMBEDDINGS_DIR, exist_ok=True)
                         # create heatmap side by side student vs teacher vs original
                         create_student_original_teacher_side_by_side(student_norm, teacher_norm, OVERFIT_IMAGE, epoch, HEATMAPS_DIR)
 
@@ -523,8 +524,8 @@ def main():
             target_loss = val_loss_mean
             if USE_LR_ON_PLATEAU:
                 scheduler.step(target_loss)
-            improved = best_loss is None or target_loss < best_loss - 1e-6
-            if not VALIDATION:
+            if VALIDATION:
+                improved = best_loss is None or target_loss < best_loss - 1e-6
                 if improved:
                     best_loss = target_loss
                     epochs_no_improve = 0

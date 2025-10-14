@@ -3,7 +3,7 @@ import subprocess
 import sys
 
 # Lista dei parametri da esplorare
-epochs_list = [1000, 5000]
+epochs_list = [5000]
 lr_list = [1e-3, 5e-4, 1e-4]
 norm_list = [False, True]
 
