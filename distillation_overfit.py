@@ -359,7 +359,8 @@ def main():
                         student_norm = student_batch
                         teacher_norm = teacher_batch
 
-                    create_student_original_teacher_side_by_side(student_norm, teacher_norm, "/scratch2/nico/distillation/coco2017/train/val2017/000000000724.jpg", epoch, HEATMAPS_DIR)
+                    # create_student_original_teacher_side_by_side(student_norm, teacher_norm, "/scratch2/nico/distillation/coco2017/train/val2017/000000000724.jpg", epoch, HEATMAPS_DIR)
+                    create_student_original_teacher_side_by_side(student_norm, teacher_norm, "/cluster/scratch/niacobone/distillation/coco2017/train/val2017/000000000724.jpg", epoch, HEATMAPS_DIR)
                     # Salva gli embeddings student e teacher su disco per analisi/debug
                     # embeddings_dir = os.path.join(OUTPUT_DIR, "embeddings")
                     # student_save_path = os.path.join(embeddings_dir, f"student_embeddings.pt")
