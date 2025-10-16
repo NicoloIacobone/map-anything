@@ -102,9 +102,9 @@ AMP = True                                  # Abilita autocast mixed precision
 NORM = args.norm                                # Normalizza embeddings prima della loss
 SINGLE_IMAGE = True                         # Carica e processa una immagine per volta (batch size 1)
 BATCH_SIZE_IMAGES = 1                       # Numero di immagini per batch (per sfruttare meglio la GPU)
-DEBUG_MAX_TRAIN_IMAGES = 10               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
-DEBUG_MAX_VAL_IMAGES = 10                   # opzionale: limita anche la val (None o 0 per disabilitare)
-NUM_HEATMAPS = 10                          # Numero di heatmaps da salvare dopo il training
+DEBUG_MAX_TRAIN_IMAGES = 1               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
+DEBUG_MAX_VAL_IMAGES = 1                   # opzionale: limita anche la val (None o 0 per disabilitare)
+NUM_HEATMAPS = 1                          # Numero di heatmaps da salvare dopo il training
 VALIDATION = False                          # Esegui validazione ad ogni epoca
 FINAL_ANALYSIS = True                     # Esegui analisi finale con heatmap dopo training
 SAVE_STUDENT_EMBEDDINGS_EVERY = 1          # Salva gli embeddings student ogni N epoche (None per disabilitare)
