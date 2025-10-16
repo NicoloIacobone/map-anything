@@ -39,7 +39,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Distillation training script for MapAnything.")
     # parser.add_argument("--input_dir", type=str, default=None, help="Directory containing image folders.")
     # parser.add_argument("--output_dir", type=str, default=None, help="Directory for logs and checkpoints.")
-    parser.add_argument("--epochs", type=int, default=1, help="Number of training epochs.")
+    parser.add_argument("--epochs", type=int, default=10000, help="Number of training epochs.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
     # parser.add_argument("--batch_size", type=int, default=None, help="Batch size for images.")
     # parser.add_argument("--seed", type=int, default=None, help="Random seed.")
@@ -107,7 +107,7 @@ DEBUG_MAX_VAL_IMAGES = 10                   # opzionale: limita anche la val (No
 NUM_HEATMAPS = 10                          # Numero di heatmaps da salvare dopo il training
 VALIDATION = False                          # Esegui validazione ad ogni epoca
 FINAL_ANALYSIS = True                     # Esegui analisi finale con heatmap dopo training
-SAVE_STUDENT_EMBEDDINGS_EVERY = 500          # Salva gli embeddings student ogni N epoche (None per disabilitare)
+SAVE_STUDENT_EMBEDDINGS_EVERY = 1          # Salva gli embeddings student ogni N epoche (None per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
 LOAD_CHECKPOINT = "checkpoint_final.pth"  # es: "checkpoint_final.pth" oppure None
@@ -379,6 +379,7 @@ def main():
                         # save student embeddings
                         student_save_path = os.path.join(EMBEDDINGS_DIR, f"student_embeddings_epoch{epoch+1}.pt")
                         torch.save(student_norm.detach().cpu(), student_save_path)
+                        raise Exception
 
                 loss.backward()
                 optimizer.step()
