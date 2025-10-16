@@ -40,7 +40,7 @@ def parse_args():
     # parser.add_argument("--input_dir", type=str, default=None, help="Directory containing image folders.")
     # parser.add_argument("--output_dir", type=str, default=None, help="Directory for logs and checkpoints.")
     parser.add_argument("--epochs", type=int, default=5000, help="Number of training epochs.")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.") # 1e-3, 5e-4, 1e-4
     # parser.add_argument("--batch_size", type=int, default=None, help="Batch size for images.")
     # parser.add_argument("--seed", type=int, default=None, help="Random seed.")
     parser.add_argument("--norm", action="store_true", default=True, help="Normalize embeddings before loss.")

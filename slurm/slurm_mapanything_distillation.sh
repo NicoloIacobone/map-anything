@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=mapanything_distillation_overfit
+#SBATCH --job-name=mapanything_distillation
 #
 # Specify output file.
 #SBATCH --output=mapanything_%j.log
@@ -13,7 +13,7 @@
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=01:00:00
+#SBATCH --time=10:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -43,11 +43,11 @@ echo "Activated Python venv: $(which python)"
 
 # Execute
 cd /cluster/scratch/niacobone/map-anything
-echo "Starting MapAnything distillation overfit..."
+echo "Starting MapAnything distillation..."
 
 export WANDB_API_KEY=$(cat "/cluster/home/niacobone/.config/wandb/wandb_api_key.txt")
 
-python -u distillation_overfit.py
+python -u distillation.py
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
