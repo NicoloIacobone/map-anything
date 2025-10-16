@@ -39,11 +39,11 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Distillation training script for MapAnything.")
     # parser.add_argument("--input_dir", type=str, default=None, help="Directory containing image folders.")
     # parser.add_argument("--output_dir", type=str, default=None, help="Directory for logs and checkpoints.")
-    parser.add_argument("--epochs", type=int, default=5000, help="Number of training epochs.")
+    parser.add_argument("--epochs", type=int, default=1, help="Number of training epochs.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.")
     # parser.add_argument("--batch_size", type=int, default=None, help="Batch size for images.")
     # parser.add_argument("--seed", type=int, default=None, help="Random seed.")
-    parser.add_argument("--norm", action="store_true", default=True, help="Normalize embeddings before loss.")
+    parser.add_argument("--norm", action="store_true", default=False, help="Normalize embeddings before loss.")
     # parser.add_argument("--amp", action="store_true", help="Enable mixed precision training.")
     # parser.add_argument("--single_image", action="store_true", help="Process one image at a time.")
     # parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit number of train images for debugging.")
@@ -53,7 +53,7 @@ def parse_args():
     # parser.add_argument("--use_wandb", action="store_true", help="Enable wandb logging.")
     # parser.add_argument("--use_early_stopping", action="store_true", help="Enable early stopping.")
     # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
-    parser.add_argument("--wandb_name", type=str, default="ep5000_lr00001_normTrue", help="Wandb run name.")
+    parser.add_argument("--wandb_name", type=str, default="run_1", help="Wandb run name.")
     args = parser.parse_args()
     return args
 
@@ -68,7 +68,7 @@ if disable_tqdm:
 
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
-USE_WANDB = True                       # Abilita logging su wandb
+USE_WANDB = False                       # Abilita logging su wandb
 WANDB_NAME = args.wandb_name                     # Nome run wandb (None per default)
 if disable_tqdm:
     INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
@@ -104,9 +104,9 @@ SINGLE_IMAGE = True                         # Carica e processa una immagine per
 BATCH_SIZE_IMAGES = 1                       # Numero di immagini per batch (per sfruttare meglio la GPU)
 DEBUG_MAX_TRAIN_IMAGES = 1               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
 DEBUG_MAX_VAL_IMAGES = 1                   # opzionale: limita anche la val (None o 0 per disabilitare)
-NUM_HEATMAPS = 1                          # Numero di heatmaps da salvare dopo il training
+NUM_HEATMAPS = 10                          # Numero di heatmaps da salvare dopo il training
 VALIDATION = False                          # Esegui validazione ad ogni epoca
-FINAL_ANALYSIS = False                     # Esegui analisi finale con heatmap dopo training
+FINAL_ANALYSIS = True                     # Esegui analisi finale con heatmap dopo training
 SAVE_STUDENT_EMBEDDINGS_EVERY = 500          # Salva gli embeddings student ogni N epoche (None per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
