@@ -379,6 +379,7 @@ def main():
                         # save student embeddings
                         student_save_path = os.path.join(EMBEDDINGS_DIR, f"student_embeddings_{WANDB_NAME}.pt")
                         torch.save(student_norm.detach().cpu(), student_save_path)
+                        print(f"[INFO] Student embeddings salvati in {student_save_path}")
                         raise Exception
 
                 loss.backward()
