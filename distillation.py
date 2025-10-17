@@ -109,8 +109,8 @@ FINAL_ANALYSIS = True                     # Esegui analisi finale con heatmap do
 SAVE_STUDENT_EMBEDDINGS_EVERY = 50          # Salva gli embeddings student ogni N epoche (None per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
-# LOAD_CHECKPOINT = "checkpoint_final.pth"  # es: "checkpoint_final.pth" oppure None
-LOAD_CHECKPOINT = None
+LOAD_CHECKPOINT = "checkpoint_best.pth"  # es: "checkpoint_final.pth" oppure None
+# LOAD_CHECKPOINT = None
 # ===============================================================
 # Early stopping e ReduceLROnPlateau (impostare a True/False per abilitare/disabilitare)
 USE_EARLY_STOPPING = False
