@@ -41,7 +41,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.") # 1e-3, 5e-4, 1e-4
     # parser.add_argument("--batch_size", type=int, default=None, help="Batch size for images.")
     # parser.add_argument("--seed", type=int, default=None, help="Random seed.")
-    # parser.add_argument("--norm", action="store_true", default=False, help="Normalize embeddings before loss.")
+    parser.add_argument("--norm", action="store_true", help="Normalize embeddings before loss.")
     # parser.add_argument("--amp", action="store_true", help="Enable mixed precision training.")
     # parser.add_argument("--single_image", action="store_true", help="Process one image at a time.")
     # parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit number of train images for debugging.")
@@ -51,7 +51,7 @@ def parse_args():
     # parser.add_argument("--use_wandb", action="store_true", help="Enable wandb logging.")
     # parser.add_argument("--use_early_stopping", action="store_true", help="Enable early stopping.")
     # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
-    parser.add_argument("--wandb_name", type=str, default="run_3", help="Wandb run name.")
+    parser.add_argument("--wandb_name", type=str, default="run_4_distillation", help="Wandb run name.")
     args = parser.parse_args()
     return args
 
@@ -76,7 +76,8 @@ else:
     INPUT_DIR = "/scratch2/nico/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
     BASE_DIR = "/scratch2/nico/distillation/output"         # Directory per log / checkpoint
     COCO2017_ROOT = "/scratch2/nico/distillation/coco2017"  # root che contiene 'train' e 'val'
-OVERFIT_IMAGE = os.path.join(COCO2017_ROOT, "train/val2017/000000000724.jpg") # immagine su cui fare overfit
+# OVERFIT_IMAGE = os.path.join(COCO2017_ROOT, "train/val2017/000000000724.jpg") # immagine su cui fare overfit
+OVERFIT_IMAGE = os.path.join(COCO2017_ROOT, "val/val2017/000000059598.jpg") # immagine su cui fare overfit
 
 OUTPUT_DIR = os.path.join(BASE_DIR, WANDB_NAME)
 CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
@@ -104,11 +105,11 @@ DEBUG_MAX_VAL_IMAGES = 50                   # opzionale: limita anche la val (No
 NUM_HEATMAPS = 10                          # Numero di heatmaps da salvare dopo il training
 VALIDATION = True                          # Esegui validazione ad ogni epoca
 FINAL_ANALYSIS = True                     # Esegui analisi finale con heatmap dopo training
-SAVE_STUDENT_EMBEDDINGS_EVERY = 50          # Salva gli embeddings student ogni N epoche (None per disabilitare)
+SAVE_STUDENT_EMBEDDINGS_EVERY = 25          # Salva gli embeddings student ogni N epoche (None per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
-LOAD_CHECKPOINT = "checkpoint_best.pth"  # es: "checkpoint_final.pth" oppure None
-# LOAD_CHECKPOINT = None
+# LOAD_CHECKPOINT = "checkpoint_best.pth"  # es: "checkpoint_final.pth" oppure None
+LOAD_CHECKPOINT = None
 # ===============================================================
 # Early stopping e ReduceLROnPlateau (impostare a True/False per abilitare/disabilitare)
 USE_EARLY_STOPPING = False
