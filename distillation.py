@@ -105,7 +105,7 @@ DEBUG_MAX_VAL_IMAGES = 50                   # opzionale: limita anche la val (No
 NUM_HEATMAPS = 10                          # Numero di heatmaps da salvare dopo il training
 VALIDATION = True                          # Esegui validazione ad ogni epoca
 FINAL_ANALYSIS = True                     # Esegui analisi finale con heatmap dopo training
-SAVE_STUDENT_EMBEDDINGS_EVERY = 25          # Salva gli embeddings student ogni N epoche (None per disabilitare)
+SAVE_STUDENT_EMBEDDINGS_EVERY = 5          # Salva gli embeddings student ogni N epoche (None per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
 # LOAD_CHECKPOINT = "checkpoint_best.pth"  # es: "checkpoint_final.pth" oppure None
@@ -391,7 +391,7 @@ def main():
                     # Salva gli embeddings student e teacher su disco per analisi/debug
                     if SAVE_STUDENT_EMBEDDINGS_EVERY and (epoch + 1) % SAVE_STUDENT_EMBEDDINGS_EVERY == 0:
                         # create heatmap side by side student vs teacher vs original
-                        create_student_original_teacher_side_by_side(student_norm, teacher_norm, OVERFIT_IMAGE, epoch, HEATMAPS_DIR) # always on the same image for consistency
+                        create_student_original_teacher_side_by_side(student_norm, teacher_norm, OVERFIT_IMAGE, epoch, HEATMAPS_DIR, True) # always on the same image for consistency
 
                         # save student embeddings
                         student_save_path = os.path.join(EMBEDDINGS_DIR, f"student_embeddings_epoch{epoch+1}.pt")
