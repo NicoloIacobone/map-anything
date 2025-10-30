@@ -192,7 +192,7 @@ def main():
             wandb_kwargs.update(id=resume_run_id, resume="allow")  # "must" se vuoi fallire se non esiste
             print(f"[W&B] Resume run id={resume_run_id}")
         run = wandb.init(**wandb_kwargs)
-
+        
     print(f"output_dir: {OUTPUT_DIR}")
 
     # Modello + freeze
