@@ -24,6 +24,8 @@ dependencies = [
     "tqdm",
     "trimesh",
     "uniception",
+    "wandb",
+    "seaborn",
 ]
 
 [project.optional-dependencies]
