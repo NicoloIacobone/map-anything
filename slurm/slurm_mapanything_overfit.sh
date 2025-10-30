@@ -13,7 +13,7 @@
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=01:00:00
+#SBATCH --time=23:59:59
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -40,6 +40,13 @@ echo "Loaded modules: $(module list 2>&1)"
 # Activate virtual environment for sam2.
 source /cluster/scratch/niacobone/map-anything/myenv/bin/activate
 echo "Activated Python venv: $(which python)"
+
+# check if the dataset is available in /cluster/scratch/niacobone/distillation/coco2017
+if [ ! -d "/cluster/scratch/niacobone/distillation/coco2017" ]; then
+    echo "Dataset not found in /cluster/scratch/niacobone/distillation/coco2017 - copyting from /cluster/work/igp_psr/niacobone/coco2017"
+    cp -r /cluster/work/igp_psr/niacobone/coco2017 /cluster/scratch/niacobone/distillation/
+    echo "Dataset copied."
+fi
 
 # Execute
 cd /cluster/scratch/niacobone/map-anything

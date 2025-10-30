@@ -20,7 +20,6 @@ from pathlib import Path
 import time
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import csv
@@ -32,7 +31,6 @@ from nico.utils import mean_std_difference, heatmap_sanity_check_single_channel,
 import random
 from tqdm import tqdm
 import sys
-from PIL import Image
 import argparse
 
 def parse_args():

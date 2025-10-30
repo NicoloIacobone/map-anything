@@ -20,7 +20,6 @@ from pathlib import Path
 import time
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import csv
@@ -32,7 +31,6 @@ from nico.utils import mean_std_difference, heatmap_sanity_check_single_channel,
 import random
 from tqdm import tqdm
 import sys
-from PIL import Image
 import argparse
 
 def parse_args():
@@ -43,7 +41,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.") # 1e-3, 5e-4, 1e-4
     # parser.add_argument("--batch_size", type=int, default=None, help="Batch size for images.")
     # parser.add_argument("--seed", type=int, default=None, help="Random seed.")
-    parser.add_argument("--norm", action="store_true", default=True, help="Normalize embeddings before loss.")
+    parser.add_argument("--norm", action="store_true", help="Normalize embeddings before loss.")
     # parser.add_argument("--amp", action="store_true", help="Enable mixed precision training.")
     # parser.add_argument("--single_image", action="store_true", help="Process one image at a time.")
     # parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit number of train images for debugging.")
@@ -53,7 +51,7 @@ def parse_args():
     # parser.add_argument("--use_wandb", action="store_true", help="Enable wandb logging.")
     # parser.add_argument("--use_early_stopping", action="store_true", help="Enable early stopping.")
     # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
-    parser.add_argument("--wandb_name", type=str, default="ep5000_lr00001_normTrue", help="Wandb run name.")
+    parser.add_argument("--wandb_name", type=str, default="run_4_overfit", help="Wandb run name.")
     args = parser.parse_args()
     return args
 
@@ -93,7 +91,6 @@ VAL_IMAGES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, IMAGES_DIRNAME)
 TRAIN_FEATURES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, FEATURES_DIRNAME)
 VAL_FEATURES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, FEATURES_DIRNAME)
 EPOCHS = args.epochs                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
-# EPOCHS = 5
 LR = args.lr                                   # Learning rate
 WEIGHT_DECAY = 0.0                          # Weight decay AdamW
 EMB_POOL_SIZE = 64                          # (Non usato direttamente ora, placeholder se estendi pooling custom)
@@ -110,8 +107,8 @@ FINAL_ANALYSIS = False                     # Esegui analisi finale con heatmap d
 SAVE_STUDENT_EMBEDDINGS_EVERY = 500          # Salva gli embeddings student ogni N epoche (None per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
-LOAD_CHECKPOINT = "checkpoint_final.pth"  # es: "checkpoint_final.pth" oppure None
-# LOAD_CHECKPOINT = None
+# LOAD_CHECKPOINT = "checkpoint_final.pth"  # es: "checkpoint_final.pth" oppure None
+LOAD_CHECKPOINT = None
 # ===============================================================
 # Early stopping e ReduceLROnPlateau (impostare a True/False per abilitare/disabilitare)
 USE_EARLY_STOPPING = False
