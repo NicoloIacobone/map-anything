@@ -263,12 +263,12 @@ def create_student_original_teacher_side_by_side(
     """
 
     img_p = Path(img_path)
-    local_basis_path = img_p.parent / f"{img_name}.pt"
+    local_basis_path = img_p.parent / f"{img_p.stem}.pt"
 
     # --- Step 1: gestisci caricamento/salvataggio base PCA ---
     if is_overfit_image:
         if local_basis_path.exists():
-            print(f"[INFO] Loading PCA basis from {local_basis_path}")
+            # print(f"[INFO] Loading PCA basis from {local_basis_path}")
             basis = torch.load(local_basis_path, map_location="cpu")
         else:
             print(f"[INFO] Computing PCA basis from teacher embeddings and saving to {local_basis_path}")
