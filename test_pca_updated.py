@@ -374,13 +374,13 @@ def main():
                     # Salva gli embeddings student e teacher su disco per analisi/debug
                     if SAVE_STUDENT_EMBEDDINGS_EVERY and (epoch + 1) % SAVE_STUDENT_EMBEDDINGS_EVERY == 0:
                         # create heatmap side by side student vs teacher vs original
-                        create_student_original_teacher_side_by_side(student_norm, teacher_norm, OVERFIT_IMAGE, epoch, HEATMAPS_DIR, True)
+                        create_student_original_teacher_side_by_side(student_norm, teacher_norm, OVERFIT_IMAGE, epoch, HEATMAPS_DIR)
+                        raise Exception
 
                         # save student embeddings
                         student_save_path = os.path.join(EMBEDDINGS_DIR, f"student_embeddings_{WANDB_NAME}.pt")
                         torch.save(student_norm.detach().cpu(), student_save_path)
                         print(f"[INFO] Student embeddings salvati in {student_save_path}")
-                        raise Exception
 
                 loss.backward()
                 optimizer.step()

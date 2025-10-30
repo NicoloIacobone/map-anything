@@ -200,53 +200,140 @@ def pca_features_to_rgb(
         return rgb, pil_img
     return rgb
 
+# def create_student_original_teacher_side_by_side(
+#     student_embeddings,
+#     teacher_embeddings,
+#     img_path,
+#     img_name,
+#     output_heatmaps,
+# ):
+#     _, pil_img_student = pca_features_to_rgb(student_embeddings, num_components=3, outlier_rejection=False)
+#     _, pil_img_teacher = pca_features_to_rgb(teacher_embeddings, num_components=3, outlier_rejection=False)
+#     # Resize both images to the same size if needed
+#     # Load original image
+#     orig_img = Image.open(img_path).convert("RGB")
+
+#     # Upsample student and teacher images to match original image size if needed
+#     target_size = orig_img.size
+#     if pil_img_student.size != target_size:
+#         pil_img_student = pil_img_student.resize(target_size, Image.BILINEAR)
+#     if pil_img_teacher.size != target_size:
+#         pil_img_teacher = pil_img_teacher.resize(target_size, Image.BILINEAR)
+
+#     # Create a new image with triple width to place student, original, and teacher side by side
+#     w, h = target_size
+#     combined_img = Image.new("RGB", (w * 3, h))
+#     combined_img.paste(pil_img_student, (0, 0))
+#     combined_img.paste(orig_img, (w, 0))
+#     combined_img.paste(pil_img_teacher, (w * 2, 0))
+
+#     # Add labels to each image
+
+#     draw = ImageDraw.Draw(combined_img)
+#     font = ImageFont.load_default(size=32)
+
+#     label_height = 40
+#     # Draw rectangles for label backgrounds
+#     draw.rectangle([(0, 0), (w, label_height)], fill=(0, 0, 0, 128))
+#     draw.rectangle([(w, 0), (w * 2, label_height)], fill=(0, 0, 0, 128))
+#     draw.rectangle([(w * 2, 0), (w * 3, label_height)], fill=(0, 0, 0, 128))
+
+#     draw.text((10, 5), "STUDENT EMBEDDINGS", fill=(255, 255, 255), font=font)   
+#     draw.text((w + 10, 5), "ORIGINAL IMAGE", fill=(255, 255, 255), font=font)
+#     draw.text((w * 2 + 10, 5), "TEACHER EMBEDDINGS", fill=(255, 255, 255), font=font)
+
+#     # Save the combined image
+#     # combined_path = os.path.join(output_heatmaps, f"{img_name}_student_original_teacher_side_by_side.png")
+#     combined_path = os.path.join(output_heatmaps, f"{img_name}.png")
+#     combined_img.save(combined_path)
+#     # print(f"[INFO] Saved side-by-side image: {combined_path}")
+
 def create_student_original_teacher_side_by_side(
     student_embeddings,
     teacher_embeddings,
     img_path,
     img_name,
     output_heatmaps,
+    is_overfit_image=False,
 ):
-    _, pil_img_student = pca_features_to_rgb(student_embeddings, num_components=3, outlier_rejection=False)
-    _, pil_img_teacher = pca_features_to_rgb(teacher_embeddings, num_components=3, outlier_rejection=False)
-    # Resize both images to the same size if needed
-    # Load original image
+    """
+    Visualizza teacher e student embeddings con colori coerenti.
+    Se is_overfit_image=True → calcola la PCA dai teacher embeddings e la salva/carica localmente.
+    Se False → calcola la PCA dinamicamente dai teacher embeddings (senza salvataggio/caricamento su disco).
+    """
+
+    img_p = Path(img_path)
+    local_basis_path = img_p.parent / f"{img_name}.pt"
+
+    # --- Step 1: gestisci caricamento/salvataggio base PCA ---
+    if is_overfit_image:
+        if local_basis_path.exists():
+            print(f"[INFO] Loading PCA basis from {local_basis_path}")
+            basis = torch.load(local_basis_path, map_location="cpu")
+        else:
+            print(f"[INFO] Computing PCA basis from teacher embeddings and saving to {local_basis_path}")
+            feats = teacher_embeddings.clone().detach().to("cpu")
+            if feats.dim() == 4:
+                feats = feats[0]  # [C, H, W]
+            feats = feats.permute(1, 2, 0).reshape(-1, feats.shape[0])  # [H*W, C]
+            U, S, V = torch.pca_lowrank(feats, q=3, center=True)
+            basis = {"V": V[:, :3], "mean": feats.mean(0)}
+            torch.save(basis, str(local_basis_path))
+    else:
+        # Calcola la base PCA dinamicamente dai teacher embeddings (NO salvataggio/caricamento file)
+        feats = teacher_embeddings.clone().detach().to("cpu")
+        if feats.dim() == 4:
+            feats = feats[0]  # [C, H, W]
+        feats = feats.permute(1, 2, 0).reshape(-1, feats.shape[0])  # [H*W, C]
+        U, S, V = torch.pca_lowrank(feats, q=3, center=True)
+        basis = {"V": V[:, :3], "mean": feats.mean(0)}
+
+    # --- Step 2: funzione helper per proiettare embeddings con la base caricata ---
+    def project_with_basis(embeddings, basis):
+        feats = embeddings.clone().detach().to("cpu")
+        if feats.dim() == 4:
+            feats = feats[0]
+        feats = feats.permute(1, 2, 0).reshape(-1, feats.shape[0])  # [H*W, C]
+        feats_centered = feats - basis["mean"]
+        proj = feats_centered @ basis["V"]  # [H*W, 3]
+        proj -= proj.min(0, keepdim=True)[0]
+        proj /= proj.max(0, keepdim=True)[0].clamp(min=1e-6)
+        H, W = embeddings.shape[-2:]
+        rgb = proj.reshape(H, W, 3)
+        pil_img = Image.fromarray((rgb.cpu().numpy() * 255).astype("uint8"))
+        return pil_img
+
+    # --- Step 3: proietta teacher e student sulla stessa base ---
+    pil_img_teacher = project_with_basis(teacher_embeddings, basis)
+    pil_img_student = project_with_basis(student_embeddings, basis)
+
+    # --- Step 4: crea immagine combinata ---
     orig_img = Image.open(img_path).convert("RGB")
-
-    # Upsample student and teacher images to match original image size if needed
     target_size = orig_img.size
-    if pil_img_student.size != target_size:
-        pil_img_student = pil_img_student.resize(target_size, Image.BILINEAR)
-    if pil_img_teacher.size != target_size:
-        pil_img_teacher = pil_img_teacher.resize(target_size, Image.BILINEAR)
+    pil_img_student = pil_img_student.resize(target_size, Image.BILINEAR)
+    pil_img_teacher = pil_img_teacher.resize(target_size, Image.BILINEAR)
 
-    # Create a new image with triple width to place student, original, and teacher side by side
     w, h = target_size
     combined_img = Image.new("RGB", (w * 3, h))
     combined_img.paste(pil_img_student, (0, 0))
     combined_img.paste(orig_img, (w, 0))
     combined_img.paste(pil_img_teacher, (w * 2, 0))
 
-    # Add labels to each image
-
+    # Etichette
     draw = ImageDraw.Draw(combined_img)
     font = ImageFont.load_default(size=32)
-
     label_height = 40
-    # Draw rectangles for label backgrounds
     draw.rectangle([(0, 0), (w, label_height)], fill=(0, 0, 0, 128))
     draw.rectangle([(w, 0), (w * 2, label_height)], fill=(0, 0, 0, 128))
     draw.rectangle([(w * 2, 0), (w * 3, label_height)], fill=(0, 0, 0, 128))
-
-    draw.text((10, 5), "STUDENT EMBEDDINGS", fill=(255, 255, 255), font=font)   
+    draw.text((10, 5), "STUDENT EMBEDDINGS", fill=(255, 255, 255), font=font)
     draw.text((w + 10, 5), "ORIGINAL IMAGE", fill=(255, 255, 255), font=font)
     draw.text((w * 2 + 10, 5), "TEACHER EMBEDDINGS", fill=(255, 255, 255), font=font)
 
-    # Save the combined image
-    # combined_path = os.path.join(output_heatmaps, f"{img_name}_student_original_teacher_side_by_side.png")
+    # --- Step 5: salva il risultato ---
     combined_path = os.path.join(output_heatmaps, f"{img_name}.png")
     combined_img.save(combined_path)
-    # print(f"[INFO] Saved side-by-side image: {combined_path}")
+    print(f"[INFO] Saved side-by-side image: {combined_path}")
 
 def mean_std_difference(student_embeddings, teacher_embeddings):
     """

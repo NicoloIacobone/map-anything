@@ -393,7 +393,7 @@ def main():
                     # Salva gli embeddings student e teacher su disco per analisi/debug
                     if SAVE_STUDENT_EMBEDDINGS_EVERY and (epoch + 1) % SAVE_STUDENT_EMBEDDINGS_EVERY == 0:
                         # create heatmap side by side student vs teacher vs original
-                        create_student_original_teacher_side_by_side(student_norm, teacher_norm, OVERFIT_IMAGE, epoch, HEATMAPS_DIR)
+                        create_student_original_teacher_side_by_side(student_norm, teacher_norm, OVERFIT_IMAGE, epoch, HEATMAPS_DIR, True)
 
                         # save student embeddings
                         student_save_path = os.path.join(EMBEDDINGS_DIR, f"student_embeddings_epoch{epoch+1}.pt")
@@ -786,7 +786,7 @@ def main():
                     print(f"[HEATMAP] Salvo heatmap in {output_heatmaps}")
                     # heatmap_sanity_check_single_channel(student_embeddings, teacher_embeddings, img_name, output_heatmaps)
                     # heatmap_sanity_check_avg_all_channels(student_embeddings, teacher_embeddings, img_name, output_heatmaps)
-                    create_student_original_teacher_side_by_side(student_embeddings, teacher_embeddings, img_path, img_name, output_heatmaps)
+                    create_student_original_teacher_side_by_side(student_embeddings, teacher_embeddings, img_path, img_name, output_heatmaps, True)
         else:
             for folder in folders:
                 print(f"Analisi heatmap per cartella: {folder.name}")
