@@ -1,5 +1,4 @@
 # Optional config for better memory efficiency
-# prova
 """
 Simple single-GPU distillation script:
 Per ogni cartella:
