@@ -51,7 +51,7 @@ def parse_args():
     # parser.add_argument("--use_wandb", action="store_true", help="Enable wandb logging.")
     # parser.add_argument("--use_early_stopping", action="store_true", help="Enable early stopping.")
     # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
-    parser.add_argument("--wandb_name", type=str, default="run_4_distillation", help="Wandb run name.")
+    parser.add_argument("--wandb_name", type=str, default="run_5_distillation", help="Wandb run name.")
     args = parser.parse_args()
     return args
 
@@ -108,8 +108,8 @@ FINAL_ANALYSIS = True                     # Esegui analisi finale con heatmap do
 SAVE_STUDENT_EMBEDDINGS_EVERY = 5          # Salva gli embeddings student ogni N epoche (None per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
-LOAD_CHECKPOINT = "checkpoint_best.pth"  # es: "checkpoint_final.pth" oppure None
-# LOAD_CHECKPOINT = None
+# LOAD_CHECKPOINT = "checkpoint_best.pth"  # es: "checkpoint_final.pth" oppure None
+LOAD_CHECKPOINT = None
 # ===============================================================
 # Early stopping e ReduceLROnPlateau (impostare a True/False per abilitare/disabilitare)
 USE_EARLY_STOPPING = False
@@ -301,9 +301,24 @@ def main():
         val_image_paths.sort()
         # Limita il numero di immagini per il debug: campionamento casuale ad ogni epoca
         train_image_paths_full = train_image_paths.copy()
+        # Assicurati che OVERFIT_IMAGE sia sempre presente nelle immagini di validation.
+        # Rimuovi eventuali occorrenze dalla lista train (e dalla copia train_image_paths_full)
+        overfit_abs = os.path.abspath(OVERFIT_IMAGE)
+        val_image_paths = [p for p in val_image_paths if os.path.abspath(p) != overfit_abs]
+        train_image_paths_full = [p for p in train_image_paths_full if os.path.abspath(p) != overfit_abs]
+
+        if os.path.isfile(OVERFIT_IMAGE):
+            # inserisci l'overfit in testa alla lista di val (evita duplicati grazie alla rimozione sopra)
+            val_image_paths.insert(0, OVERFIT_IMAGE)
+            print(f"[INFO] OVERFIT_IMAGE aggiunta a validation: {OVERFIT_IMAGE}")
+        else:
+            print(f"[WARN] OVERFIT_IMAGE non trovata su disco: {OVERFIT_IMAGE}")
+
+        # Limita il numero di immagini di validation per debug, mantenendo OVERFIT_IMAGE (se presente)
         if DEBUG_MAX_VAL_IMAGES and len(val_image_paths) > DEBUG_MAX_VAL_IMAGES:
+            # Se OVERFIT_IMAGE è in posizione 0 la slice la manterrà; altrimenti si mantiene semplicemente la slice
             val_image_paths = val_image_paths[:DEBUG_MAX_VAL_IMAGES]
-            print(f"[DEBUG] Limito val a {len(val_image_paths)} immagini.")
+            print(f"[DEBUG] Limito val a {len(val_image_paths)} immagini (OVERFIT preserved if present).")
 
         print(f"[SPLIT] Train images: {len(train_image_paths)} | Val images: {len(val_image_paths)}")
         if len(train_image_paths) == 0 or len(val_image_paths) == 0:
@@ -387,15 +402,6 @@ def main():
                     cos_loss = 1 - F.cosine_similarity(student_norm, teacher_norm, dim=1).mean() # cosine loss for "teaching the same semantic language"
                     mse_loss = F.mse_loss(student_norm, teacher_norm) # mse loss for the same spatial structure/shape
                     loss = 0.5 * mse_loss + 0.5 * cos_loss
-                    
-                    # Salva gli embeddings student e teacher su disco per analisi/debug
-                    if SAVE_STUDENT_EMBEDDINGS_EVERY and (epoch + 1) % SAVE_STUDENT_EMBEDDINGS_EVERY == 0:
-                        # create heatmap side by side student vs teacher vs original
-                        create_student_original_teacher_side_by_side(student_norm, teacher_norm, OVERFIT_IMAGE, epoch, HEATMAPS_DIR, True) # always on the same image for consistency
-
-                        # save student embeddings
-                        student_save_path = os.path.join(EMBEDDINGS_DIR, f"student_embeddings_epoch{epoch+1}.pt")
-                        torch.save(student_norm.detach().cpu(), student_save_path)
 
                 loss.backward()
                 optimizer.step()
@@ -474,6 +480,33 @@ def main():
                             cos_loss = 1 - F.cosine_similarity(student_norm, teacher_norm, dim=1).mean()
                             mse_loss = F.mse_loss(student_norm, teacher_norm)
                             vloss = 0.5 * mse_loss + 0.5 * cos_loss
+
+                        # Salvataggio embeddings/heatmap SOLO per l'immagine OVERFIT_IMAGE, durante VALIDATION
+                        if SAVE_STUDENT_EMBEDDINGS_EVERY and (epoch + 1) % SAVE_STUDENT_EMBEDDINGS_EVERY == 0:
+                            if OVERFIT_IMAGE in batch_paths:
+                                try:
+                                    idx = batch_paths.index(OVERFIT_IMAGE)
+                                    # Heatmap side-by-side per sola immagine di overfit (usa PCA coerente)
+                                    create_student_original_teacher_side_by_side(
+                                        student_norm[idx:idx+1].detach().cpu(),
+                                        teacher_norm[idx:idx+1].detach().cpu(),
+                                        OVERFIT_IMAGE,
+                                        epoch + 1,
+                                        HEATMAPS_DIR,
+                                        True
+                                    )
+                                except Exception as e:
+                                    print(f"[WARN] Impossibile creare side-by-side per OVERFIT_IMAGE: {e}")
+                                # Salva embeddings dello studente per l'immagine di overfit
+                                try:
+                                    # overfit_name = os.path.splitext(os.path.basename(OVERFIT_IMAGE))[0]
+                                    # student_save_path = os.path.join(
+                                    #     EMBEDDINGS_DIR, f"student_{overfit_name}_epoch{epoch+1}.pt"
+                                    # )
+                                    student_save_path = os.path.join(EMBEDDINGS_DIR, f"student_embeddings_epoch{epoch+1}.pt")
+                                    torch.save(student_norm[idx:idx+1].detach().cpu(), student_save_path)
+                                except Exception as e:
+                                    print(f"[WARN] Impossibile salvare embeddings student per OVERFIT_IMAGE: {e}")
                         val_loss_acc += float(vloss.detach().cpu()) * student_batch.shape[0]
                         val_samples += student_batch.shape[0]
                         val_mse_loss_acc += float(mse_loss.detach().cpu()) * student_batch.shape[0]

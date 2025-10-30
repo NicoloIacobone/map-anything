@@ -53,7 +53,7 @@ def parse_args():
     # parser.add_argument("--use_wandb", action="store_true", help="Enable wandb logging.")
     # parser.add_argument("--use_early_stopping", action="store_true", help="Enable early stopping.")
     # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
-    parser.add_argument("--wandb_name", type=str, default="run_1", help="Wandb run name.")
+    parser.add_argument("--wandb_name", type=str, default="ep5000_lr00005_normFalse", help="Wandb run name.")
     args = parser.parse_args()
     return args
 
@@ -93,7 +93,6 @@ VAL_IMAGES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, IMAGES_DIRNAME)
 TRAIN_FEATURES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, FEATURES_DIRNAME)
 VAL_FEATURES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, FEATURES_DIRNAME)
 EPOCHS = args.epochs                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
-# EPOCHS = 5
 LR = args.lr                                   # Learning rate
 WEIGHT_DECAY = 0.0                          # Weight decay AdamW
 EMB_POOL_SIZE = 64                          # (Non usato direttamente ora, placeholder se estendi pooling custom)
@@ -106,7 +105,7 @@ DEBUG_MAX_TRAIN_IMAGES = 1               # <= usa solo immagini campionate a cas
 DEBUG_MAX_VAL_IMAGES = 1                   # opzionale: limita anche la val (None o 0 per disabilitare)
 NUM_HEATMAPS = 1                          # Numero di heatmaps da salvare dopo il training
 VALIDATION = False                          # Esegui validazione ad ogni epoca
-FINAL_ANALYSIS = True                     # Esegui analisi finale con heatmap dopo training
+FINAL_ANALYSIS = False                     # Esegui analisi finale con heatmap dopo training
 SAVE_STUDENT_EMBEDDINGS_EVERY = 1          # Salva gli embeddings student ogni N epoche (None per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
@@ -374,7 +373,7 @@ def main():
                     # Salva gli embeddings student e teacher su disco per analisi/debug
                     if SAVE_STUDENT_EMBEDDINGS_EVERY and (epoch + 1) % SAVE_STUDENT_EMBEDDINGS_EVERY == 0:
                         # create heatmap side by side student vs teacher vs original
-                        create_student_original_teacher_side_by_side(student_norm, teacher_norm, OVERFIT_IMAGE, epoch, HEATMAPS_DIR)
+                        create_student_original_teacher_side_by_side(student_norm, teacher_norm, OVERFIT_IMAGE, epoch, HEATMAPS_DIR, True)
                         raise Exception
 
                         # save student embeddings

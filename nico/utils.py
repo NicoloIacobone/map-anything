@@ -252,7 +252,7 @@ def create_student_original_teacher_side_by_side(
     student_embeddings,
     teacher_embeddings,
     img_path,
-    img_name,
+    epoch,
     output_heatmaps,
     is_overfit_image=False,
 ):
@@ -263,7 +263,8 @@ def create_student_original_teacher_side_by_side(
     """
 
     img_p = Path(img_path)
-    local_basis_path = img_p.parent / f"{img_p.stem}.pt"
+    img_name = img_p.stem
+    local_basis_path = img_p.parent / f"{img_name}.pt"
 
     # --- Step 1: gestisci caricamento/salvataggio base PCA ---
     if is_overfit_image:
@@ -331,7 +332,7 @@ def create_student_original_teacher_side_by_side(
     draw.text((w * 2 + 10, 5), "TEACHER EMBEDDINGS", fill=(255, 255, 255), font=font)
 
     # --- Step 5: salva il risultato ---
-    combined_path = os.path.join(output_heatmaps, f"{img_name}.png")
+    combined_path = os.path.join(output_heatmaps, f"{epoch}.png")
     combined_img.save(combined_path)
     # print(f"[INFO] Saved side-by-side image: {combined_path}")
 
