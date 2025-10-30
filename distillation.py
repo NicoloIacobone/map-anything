@@ -133,6 +133,9 @@ def save_checkpoint(model, optimizer, epoch, loss, output_dir, tag="last"):
         "epoch": epoch,
         "loss": loss,
     }
+    # salva il run_id per resume
+    if 'wandb' in globals() and wandb.run is not None:
+        state["wandb_run_id"] = wandb.run.id
     ckpt_path = Path(output_dir) / f"checkpoint_{tag}.pth"
     torch.save(state, ckpt_path)
     print(f"[INFO] Checkpoint salvato (solo head): {ckpt_path}")
@@ -151,8 +154,17 @@ def main():
     if CHECKPOINT_DIR:
         Path(CHECKPOINT_DIR).mkdir(parents=True, exist_ok=True) # crea cartella output se non esiste
 
+    resume_run_id = None
+    if LOAD_CHECKPOINT is not None:
+        ckpt_path = Path(CHECKPOINT_DIR) / LOAD_CHECKPOINT
+        if ckpt_path.exists():
+            tmp = torch.load(ckpt_path, map_location="cpu")
+            resume_run_id = tmp.get("wandb_run_id", None)
+        else:
+            print(f"[WARN] Checkpoint {ckpt_path} non trovato: non posso recuperare wandb_run_id, partirà una nuova run.")
+
     if USE_WANDB:
-        wandb.init(
+        wandb_kwargs = dict(
             project="mapanything-distillation",
             name=WANDB_NAME if WANDB_NAME else "mapanything-distillation",
             config={
@@ -176,6 +188,10 @@ def main():
                 "train_cos_sim": None
             }
         )
+        if resume_run_id:
+            wandb_kwargs.update(id=resume_run_id, resume="allow")  # "must" se vuoi fallire se non esiste
+            print(f"[W&B] Resume run id={resume_run_id}")
+        run = wandb.init(**wandb_kwargs)
 
     print(f"output_dir: {OUTPUT_DIR}")
 
@@ -232,6 +248,9 @@ def main():
         checkpoint = torch.load(ckpt_path, map_location=device) # carica su device
         model.dpt_feature_head_2.load_state_dict(checkpoint["dpt_feature_head_2"]) # carica solo head
         optimizer.load_state_dict(checkpoint["optimizer"]) # carica stato optimizer
+        for g in optimizer.param_groups:
+            g["lr"] = LR
+            g["weight_decay"] = WEIGHT_DECAY
         start_epoch = checkpoint.get("epoch", 0) # riprendi da epoch successiva
         best_loss = checkpoint.get("loss", None)
         print(f"[INFO] Checkpoint {ckpt_path.name} caricato. Riprendo da epoch {start_epoch+1}.")
