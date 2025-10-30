@@ -333,7 +333,7 @@ def create_student_original_teacher_side_by_side(
     # --- Step 5: salva il risultato ---
     combined_path = os.path.join(output_heatmaps, f"{img_name}.png")
     combined_img.save(combined_path)
-    print(f"[INFO] Saved side-by-side image: {combined_path}")
+    # print(f"[INFO] Saved side-by-side image: {combined_path}")
 
 def mean_std_difference(student_embeddings, teacher_embeddings):
     """
