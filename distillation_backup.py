@@ -53,6 +53,7 @@ def parse_args():
     # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
     parser.add_argument("--wandb_name", type=str, default="run_5_distillation", help="Wandb run name.")
     parser.add_argument("--load_checkpoint", type=str, default=None, help="Checkpoint to load for resuming training.")
+    parser.add_argument("--branch_wandb_from", type=str, default=None, help="Wandb branch name to resume from.")
     args = parser.parse_args()
     return args
 
@@ -68,6 +69,7 @@ if disable_tqdm:
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
 USE_WANDB = True                       # Abilita logging su wandb
+BRANCH_WANDB_FROM = args.branch_wandb
 WANDB_NAME = args.wandb_name                     # Nome run wandb (None per default)
 if disable_tqdm:
     INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
