@@ -160,14 +160,13 @@ def main():
     resume_run_id = None
     if LOAD_CHECKPOINT is not None:
         ckpt_path = Path(CHECKPOINT_DIR) / LOAD_CHECKPOINT
+        tmp = torch.load(ckpt_path, map_location=device) # carica su device
         if ckpt_path.exists():
-            checkpoint = torch.load(ckpt_path, map_location=device) # carica su device
-            start_epoch = checkpoint.get("epoch", 0) # riprendi da epoch successiva
+            start_epoch = tmp.get("epoch", 0) # riprendi da epoch successiva
             if BRANCH_WANDB_RUN_ID:
                 resume_run_id = branch_wandb(BRANCH_WANDB_RUN_ID, WANDB_NAME, start_epoch)
                 # resume_run_id = BRANCH_WANDB_RUN  # usa il nome del branch come id della run
             else:
-                tmp = torch.load(ckpt_path, map_location="cpu")
                 resume_run_id = tmp.get("wandb_run_id", None)
         else:
             print(f"[WARN] Checkpoint {ckpt_path} non trovato: non posso recuperare wandb_run_id, partirà una nuova run.")
