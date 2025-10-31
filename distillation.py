@@ -577,9 +577,9 @@ def main():
                     "val_loss": val_loss_mean if 'val_loss_mean' in locals() else None,
                     "val_mse_loss": val_mse_loss_mean if 'val_mse_loss_mean' in locals() else None,
                     "val_cos_loss": val_cos_loss_mean if 'val_cos_loss_mean' in locals() else None,
-                    "mean_diff": val_mean_diff if 'val_mean_diff' in locals() else mean_diff,
-                    "std_diff": val_std_diff if 'val_std_diff' in locals() else std_diff,
-                    "cosine_similarity": val_cos_sim if 'val_cos_sim' in locals() else avg_cosine_sim,
+                    "val_mean_diff": val_mean_diff if 'val_mean_diff' in locals() else mean_diff,
+                    "val_std_diff": val_std_diff if 'val_std_diff' in locals() else std_diff,
+                    "val_cosine_similarity": val_cos_sim if 'val_cos_sim' in locals() else avg_cosine_sim,
                     "lr": current_lr,
                     "epoch_time_sec": epoch_time
                 })
