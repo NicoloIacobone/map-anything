@@ -245,7 +245,7 @@ def main():
     #     )
 
     # Scheduler dinamico (Cosine Annealing)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-6)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
     print("[INFO] CosineAnnealingLR attivo: riduzione dinamica del learning rate.")
 
     # Caricamento checkpoint se richiesto
