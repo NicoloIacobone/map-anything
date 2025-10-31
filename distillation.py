@@ -51,7 +51,7 @@ def parse_args():
     # parser.add_argument("--use_wandb", action="store_true", help="Enable wandb logging.")
     # parser.add_argument("--use_early_stopping", action="store_true", help="Enable early stopping.")
     # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
-    parser.add_argument("--wandb_name", type=str, default="run_5_distillation", help="Wandb run name.")
+    parser.add_argument("--wandb_name", type=str, default="run_6_distillation", help="Wandb run name.")
     parser.add_argument("--load_checkpoint", type=str, default=None, help="Checkpoint to load for resuming training.")
     parser.add_argument("--branch_wandb_run_id", type=str, default=None, help="Pass the ID of the wandb run to branch.")
     args = parser.parse_args()
@@ -96,7 +96,7 @@ TRAIN_FEATURES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, FEATURES_DIRNAME)
 VAL_FEATURES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, FEATURES_DIRNAME)
 EPOCHS = args.epochs                                 # Numero di epoche
 LR = args.lr                                   # Learning rate
-WEIGHT_DECAY = 0.0                          # Weight decay AdamW
+WEIGHT_DECAY = 1e-4                          # Weight decay AdamW
 EMB_POOL_SIZE = 64                          # (Non usato direttamente ora, placeholder se estendi pooling custom)
 SEED = 0                                    # Seed random
 AMP = True                                  # Abilita autocast mixed precision
@@ -104,7 +104,7 @@ NORM = False                                # Normalizza embeddings prima della 
 SINGLE_IMAGE = True                         # Carica e processa una immagine per volta (batch size 1)
 BATCH_SIZE_IMAGES = 1                       # Numero di immagini per batch (per sfruttare meglio la GPU)
 DEBUG_MAX_TRAIN_IMAGES = None               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
-DEBUG_MAX_VAL_IMAGES = 50                   # opzionale: limita anche la val (None o 0 per disabilitare)
+DEBUG_MAX_VAL_IMAGES = 100                   # opzionale: limita anche la val (None o 0 per disabilitare)
 NUM_HEATMAPS = 10                          # Numero di heatmaps da salvare dopo il training
 VALIDATION = True                          # Esegui validazione ad ogni epoca
 FINAL_ANALYSIS = True                     # Esegui analisi finale con heatmap dopo training
@@ -115,13 +115,13 @@ SAVE_STUDENT_EMBEDDINGS_EVERY = 5          # Salva gli embeddings student ogni N
 # LOAD_CHECKPOINT = None
 LOAD_CHECKPOINT = args.load_checkpoint
 # ===============================================================
-# Early stopping e ReduceLROnPlateau (impostare a True/False per abilitare/disabilitare)
+# Early stopping e ReduceLROnPlateau
 USE_EARLY_STOPPING = False
 EARLY_STOPPING_PATIENCE = 5  # epoche senza miglioramento prima di fermare
-USE_LR_ON_PLATEAU = False
-LR_ON_PLATEAU_PATIENCE = 3   # epoche senza miglioramento prima di ridurre LR
-LR_ON_PLATEAU_FACTOR = 0.5   # fattore di riduzione LR
-MIN_LR = 1e-7                # learning rate minimo consentito
+# USE_LR_ON_PLATEAU = False
+# LR_ON_PLATEAU_PATIENCE = 3   # epoche senza miglioramento prima di ridurre LR
+# LR_ON_PLATEAU_FACTOR = 0.5   # fattore di riduzione LR
+# MIN_LR = 1e-7                # learning rate minimo consentito
 # =================================================================
 Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
 Path(HEATMAPS_DIR).mkdir(parents=True, exist_ok=True)
@@ -163,7 +163,7 @@ def main():
         tmp = torch.load(ckpt_path, map_location=device) # carica su device
         if ckpt_path.exists():
             start_epoch = tmp.get("epoch", 0) # riprendi da epoch successiva
-            if BRANCH_WANDB_RUN_ID:
+            if BRANCH_WANDB_RUN_ID is not None:
                 resume_run_id = branch_wandb(BRANCH_WANDB_RUN_ID, WANDB_NAME, start_epoch)
                 # resume_run_id = BRANCH_WANDB_RUN  # usa il nome del branch come id della run
             else:
@@ -183,10 +183,10 @@ def main():
                 "amp": AMP,
                 "use_early_stopping": USE_EARLY_STOPPING,
                 "early_stopping_patience": EARLY_STOPPING_PATIENCE,
-                "use_lr_on_plateau": USE_LR_ON_PLATEAU,
-                "lr_on_plateau_patience": LR_ON_PLATEAU_PATIENCE,
-                "lr_on_plateau_factor": LR_ON_PLATEAU_FACTOR,
-                "min_lr": MIN_LR,
+                # "use_lr_on_plateau": USE_LR_ON_PLATEAU,
+                # "lr_on_plateau_patience": LR_ON_PLATEAU_PATIENCE,
+                # "lr_on_plateau_factor": LR_ON_PLATEAU_FACTOR,
+                # "min_lr": MIN_LR,
                 "single_image": SINGLE_IMAGE,
                 "debug_max_train_images": DEBUG_MAX_TRAIN_IMAGES,
                 "debug_max_val_images": DEBUG_MAX_VAL_IMAGES,
