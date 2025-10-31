@@ -53,7 +53,7 @@ def parse_args():
     # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
     parser.add_argument("--wandb_name", type=str, default="run_5_distillation", help="Wandb run name.")
     parser.add_argument("--load_checkpoint", type=str, default=None, help="Checkpoint to load for resuming training.")
-    parser.add_argument("--branch_wandb_run", action="store_true", help="Use branch name for wandb run.")
+    parser.add_argument("--branch_wandb_run", type=str, default=None, help="Use this branch name for wandb run.")
     args = parser.parse_args()
     return args
 
@@ -163,7 +163,7 @@ def main():
         if ckpt_path.exists():
             tmp = torch.load(ckpt_path, map_location="cpu")
             if BRANCH_WANDB_RUN:
-                resume_run_id = WANDB_NAME  # usa il nome del branch come id della run
+                resume_run_id = BRANCH_WANDB_RUN  # usa il nome del branch come id della run
             else:
                 resume_run_id = tmp.get("wandb_run_id", None)
         else:
