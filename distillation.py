@@ -53,6 +53,7 @@ def parse_args():
     # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
     parser.add_argument("--wandb_name", type=str, default="run_5_distillation", help="Wandb run name.")
     parser.add_argument("--load_checkpoint", type=str, default=None, help="Checkpoint to load for resuming training.")
+    parser.add_argument("--branch_wandb_run", action="store_true", help="Use branch name for wandb run.")
     args = parser.parse_args()
     return args
 
@@ -68,6 +69,7 @@ if disable_tqdm:
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
 USE_WANDB = True                       # Abilita logging su wandb
+BRANCH_WANDB_RUN = args.branch_wandb_run  # Nome del branch della run wandb (None per default)
 WANDB_NAME = args.wandb_name                     # Nome run wandb (None per default)
 if disable_tqdm:
     INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
@@ -160,7 +162,10 @@ def main():
         ckpt_path = Path(CHECKPOINT_DIR) / LOAD_CHECKPOINT
         if ckpt_path.exists():
             tmp = torch.load(ckpt_path, map_location="cpu")
-            resume_run_id = tmp.get("wandb_run_id", None)
+            if BRANCH_WANDB_RUN:
+                resume_run_id = WANDB_NAME  # usa il nome del branch come id della run
+            else:
+                resume_run_id = tmp.get("wandb_run_id", None)
         else:
             print(f"[WARN] Checkpoint {ckpt_path} non trovato: non posso recuperare wandb_run_id, partirà una nuova run.")
 
