@@ -4,9 +4,44 @@ import seaborn as sns
 import random
 import torch
 import torch.nn.functional as F
-from PIL import Image, ImageDraw, ImageFont
 import shutil
+import wandb
 from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
+
+def branch_wandb(old_id: str, new_name: str, start_epoch: int = 0) -> str:
+    api = wandb.Api()
+    project = "mapanything-distillation"
+    old_id = "nicolo-iacobone-politecnico-di-torino/" + project + old_id
+    old = api.run(old_id)
+
+    new = wandb.init(project=project, name=new_name)
+    def _flatten_metrics(obj, parent_key='', sep='/'):
+        items = {}
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k.startswith('_'):
+                    continue
+                new_key = f"{parent_key}{sep}{k}" if parent_key else k
+                if isinstance(v, dict):
+                    items.update(_flatten_metrics(v, new_key, sep=sep))
+                elif isinstance(v, (list, tuple)):
+                    for i, elem in enumerate(v):
+                        items.update(_flatten_metrics(elem, f"{new_key}{sep}{i}", sep=sep))
+                else:
+                    items[new_key] = v
+        else:
+            items[parent_key] = obj
+        return items
+
+    for row in old.history(pandas=False):
+        if "epoch" in row and row["epoch"] <= start_epoch:
+            metrics = _flatten_metrics(row)
+            # ensure epoch exists at top level
+            metrics.setdefault("epoch", row.get("epoch"))
+            new.log(metrics)
+    new.finish()
+    return new.id
 
 def resize_to_64x64(feat: torch.Tensor) -> torch.Tensor:
     # feat: (B, C, H, W)

@@ -27,7 +27,7 @@ import wandb
 
 from mapanything.models import MapAnything
 from mapanything.utils.image import load_images
-from nico.utils import mean_std_difference, heatmap_sanity_check_single_channel, heatmap_sanity_check_avg_all_channels, create_student_original_teacher_side_by_side, resize_to_64x64
+from nico.utils import mean_std_difference, heatmap_sanity_check_single_channel, heatmap_sanity_check_avg_all_channels, create_student_original_teacher_side_by_side, resize_to_64x64, branch_wandb
 import random
 from tqdm import tqdm
 import sys
@@ -53,7 +53,7 @@ def parse_args():
     # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
     parser.add_argument("--wandb_name", type=str, default="run_5_distillation", help="Wandb run name.")
     parser.add_argument("--load_checkpoint", type=str, default=None, help="Checkpoint to load for resuming training.")
-    parser.add_argument("--branch_wandb_run", type=str, default=None, help="Use this branch name for wandb run.")
+    parser.add_argument("--branch_wandb_run_id", type=str, default=None, help="Pass the ID of the wandb run to branch.")
     args = parser.parse_args()
     return args
 
@@ -69,7 +69,7 @@ if disable_tqdm:
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
 USE_WANDB = True                       # Abilita logging su wandb
-BRANCH_WANDB_RUN = args.branch_wandb_run  # Nome del branch della run wandb (None per default)
+BRANCH_WANDB_RUN_ID = args.branch_wandb_run_id  # Nome del branch della run wandb da branchare
 WANDB_NAME = args.wandb_name                     # Nome run wandb (None per default)
 if disable_tqdm:
     INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
@@ -94,7 +94,7 @@ TRAIN_IMAGES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, IMAGES_DIRNAME)
 VAL_IMAGES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, IMAGES_DIRNAME)
 TRAIN_FEATURES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, FEATURES_DIRNAME)
 VAL_FEATURES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, FEATURES_DIRNAME)
-EPOCHS = args.epochs                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
+EPOCHS = args.epochs                                 # Numero di epoche
 LR = args.lr                                   # Learning rate
 WEIGHT_DECAY = 0.0                          # Weight decay AdamW
 EMB_POOL_SIZE = 64                          # (Non usato direttamente ora, placeholder se estendi pooling custom)
@@ -161,10 +161,13 @@ def main():
     if LOAD_CHECKPOINT is not None:
         ckpt_path = Path(CHECKPOINT_DIR) / LOAD_CHECKPOINT
         if ckpt_path.exists():
-            tmp = torch.load(ckpt_path, map_location="cpu")
-            if BRANCH_WANDB_RUN:
-                resume_run_id = BRANCH_WANDB_RUN  # usa il nome del branch come id della run
+            checkpoint = torch.load(ckpt_path, map_location=device) # carica su device
+            start_epoch = checkpoint.get("epoch", 0) # riprendi da epoch successiva
+            if BRANCH_WANDB_RUN_ID:
+                resume_run_id = branch_wandb(BRANCH_WANDB_RUN_ID, WANDB_NAME, start_epoch)
+                # resume_run_id = BRANCH_WANDB_RUN  # usa il nome del branch come id della run
             else:
+                tmp = torch.load(ckpt_path, map_location="cpu")
                 resume_run_id = tmp.get("wandb_run_id", None)
         else:
             print(f"[WARN] Checkpoint {ckpt_path} non trovato: non posso recuperare wandb_run_id, partirà una nuova run.")
