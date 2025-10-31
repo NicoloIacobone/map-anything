@@ -54,7 +54,7 @@ echo "Starting MapAnything distillation..."
 
 export WANDB_API_KEY=$(cat "/cluster/home/niacobone/.config/wandb/wandb_api_key.txt")
 
-python -u distillation.py --wandb_name "run_5_distillation_branch25E" --load_checkpoint "checkpoint_epoch25.pth" --lr 1e-5 --branch_wandb_run "nicolo-iacobone-politecnico-di-torino/mapanything-distillation/re3zfxdy"
+python -u distillation.py --wandb_name "run_5_distillation_branch25E" --load_checkpoint "checkpoint_epoch25.pth" --lr 1e-5 --branch_wandb_run "re3zfxdy"
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
