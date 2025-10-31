@@ -238,11 +238,15 @@ def main():
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.AdamW(params, lr=LR, weight_decay=WEIGHT_DECAY, betas=(0.9, 0.95))
 
-    # Scheduler ReduceLROnPlateau opzionale
-    if USE_LR_ON_PLATEAU:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="min", factor=LR_ON_PLATEAU_FACTOR, patience=LR_ON_PLATEAU_PATIENCE, min_lr=MIN_LR
-        )
+    # # Scheduler ReduceLROnPlateau opzionale
+    # if USE_LR_ON_PLATEAU:
+    #     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    #         optimizer, mode="min", factor=LR_ON_PLATEAU_FACTOR, patience=LR_ON_PLATEAU_PATIENCE, min_lr=MIN_LR
+    #     )
+
+    # Scheduler dinamico (Cosine Annealing)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-6)
+    print("[INFO] CosineAnnealingLR attivo: riduzione dinamica del learning rate.")
 
     # Caricamento checkpoint se richiesto
     start_epoch = 0
@@ -582,8 +586,8 @@ def main():
 
             # Scheduler & Early Stopping sulla val_loss
             target_loss = val_loss_mean
-            if USE_LR_ON_PLATEAU:
-                scheduler.step(target_loss)
+            # Aggiornamento dinamico del LR (CosineAnnealingLR)
+            scheduler.step()
             if VALIDATION:
                 improved = best_loss is None or target_loss < best_loss - 1e-6
                 if improved:
@@ -721,9 +725,8 @@ def main():
                     "epoch_time_sec": epoch_time
                 })
 
-            # Scheduler LR on plateau
-            if USE_LR_ON_PLATEAU:
-                scheduler.step(epoch_loss_mean) # step dello scheduler passando la loss media
+            # Aggiornamento dinamico del LR (CosineAnnealingLR)
+            scheduler.step()
 
             # Early stopping
             improved = best_loss is None or epoch_loss_mean < best_loss - 1e-6
