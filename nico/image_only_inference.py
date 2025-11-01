@@ -118,7 +118,7 @@ script_add_rerun_args(
 args = parser.parse_args()
 
 save_glb = False  # Whether to save the output as a GLB file
-images = "/scratch2/nico/examples/photos/box_ufficio"
+images = "/scratch2/nico/examples/photos/tenda_ufficio_sam"
 output_path = "/scratch2/nico/examples/photos/results"
 
 # Get inference device
