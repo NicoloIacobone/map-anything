@@ -23,9 +23,12 @@ def build_semantic_map(masks):
     seg_map = np.zeros((H, W), dtype=np.int32)
     for idx, m in enumerate(masks, start=1):  # id=0 sarà background
         mask = m['segmentation']
+        if mask.ndim == 3 and mask.shape[0] == 1:
+            mask = mask[0]  # Rimuovi dimensione batch se presente
         score = m.get('predicted_iou', 1.0)
         if score > 0.8:  # opzionale
-            seg_map[mask] = idx
+            label = int(m.get('class_id', idx))  # usa class_id se fornito, altrimenti idx
+            seg_map[mask.astype(bool)] = label
     return seg_map
 
 def colormap_from_segmentation(seg_map):
@@ -171,26 +174,57 @@ for view_idx, pred in enumerate(predictions):
 
     # === Semantic rendering section ===
     # === Load precomputed SAM segmentation masks ===
+    seg_map_resized = None
+    seg_colors = None
     masks_path = os.path.join(images, "masks.npy")
     if os.path.exists(masks_path):
-        masks = np.load(masks_path, allow_pickle=True)  # Load saved mask list (list of dicts)
-        seg_map = build_semantic_map(masks)
+        masks_data = np.load(masks_path, allow_pickle=True)
+        masks_for_view = None
+        
+        if isinstance(masks_data, np.ndarray) and len(masks_data) > 0:
+            # Tipologia 1: lista di dict (single-view o multi-view con lista)
+            if isinstance(masks_data[0], dict) and 'segmentation' in masks_data[0]:
+                # Formato già compatibile (lista di dict)
+                masks_for_view = masks_data.tolist() if isinstance(masks_data, np.ndarray) else masks_data
+            elif isinstance(masks_data[0], dict) and 'segmentation' not in masks_data[0]:
+                # Tipologia 2: dizionario di dizionari {frame_idx: {obj_id: mask}}
+                # Converti in formato compatibile per il frame corrente
+                frame_data = masks_data.item() if masks_data.dtype == object else masks_data
+                if view_idx in frame_data or str(view_idx) in frame_data:
+                    frame_masks = frame_data.get(view_idx) or frame_data.get(str(view_idx))
+                    if isinstance(frame_masks, dict):
+                        # Converti {obj_id: mask_array} in lista di dict
+                        masks_for_view = []
+                        for obj_id, mask_arr in frame_masks.items():
+                            m = np.asarray(mask_arr)
+                            if m.ndim == 3 and m.shape[0] == 1:
+                                m = m[0]
+                            m = m.astype(bool)
+                            masks_for_view.append({
+                                'segmentation': m,
+                                'predicted_iou': 1.0,
+                                'class_id': int(obj_id)
+                            })
+        
+        # Se abbiamo trovato maschere per questa view, procedi
+        if masks_for_view and len(masks_for_view) > 0:
+            seg_map = build_semantic_map(masks_for_view)
 
-        # Resize SAM segmentation to match MapAnything resolution
-        H_map, W_map = image_np.shape[:2]
-        seg_map_resized = cv2.resize(
-            seg_map.astype(np.uint8),
-            (W_map, H_map),
-            interpolation=cv2.INTER_NEAREST,  # Preserve discrete labels
-        )
+            # Resize SAM segmentation to match MapAnything resolution
+            H_map, W_map = image_np.shape[:2]
+            seg_map_resized = cv2.resize(
+                seg_map.astype(np.uint8),
+                (W_map, H_map),
+                interpolation=cv2.INTER_NEAREST,  # Preserve discrete labels
+            )
 
-        # Convert segmentation IDs to colors (resized version)
-        seg_colors = colormap_from_segmentation(seg_map_resized)
-        seg_colors = np.clip(seg_colors, 0, 1)
+            # Convert segmentation IDs to colors (resized version)
+            seg_colors = colormap_from_segmentation(seg_map_resized)
+            seg_colors = np.clip(seg_colors, 0, 1)
 
-        # Log the 2D segmentation image to Rerun for reference
-        rr.log(f"mapanything/view_{view_idx}/pinhole/semantic_segmentation",
-            rr.SegmentationImage(seg_map_resized))
+            # Log the 2D segmentation image to Rerun for reference
+            rr.log(f"mapanything/view_{view_idx}/pinhole/semantic_segmentation",
+                rr.SegmentationImage(seg_map_resized))
 
     # Store data for GLB export if needed
     if save_glb:
@@ -213,8 +247,8 @@ for view_idx, pred in enumerate(predictions):
         mask=mask,
         base_name=f"mapanything/view_{view_idx}",
         pts_name=f"mapanything/pointcloud_view_{view_idx}_semantic",
-        viz_mask=seg_map_resized if 'seg_map_resized' in locals() else None,
-        semantic_colors=seg_colors if 'seg_colors' in locals() else None  # Use semantic colors for 3D rendering
+        viz_mask=seg_map_resized,
+        semantic_colors=seg_colors
     )
 
 print("Visualization complete! Check the Rerun viewer.")
