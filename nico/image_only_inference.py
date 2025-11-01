@@ -118,7 +118,7 @@ script_add_rerun_args(
 args = parser.parse_args()
 
 save_glb = False  # Whether to save the output as a GLB file
-images = "/scratch2/nico/examples/photos/tenda_ufficio_sam"
+images = "/scratch2/nico/examples/photos/single_frame"
 output_path = "/scratch2/nico/examples/photos/results"
 
 # Get inference device
@@ -180,31 +180,6 @@ for view_idx, pred in enumerate(predictions):
     if os.path.exists(masks_path):
         masks_data = np.load(masks_path, allow_pickle=True)
         masks_for_view = None
-        
-        # if isinstance(masks_data, np.ndarray) and len(masks_data) > 0:
-        #     # Tipologia 1: lista di dict (single-view o multi-view con lista)
-        #     if isinstance(masks_data[0], dict) and 'segmentation' in masks_data[0]:
-        #         # Formato già compatibile (lista di dict)
-        #         masks_for_view = masks_data.tolist() if isinstance(masks_data, np.ndarray) else masks_data
-        #     elif isinstance(masks_data[0], dict) and 'segmentation' not in masks_data[0]:
-        #         # Tipologia 2: dizionario di dizionari {frame_idx: {obj_id: mask}}
-        #         # Converti in formato compatibile per il frame corrente
-        #         frame_data = masks_data.item() if masks_data.dtype == object else masks_data
-        #         if view_idx in frame_data or str(view_idx) in frame_data:
-        #             frame_masks = frame_data.get(view_idx) or frame_data.get(str(view_idx))
-        #             if isinstance(frame_masks, dict):
-        #                 # Converti {obj_id: mask_array} in lista di dict
-        #                 masks_for_view = []
-        #                 for obj_id, mask_arr in frame_masks.items():
-        #                     m = np.asarray(mask_arr)
-        #                     if m.ndim == 3 and m.shape[0] == 1:
-        #                         m = m[0]
-        #                     m = m.astype(bool)
-        #                     masks_for_view.append({
-        #                         'segmentation': m,
-        #                         'predicted_iou': 1.0,
-        #                         'class_id': int(obj_id)
-        #                     })
 
         # Tipologia 2: dizionario di dizionari {frame_idx: {obj_id: mask}}
         if isinstance(masks_data, np.ndarray) and masks_data.dtype == object and masks_data.shape == ():
