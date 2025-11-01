@@ -395,7 +395,7 @@ We provide a demo script for interactive 3D visualization of metric reconstructi
 
 ```bash
 # Terminal 1: Start the Rerun server
-rerun --serve --port 2004 --web-viewer-port 2006
+rerun --serve-web --port 2004 --web-viewer-port 2006
 
 # Terminal 2: Run MapAnything demo
 # Use --memory_efficient_inference for running inference on a larger number of views

@@ -115,7 +115,7 @@ script_add_rerun_args(
 args = parser.parse_args()
 
 save_glb = False  # Whether to save the output as a GLB file
-images = "/scratch2/nico/examples/photos/single_frame"
+images = "/scratch2/nico/examples/photos/box_ufficio"
 output_path = "/scratch2/nico/examples/photos/results"
 
 # Get inference device
@@ -146,11 +146,6 @@ predictions = model.infer(
 elapsed_time = time.time() - start_time
 print(f"Inference complete! Elapsed time: {elapsed_time:.2f} seconds")
 
-# Prepare lists for GLB export if needed
-world_points_list = []
-images_list = []
-masks_list = []
-
 print("Starting visualization...")
 viz_string = "MapAnything_Visualization"
 rr.script_setup(args, viz_string)
@@ -177,30 +172,33 @@ for view_idx, pred in enumerate(predictions):
     # === Semantic rendering section ===
     # === Load precomputed SAM segmentation masks ===
     masks_path = os.path.join(images, "masks.npy")
-    if not os.path.exists(masks_path):
-        raise FileNotFoundError(f"Missing SAM2 mask file: {masks_path}")
+    if os.path.exists(masks_path):
+        masks = np.load(masks_path, allow_pickle=True)  # Load saved mask list (list of dicts)
+        seg_map = build_semantic_map(masks)
 
-    masks = np.load(masks_path, allow_pickle=True)  # Load saved mask list (list of dicts)
-    seg_map = build_semantic_map(masks)
+        # Resize SAM segmentation to match MapAnything resolution
+        H_map, W_map = image_np.shape[:2]
+        seg_map_resized = cv2.resize(
+            seg_map.astype(np.uint8),
+            (W_map, H_map),
+            interpolation=cv2.INTER_NEAREST,  # Preserve discrete labels
+        )
 
-    # Resize SAM segmentation to match MapAnything resolution
-    H_map, W_map = image_np.shape[:2]
-    seg_map_resized = cv2.resize(
-        seg_map.astype(np.uint8),
-        (W_map, H_map),
-        interpolation=cv2.INTER_NEAREST,  # Preserve discrete labels
-    )
+        # Convert segmentation IDs to colors (resized version)
+        seg_colors = colormap_from_segmentation(seg_map_resized)
+        seg_colors = np.clip(seg_colors, 0, 1)
 
-    # Convert segmentation IDs to colors (resized version)
-    seg_colors = colormap_from_segmentation(seg_map_resized)
-    seg_colors = np.clip(seg_colors, 0, 1)
-
-    # Log the 2D segmentation image to Rerun for reference
-    rr.log(f"mapanything/view_{view_idx}/pinhole/semantic_segmentation",
-           rr.SegmentationImage(seg_map_resized))
+        # Log the 2D segmentation image to Rerun for reference
+        rr.log(f"mapanything/view_{view_idx}/pinhole/semantic_segmentation",
+            rr.SegmentationImage(seg_map_resized))
 
     # Store data for GLB export if needed
     if save_glb:
+        # Prepare lists for GLB export if needed
+        world_points_list = []
+        images_list = []
+        masks_list = []
+        
         world_points_list.append(pts3d_np)
         images_list.append(image_np)
         masks_list.append(mask)
@@ -215,8 +213,8 @@ for view_idx, pred in enumerate(predictions):
         mask=mask,
         base_name=f"mapanything/view_{view_idx}",
         pts_name=f"mapanything/pointcloud_view_{view_idx}_semantic",
-        viz_mask=seg_map_resized,
-        semantic_colors=seg_colors,  # Use semantic colors for 3D rendering
+        viz_mask=seg_map_resized if 'seg_map_resized' in locals() else None,
+        semantic_colors=seg_colors if 'seg_colors' in locals() else None  # Use semantic colors for 3D rendering
     )
 
 print("Visualization complete! Check the Rerun viewer.")
