@@ -930,6 +930,7 @@ def distill(args):
                     "val_cosine_similarity": val_stats.get("cos_sim_mean", 0.0),
                 })
             wandb.log(log_dict, step=epoch + 1)
+            print(f"[W&B] Logged epoch {epoch + 1} metrics to wandb")  # ✅ AGGIUNGI QUESTO
         print(
             f"Epoch {epoch+1}/{args.epochs} | "
             f"Train Loss: {train_stats.get('loss_mean', 0):.6f} | "
