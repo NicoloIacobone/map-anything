@@ -771,8 +771,8 @@ def distill(args):
     for name, param in model.named_parameters():
         if not name.startswith("dpt_feature_head_2"):
             param.requires_grad = False
-        else:
-            print(f"  Trainable: {name} | {param.shape}")
+        # else:
+        #     print(f"  Trainable: {name} | {param.shape}")
     
     # Initialize criterion
     criterion = DistillationLoss(
