@@ -19,13 +19,13 @@
 #SBATCH --ntasks=1
 #
 # Specify number of CPU cores per task.
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #
 # Specify memory limit per CPU core.
 #SBATCH --mem-per-cpu=8192
 #
 # Specify number of required GPUs.
-#SBATCH --gpus=rtx_4090:2
+#SBATCH --gpus=rtx_4090:4
 #
 # Specify disk limit on local scratch.
 #SBATCH --tmp=500000

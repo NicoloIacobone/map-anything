@@ -832,7 +832,7 @@ def distill(args):
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[args.distributed.gpu],
-            find_unused_parameters=True,
+            find_unused_parameters=False,
         )
         model_without_ddp = model.module
         # If the module graph is static across iterations, avoid re-registering DDP hooks every iteration.
@@ -1141,6 +1141,8 @@ def main():
     # Run distillation
     try:
         distill(args)
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Training interrupted by user.")
     except Exception as e:
