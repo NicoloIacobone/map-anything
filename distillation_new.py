@@ -260,6 +260,7 @@ def build_distillation_dataloader(
     shuffle: bool = True,
     image_paths: Optional[List[str]] = None,
     pin_memory: bool = True,
+    distributed: bool = False,
 ) -> DataLoader:
     """
     Build a DataLoader for distillation training/validation.
@@ -267,14 +268,15 @@ def build_distillation_dataloader(
     Args:
         image_dir: Directory containing images
         features_dir: Directory containing teacher features
-        batch_size: Batch size
+        batch_size: Batch size per GPU
         num_workers: Number of worker processes
-        shuffle: Whether to shuffle the dataset
+        shuffle: Whether to shuffle the dataset (ignored if distributed=True)
         image_paths: Optional list of specific image paths to use
         pin_memory: Whether to use pinned memory
+        distributed: Whether to use DistributedSampler for multi-GPU training
     
     Returns:
-        DataLoader per distillazione
+        DataLoader per distillazione con partizionamento dati per multi-GPU se distributed=True
     """
     dataset = DistillationDataset(
         image_dir=image_dir,
@@ -282,15 +284,27 @@ def build_distillation_dataloader(
         image_paths=image_paths,
     )
     
-    # drop_last viene messo a True quando shuffle=True (training) per evitare batch finali incompleti
+    # DistributedSampler partiziona automaticamente il dataset tra le GPU
+    # evitando duplicati e garantendo che ogni GPU processi un subset esclusivo
+    sampler = None
+    if distributed:
+        sampler = torch.utils.data.DistributedSampler(
+            dataset,
+            shuffle=shuffle,
+            drop_last=shuffle,  # Drop last incomplete batch only during training
+        )
+        # DistributedSampler gestisce lo shuffle internamente
+        shuffle = False
+    
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
+        shuffle=shuffle,  # False se c'è DistributedSampler
+        sampler=sampler,
         num_workers=num_workers,
         pin_memory=pin_memory,
         collate_fn=collate_fn_distillation,
-        drop_last=shuffle,  # Drop last incomplete batch during training
+        drop_last=shuffle and sampler is None,  # Drop last solo se non c'è sampler
     )
     
     return loader
@@ -742,6 +756,7 @@ def distill(args):
         num_workers=args.num_workers,
         shuffle=True,
         image_paths=train_image_paths,
+        distributed=args.distributed.distributed,
     )
     
     print(f"Building val dataloader from {VAL_IMAGES_DIR}")
@@ -762,6 +777,7 @@ def distill(args):
         num_workers=args.num_workers,
         shuffle=False,
         image_paths=val_image_paths,
+        distributed=args.distributed.distributed,
     )
     
     # Carica il modello pre-addestrato (strict=False per permettere head extra)
@@ -847,6 +863,10 @@ def distill(args):
     start_time = time.time()
     
     for epoch in range(start_epoch, args.epochs):
+        # Set epoch per DistributedSampler per garantire shuffle diverso ad ogni epoca
+        if args.distributed.distributed and hasattr(data_loader_train.sampler, 'set_epoch'):
+            data_loader_train.sampler.set_epoch(epoch)
+        
         epoch_start = time.time()
         
         # Train one epoch
@@ -930,7 +950,6 @@ def distill(args):
                     "val_cosine_similarity": val_stats.get("cos_sim_mean", 0.0),
                 })
             wandb.log(log_dict, step=epoch + 1)
-            print(f"[W&B] Logged epoch {epoch + 1} metrics to wandb")  # ✅ AGGIUNGI QUESTO
         print(
             f"Epoch {epoch+1}/{args.epochs} | "
             f"Train Loss: {train_stats.get('loss_mean', 0):.6f} | "
