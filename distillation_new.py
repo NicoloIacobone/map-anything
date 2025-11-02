@@ -381,7 +381,7 @@ def train_one_epoch_distillation(
         Dictionary of averaged training metrics
     """
     model.train(True)
-    metric_logger = train_tools.MetricLogger(delimiter="  ")
+    metric_logger = train_tools.MetricLogger(delimiter=" | ")
     metric_logger.add_meter("lr", train_tools.SmoothedValue(window_size=1, fmt="{value:.6f}"))
     header = f"Distillation Epoch: [{epoch}]"
     
@@ -520,7 +520,7 @@ def validate_one_epoch_distillation(
         Dictionary of validation metrics (avg and median)
     """
     model.eval()
-    metric_logger = train_tools.MetricLogger(delimiter="  ")
+    metric_logger = train_tools.MetricLogger(delimiter=" | ")
     # Finestra molto grande per rendere la stampa simile a una media globale
     metric_logger.meters = defaultdict(lambda: train_tools.SmoothedValue(window_size=9**9))
     header = f"Distillation Validation: [{epoch}]"
@@ -991,7 +991,11 @@ def save_checkpoint_distillation(
     if WANDB_AVAILABLE and wandb.run is not None:
         state["wandb_run_id"] = wandb.run.id
     
-    ckpt_path = Path(output_dir) / f"checkpoint_{tag}.pth"
+    # Crea la sottocartella checkpoints
+    ckpt_dir = Path(output_dir) / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    
+    ckpt_path = ckpt_dir / f"checkpoint_{tag}.pth"  # ✅ Ora salva in checkpoints/
     torch.save(state, ckpt_path)
     print(f"[SAVE] Checkpoint saved: {ckpt_path}")
 
