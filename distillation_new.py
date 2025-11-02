@@ -34,10 +34,11 @@ from torch.utils.data import DataLoader, Dataset
 
 # Optional: wandb for experiment tracking
 try:
-    import wandb
+    import wandb  # type: ignore[import-not-found]
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
+    wandb = None  # type: ignore
     print("[WARN] wandb not installed. Logging to wandb disabled.")
 
 from mapanything.models import MapAnything
@@ -320,15 +321,24 @@ def forward_pass_distillation(
     """
     # Carica le immagini usando l'utility del progetto (gestisce pre-processing coerente)
     views = load_images(image_paths)
+
+    # Sposta i tensori immagine sul device per evitare mismatch CPU/GPU (come in distillation.py)
+    for v in views:
+        img = v.get("img")
+        if isinstance(img, torch.Tensor):
+            v["img"] = img.to(device, non_blocking=True)
     
     # Determine autocast dtype
     if amp_dtype == "bf16" and torch.cuda.is_bf16_supported():
         autocast_dtype = torch.bfloat16
     else:
         autocast_dtype = torch.float16
+
+    # Abilita autocast solo se siamo su CUDA
+    autocast_enabled = use_amp and (device.type == "cuda")
     
     # Forward pass con autocast (AMP); si usa forward (non infer) per mantenere gradienti
-    with torch.autocast("cuda", enabled=use_amp, dtype=autocast_dtype):
+    with torch.autocast(device_type="cuda", enabled=autocast_enabled, dtype=autocast_dtype):
         predictions = model(
             views,
             memory_efficient_inference=False,
