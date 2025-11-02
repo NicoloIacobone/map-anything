@@ -462,7 +462,7 @@ def train_one_epoch_distillation(
         
         # Compute loss
         loss, loss_details = criterion(student_features, teacher_features)
-        loss_value = float(loss)
+        loss_value = loss.detach().cpu().item()
         mse_value = float(loss_details.get("mse_loss", 0.0))
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
@@ -479,8 +479,8 @@ def train_one_epoch_distillation(
         
         # Controllo stabilità numerica: interrompe il training in caso di NaN/Inf
         if not math.isfinite(loss_value):
-            print(f"Loss is {loss_value}, stopping training", force=True)
-            print(f"Loss Details: {loss_details}", force=True)
+            print(f"Loss is {loss_value}, stopping training", flush=True)
+            print(f"Loss Details: {loss_details}", flush=True)
             sys.exit(1)
         
         # Gradient Accumulation: scala la loss per accumulare su 'accum_iter' iterazioni
@@ -556,7 +556,7 @@ def validate_one_epoch_distillation(
     model.eval()
     metric_logger = train_tools.MetricLogger(delimiter=" | ")
     # Finestra molto grande per rendere la stampa simile a una media globale
-    metric_logger.meters = defaultdict(lambda: train_tools.SmoothedValue(window_size=9**9))
+    metric_logger.meters = defaultdict(lambda: train_tools.SmoothedValue(window_size=int(1e6)))
     header = f"Distillation Validation: [{epoch}]"
     
     # Manual accumulators for weighted epoch averages
@@ -596,7 +596,7 @@ def validate_one_epoch_distillation(
         
         # Compute loss
         loss, loss_details = criterion(student_features, teacher_features)
-        loss_value = float(loss)
+        loss_value = loss.detach().cpu().item()
         mse_value = float(loss_details.get("mse_loss", 0.0))
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
@@ -835,6 +835,13 @@ def distill(args):
             find_unused_parameters=True,
         )
         model_without_ddp = model.module
+        # If the module graph is static across iterations, avoid re-registering DDP hooks every iteration.
+        # This prevents errors like "marked ready twice" when using checkpointing / reentrant autograd.
+        try:
+            if hasattr(model, "_set_static_graph"):
+                model._set_static_graph()
+        except Exception:
+            pass
     
     # Ottimizzatore su soli parametri addestrabili; AdamW con betas impostati come nello script originale
     trainable_params = [p for p in model.parameters() if p.requires_grad]
