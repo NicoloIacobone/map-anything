@@ -334,20 +334,14 @@ def forward_pass_distillation(
             memory_efficient_inference=False,
         )
     
-    # Estrai le feature dello studente dalla lista di prediction dict
-    # Atteso: pred["_last_feat2_8x"] presente per ogni elemento
-    student_feats_list = []
-    for pred in predictions:
-        if "_last_feat2_8x" not in pred:
-            raise KeyError(
-                "_last_feat2_8x not found in predictions. "
-                "Ensure dpt_feature_head_2 is properly integrated in model."
-            )
-        student_feats_list.append(pred["_last_feat2_8x"])
-
-    # Unisci lungo dimensione batch (per single-view B*V == B)
-    student_features = torch.cat(student_feats_list, dim=0)  # (B*V, C, H, W)
-    # For single-view distillation, B*V == B
+    # Estrai le feature dello studente dall'attributo popolato nel forward del modello
+    # (come fa distillation.py): atteso 'model._last_feat2_8x' con shape (B,C,H,W)
+    student_features = getattr(model, "_last_feat2_8x", None)
+    if student_features is None:
+        raise KeyError(
+            "Student features not found on model (_last_feat2_8x). "
+            "Ensure dpt_feature_head_2 populates model._last_feat2_8x during forward."
+        )
     
     return student_features
 
