@@ -351,23 +351,43 @@ def forward_pass_distillation(
     # Abilita autocast solo se siamo su CUDA
     autocast_enabled = use_amp and (device.type == "cuda")
     
-    # Forward pass con autocast (AMP); si usa forward (non infer) per mantenere gradienti
     with torch.autocast(device_type="cuda", enabled=autocast_enabled, dtype=autocast_dtype):
         predictions = model(
             views,
             memory_efficient_inference=False,
         )
     
-    # Estrai le feature dello studente dall'attributo popolato nel forward del modello
-    # (come fa distillation.py): atteso 'model._last_feat2_8x' con shape (B,C,H,W)
-    student_features = getattr(model, "_last_feat2_8x", None)
+    # Usa sempre il modulo “base”: in DDP è model.module, altrimenti model
+    base_model = model.module if hasattr(model, "module") else model
+    student_features = getattr(base_model, "_last_feat2_8x", None)
     if student_features is None:
+        # Debug helper: verifica che la seconda head esista
+        has_head2 = hasattr(base_model, "dpt_feature_head_2")
         raise KeyError(
             "Student features not found on model (_last_feat2_8x). "
-            "Ensure dpt_feature_head_2 populates model._last_feat2_8x during forward."
+            f"Has dpt_feature_head_2: {has_head2}. "
+            "Ensure the forward populates this attr in MapAnything."
         )
     
     return student_features
+    
+    # # Forward pass con autocast (AMP); si usa forward (non infer) per mantenere gradienti
+    # with torch.autocast(device_type="cuda", enabled=autocast_enabled, dtype=autocast_dtype):
+    #     predictions = model(
+    #         views,
+    #         memory_efficient_inference=False,
+    #     )
+    
+    # # Estrai le feature dello studente dall'attributo popolato nel forward del modello
+    # # (come fa distillation.py): atteso 'model._last_feat2_8x' con shape (B,C,H,W)
+    # student_features = getattr(model, "_last_feat2_8x", None)
+    # if student_features is None:
+    #     raise KeyError(
+    #         "Student features not found on model (_last_feat2_8x). "
+    #         "Ensure dpt_feature_head_2 populates model._last_feat2_8x during forward."
+    #     )
+    
+    # return student_features
 
 
 def train_one_epoch_distillation(
