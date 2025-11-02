@@ -46,11 +46,20 @@ from mapanything.utils.image import load_images
 from mapanything.utils import train_tools
 from nico.utils import mean_std_difference, create_student_original_teacher_side_by_side
 
-# Enable TF32 precision if supported
-if hasattr(torch.backends.cuda, "matmul") and hasattr(
-    torch.backends.cuda.matmul, "allow_tf32"
-):
-    torch.backends.cuda.matmul.allow_tf32 = True
+# Enable TF32 precision using new API (with safe fallback for older PyTorch)
+try:
+    # Preferred modern API: enables TF32 where possible for matmul; "high" ~ allow TF32
+    torch.set_float32_matmul_precision("high")
+    # Also enable TF32 for cuDNN convolutions if the new API surface is available
+    if hasattr(torch.backends, "cudnn") and hasattr(torch.backends.cudnn, "conv") \
+            and hasattr(torch.backends.cudnn.conv, "fp32_precision"):
+        torch.backends.cudnn.conv.fp32_precision = "tf32"
+except Exception:
+    # Fallback to legacy flags for older PyTorch versions
+    if hasattr(torch.backends.cuda, "matmul") and hasattr(torch.backends.cuda.matmul, "allow_tf32"):
+        torch.backends.cuda.matmul.allow_tf32 = True
+    if hasattr(torch.backends, "cudnn") and hasattr(torch.backends.cudnn, "allow_tf32"):
+        torch.backends.cudnn.allow_tf32 = True
 
 
 # ==================== Runtime/Environment Settings ====================
@@ -712,6 +721,12 @@ def distill(args):
     # Inizializza (eventualmente) il training distribuito e ricava il rank
     train_tools.init_distributed_mode(args.distributed)
     global_rank = train_tools.get_rank()
+    # Explicitly set CUDA device for this process (avoids NCCL warnings and ensures correct device context)
+    if getattr(args.distributed, "distributed", False) and torch.cuda.is_available():
+        try:
+            torch.cuda.set_device(args.distributed.gpu)
+        except Exception:
+            pass
     
     # Imposta la cartella di output: se non fornita, costruisce BASE_DIR/<wandb_name|timestamp>
     if not args.output_dir:
