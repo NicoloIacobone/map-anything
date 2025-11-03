@@ -13,19 +13,19 @@
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=00:10:00
+#SBATCH --time=23:59:59
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
 #
 # Specify number of CPU cores per task.
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=32
 #
 # Specify memory limit per CPU core.
 #SBATCH --mem-per-cpu=8192
 #
 # Specify number of required GPUs.
-#SBATCH --gpus=rtx_4090:4
+#SBATCH --gpus=a100:4
 #
 # Specify disk limit on local scratch.
 #SBATCH --tmp=500000
@@ -41,12 +41,12 @@ echo "Loaded modules: $(module list 2>&1)"
 source /cluster/scratch/niacobone/map-anything/myenv/bin/activate
 echo "Activated Python venv: $(which python)"
 
-# check if the dataset is available in /cluster/scratch/niacobone/distillation/coco2017
-if [ ! -d "/cluster/scratch/niacobone/distillation/coco2017" ]; then
-    echo "Dataset not found in /cluster/scratch/niacobone/distillation/coco2017 - copyting from /cluster/work/igp_psr/niacobone/coco2017"
-    cp -r /cluster/work/igp_psr/niacobone/coco2017 /cluster/scratch/niacobone/distillation/
-    echo "Dataset copied."
-fi
+# # check if the dataset is available in /cluster/scratch/niacobone/distillation/coco2017
+# if [ ! -d "/cluster/scratch/niacobone/distillation/coco2017" ]; then
+#     echo "Dataset not found in /cluster/scratch/niacobone/distillation/coco2017 - copyting from /cluster/work/igp_psr/niacobone/coco2017"
+#     cp -r /cluster/work/igp_psr/niacobone/coco2017 /cluster/scratch/niacobone/distillation/
+#     echo "Dataset copied."
+# fi
 
 # Execute
 cd /cluster/scratch/niacobone/map-anything
@@ -71,13 +71,26 @@ echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 
 # Usa automaticamente tutte le GPU disponibili
 torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
-  --epochs 5 \
-  --debug_max_train_images 100 \
-  --debug_max_val_images 50 \
+  --use_wandb \
+  --wandb_project "mapanything-distillation" \
+  --wandb_name "production_run_4gpu_full_dataset" \
+  --epochs 100 \
   --batch_size 4 \
+  --num_workers 8 \
+  --lr 1e-4 \
+  --weight_decay 1e-4 \
+  --lr_scheduler_t_max 100 \
+  --lr_min 1e-6 \
+  --clip_grad 1.0 \
+  --accum_iter 1 \
+  --mse_weight 0.5 \
+  --cosine_weight 0.5 \
   --eval_freq 1 \
-  --save_freq 1 \
-  --amp
+  --save_freq 5 \
+  --print_freq 50 \
+  --amp \
+  --amp_dtype bf16 \
+  --seed 42
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
