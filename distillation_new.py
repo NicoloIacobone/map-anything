@@ -470,15 +470,26 @@ def train_one_epoch_distillation(
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
 
-        # W&B batch-level logging every N batches
-        if args.use_wandb and WANDB_AVAILABLE:
-            if data_iter_step % getattr(args, "log_freq", 100) == 0 and getattr(args, "rank", 0) == 0:
-                wandb.log({
-                    "train/loss": float(loss.detach()),
-                    "train/cos_sim": float(cos_sim_value),
-                    "train/lr": optimizer.param_groups[0]["lr"],
-                    "epoch": epoch + data_iter_step / len(data_loader)
-                })
+        # W&B batch-level logging every N batches (only on main process and if a run is active)
+        is_main_process = (train_tools.get_rank() == 0)
+        if (
+            args.use_wandb
+            and WANDB_AVAILABLE
+            and is_main_process
+            and (wandb is not None)
+            and (getattr(wandb, "run", None) is not None)
+        ):
+            if data_iter_step % getattr(args, "log_freq", 100) == 0:
+                wandb.log(
+                    {
+                        "train/loss": float(loss_value),
+                        "train/mse_loss": float(mse_value),
+                        "train/cos_loss": float(cos_value),
+                        "train/cos_sim": float(cos_sim_value),
+                        "train/lr": float(optimizer.param_groups[0]["lr"]),
+                        "epoch_progress": epoch + data_iter_step / max(1, len(data_loader)),
+                    }
+                )
 
         # Compute additional metrics to mirror distillation.py
         try:
