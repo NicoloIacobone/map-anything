@@ -470,6 +470,16 @@ def train_one_epoch_distillation(
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
 
+        # W&B batch-level logging every N batches
+        if args.use_wandb and WANDB_AVAILABLE:
+            if data_iter_step % getattr(args, "log_freq", 100) == 0 and getattr(args, "rank", 0) == 0:
+                wandb.log({
+                    "train/loss": float(loss.detach()),
+                    "train/cos_sim": float(cos_sim_value),
+                    "train/lr": optimizer.param_groups[0]["lr"],
+                    "epoch": epoch + data_iter_step / len(data_loader)
+                })
+
         # Compute additional metrics to mirror distillation.py
         try:
             md, sd, cs = mean_std_difference(student_features, teacher_features)
@@ -1080,6 +1090,7 @@ def get_args_parser():
     parser.add_argument("--lr_scheduler_t_max", type=int, default=50, help="T_max for CosineAnnealingLR")
     parser.add_argument("--clip_grad", type=float, default=1.0, help="Gradient clipping max norm (0 to disable)")
     parser.add_argument("--accum_iter", type=int, default=1, help="Gradient accumulation iterations")
+    parser.add_argument("--log_freq", type=int, default=100, help="Log to W&B every N batches")
     
     # Loss
     parser.add_argument("--mse_weight", type=float, default=0.5, help="Weight for MSE loss")
