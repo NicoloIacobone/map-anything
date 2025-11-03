@@ -71,25 +71,27 @@ if run_cluster:
     except Exception:
         pass
 
-    INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"
-    BASE_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"
-    COCO2017_ROOT = "/cluster/scratch/niacobone/distillation/coco2017"
+    OUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"
+    BASE_IMG = "/cluster/work/igp_psr/data/cocostuff/dataset/images"
+    BASE_FEATURES = "/cluster/scratch/niacobone/distillation/dataset/coco2017"
 else:
-    INPUT_DIR = "/scratch2/nico/distillation/training_samples"
-    BASE_DIR = "/scratch2/nico/distillation/output"
-    COCO2017_ROOT = "/scratch2/nico/distillation/coco2017"
+    OUT_DIR = "/scratch2/nico/distillation/output"
+    BASE_IMG = "/scratch2/nico/distillation/dataset/coco2017"
+    BASE_FEATURES = "/scratch2/nico/distillation/dataset/coco2017/features"
 
 # Dataset directory structure (consistent with distillation.py)
-IMAGES_DIRNAME = "val2017"
-FEATURES_DIRNAME = "teacher_features"
-TRAIN_SPLIT = "train"
-VAL_SPLIT = "val"
+TRAIN_SPLIT = "train2017"
+VAL_SPLIT = "val2017"
 
-TRAIN_IMAGES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, IMAGES_DIRNAME)
-VAL_IMAGES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, IMAGES_DIRNAME)
-TRAIN_FEATURES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, FEATURES_DIRNAME)
-VAL_FEATURES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, FEATURES_DIRNAME)
+TRAIN_IMAGES_DIR = os.path.join(BASE_IMG, TRAIN_SPLIT)
+VAL_IMAGES_DIR = os.path.join(BASE_IMG, VAL_SPLIT)
+TRAIN_FEATURES_DIR = os.path.join(BASE_FEATURES, TRAIN_SPLIT)
+VAL_FEATURES_DIR = os.path.join(BASE_FEATURES, VAL_SPLIT)
 
+print(f"[INFO] Using TRAIN_IMAGES_DIR: {TRAIN_IMAGES_DIR}")
+print(f"[INFO] Using VAL_IMAGES_DIR: {VAL_IMAGES_DIR}")
+print(f"[INFO] Using TRAIN_FEATURES_DIR: {TRAIN_FEATURES_DIR}")
+print(f"[INFO] Using VAL_FEATURES_DIR: {VAL_FEATURES_DIR}")
 
 # ==================== Dataset Classes ====================
 
@@ -733,11 +735,11 @@ def distill(args):
     train_tools.init_distributed_mode(args.distributed)
     global_rank = train_tools.get_rank()
     
-    # Imposta la cartella di output: se non fornita, costruisce BASE_DIR/<wandb_name|timestamp>
+    # Imposta la cartella di output: se non fornita, costruisce OUT_DIR/<wandb_name|timestamp>
     if not args.output_dir:
-        # Derive default output_dir from BASE_DIR and run name (prefer wandb_name)
+        # Derive default output_dir from OUT_DIR and run name (prefer wandb_name)
         default_run_name = args.wandb_name or datetime.datetime.now().strftime("distill_%Y%m%d_%H%M%S")
-        args.output_dir = os.path.join(BASE_DIR, default_run_name)
+        args.output_dir = os.path.join(OUT_DIR, default_run_name)
     print(f"output_dir: {args.output_dir}")
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     
@@ -1062,7 +1064,7 @@ def get_args_parser():
     )
     
     # Paths
-    parser.add_argument("--output_dir", type=str, default=None, help="Output directory for checkpoints and logs (default: BASE_DIR/wandb_name or timestamp)")
+    parser.add_argument("--output_dir", type=str, default=None, help="Output directory for checkpoints and logs (default: OUT_DIR/wandb_name or timestamp)")
     # Note: dataset paths are derived from COCO2017_ROOT constants depending on run_cluster
     
     # Model
