@@ -48,7 +48,7 @@ if [ ! -d "/cluster/scratch/niacobone/distillation/coco2017" ]; then
     echo "Dataset copied."
 fi
 
-# Execute - prova
+# Execute
 cd /cluster/scratch/niacobone/map-anything
 echo "Starting MapAnything distillation..."
 
