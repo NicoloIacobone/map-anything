@@ -19,7 +19,7 @@
 #SBATCH --ntasks=1
 #
 # Specify number of CPU cores per task.
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=16
 #
 # Specify memory limit per CPU core.
 #SBATCH --mem-per-cpu=8192
@@ -75,8 +75,8 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
   --wandb_project "mapanything-distillation" \
   --wandb_name "production_run_4gpu_full_dataset" \
   --epochs 100 \
-  --batch_size 4 \
-  --num_workers 8 \
+  --batch_size 8 \
+  --num_workers 16 \
   --lr 1e-4 \
   --weight_decay 1e-4 \
   --lr_scheduler_t_max 100 \

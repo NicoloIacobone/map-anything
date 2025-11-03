@@ -72,21 +72,22 @@ if run_cluster:
         pass
 
     OUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"
-    BASE_IMG = "/cluster/work/igp_psr/data/cocostuff/dataset/images"
-    BASE_FEATURES = "/cluster/scratch/niacobone/distillation/dataset/coco2017"
+    BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset/coco2017"
+    
 else:
     OUT_DIR = "/scratch2/nico/distillation/output"
-    BASE_IMG = "/scratch2/nico/distillation/dataset/coco2017"
-    BASE_FEATURES = "/scratch2/nico/distillation/dataset/coco2017/features"
+    BASE_DIR = "/scratch2/nico/distillation/dataset/coco2017"
 
 # Dataset directory structure (consistent with distillation.py)
 TRAIN_SPLIT = "train2017"
 VAL_SPLIT = "val2017"
+IMAGES_DIRNAME = "images"
+FEATURES_DIRNAME = "features"
 
-TRAIN_IMAGES_DIR = os.path.join(BASE_IMG, TRAIN_SPLIT)
-VAL_IMAGES_DIR = os.path.join(BASE_IMG, VAL_SPLIT)
-TRAIN_FEATURES_DIR = os.path.join(BASE_FEATURES, TRAIN_SPLIT)
-VAL_FEATURES_DIR = os.path.join(BASE_FEATURES, VAL_SPLIT)
+TRAIN_IMAGES_DIR = os.path.join(BASE_DIR, IMAGES_DIRNAME, TRAIN_SPLIT)
+VAL_IMAGES_DIR = os.path.join(BASE_DIR, IMAGES_DIRNAME, VAL_SPLIT)
+TRAIN_FEATURES_DIR = os.path.join(BASE_DIR, FEATURES_DIRNAME, TRAIN_SPLIT)
+VAL_FEATURES_DIR = os.path.join(BASE_DIR, FEATURES_DIRNAME, VAL_SPLIT)
 
 print(f"[INFO] Using TRAIN_IMAGES_DIR: {TRAIN_IMAGES_DIR}")
 print(f"[INFO] Using VAL_IMAGES_DIR: {VAL_IMAGES_DIR}")
