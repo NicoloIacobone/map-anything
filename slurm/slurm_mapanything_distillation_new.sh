@@ -71,6 +71,7 @@ echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 
 # Usa automaticamente tutte le GPU disponibili
 torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
+  --distributed \
   --use_wandb \
   --wandb_project "mapanything-distillation" \
   --wandb_name "production_run_4gpu_full_dataset" \
@@ -90,7 +91,8 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
   --print_freq 50 \
   --amp \
   --amp_dtype bf16 \
-  --seed 42
+  --seed 42 \
+  --save_visualization
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
