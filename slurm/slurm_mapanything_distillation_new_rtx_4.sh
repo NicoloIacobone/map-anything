@@ -91,7 +91,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
   --mse_weight 0.5 \
   --cosine_weight 0.5 \
   --eval_freq 1 \
-  --save_freq 5 \
+  --save_freq 1 \
   --print_freq 50 \
   --amp \
   --amp_dtype bf16 \
@@ -99,7 +99,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
   --save_visualizations \
   --wandb_resume_id qs9cdufy \
   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/production_run_4gpu_full_dataset \
-  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/production_run_4gpu_full_dataset/checkpoints/checkpoint_epoch10.pth
+  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/production_run_4gpu_full_dataset/checkpoints/checkpoint_best.pth
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}

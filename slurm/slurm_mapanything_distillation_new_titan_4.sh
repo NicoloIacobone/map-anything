@@ -91,7 +91,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
   --mse_weight 0.5 \
   --cosine_weight 0.5 \
   --eval_freq 1 \
-  --save_freq 5 \
+  --save_freq 1 \
   --print_freq 50 \
   --amp \
   --amp_dtype bf16 \
