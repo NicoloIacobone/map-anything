@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=mapanything_distillation
+#SBATCH --job-name=2_rtx_4090
 #
 # Specify output file.
 #SBATCH --output=mapanything_%j.log
