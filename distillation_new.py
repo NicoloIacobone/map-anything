@@ -21,6 +21,7 @@ import os
 import random
 import sys
 import time
+import zipfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -146,25 +147,43 @@ class DistillationDataset(Dataset):
             - 'image_path': path all'immagine
             - 'teacher_features': Tensor (C,H,W) o (1,C,H,W) con le feature del teacher
         La corrispondenza immagine→file di feature avviene usando lo stem del filename.
+        
+        Gestisce file corrotti tentando di caricare il sample successivo.
         """
-        img_path = self.image_paths[idx]
-        img_name = Path(img_path).stem
-        
-        # Carica le feature del teacher dal file <image_stem>.pt nella cartella features_dir
-        feat_path = self.features_dir / f"{img_name}.pt"
-        if not feat_path.exists():
-            raise FileNotFoundError(f"Teacher features not found: {feat_path}")
-        
-        teacher_feat = torch.load(feat_path, map_location="cpu")
-        
-        # Se salvate con batch dim=1, rimuove la dimensione per ottenere (C,H,W)
-        if teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
-            teacher_feat = teacher_feat.squeeze(0)
-        
-        return {
-            "image_path": img_path,
-            "teacher_features": teacher_feat,
-        }
+        max_attempts = 10  # Evita loop infinito
+        for attempt in range(max_attempts):
+            try:
+                actual_idx = (idx + attempt) % len(self.image_paths)
+                img_path = self.image_paths[actual_idx]
+                img_name = Path(img_path).stem
+                
+                # Carica le feature del teacher dal file <image_stem>.pt nella cartella features_dir
+                feat_path = self.features_dir / f"{img_name}.pt"
+                if not feat_path.exists():
+                    raise FileNotFoundError(f"Teacher features not found: {feat_path}")
+                
+                teacher_feat = torch.load(feat_path, map_location="cpu", weights_only=False)
+                
+                # Se salvate con batch dim=1, rimuove la dimensione per ottenere (C,H,W)
+                if teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
+                    teacher_feat = teacher_feat.squeeze(0)
+                
+                return {
+                    "image_path": img_path,
+                    "teacher_features": teacher_feat,
+                }
+            
+            except (RuntimeError, EOFError, zipfile.BadZipFile) as e:
+                # File corrotto: logga e prova il successivo
+                if attempt == 0:
+                    # Logga solo al primo tentativo per evitare spam
+                    print(f"[WARN] Corrupted feature file at idx {actual_idx} ({feat_path}): {e}. Trying next sample...", flush=True)
+                if attempt == max_attempts - 1:
+                    raise RuntimeError(
+                        f"Failed to load valid sample after {max_attempts} attempts starting from idx {idx}. "
+                        f"Multiple corrupted files detected. Check your feature dataset."
+                    )
+                continue
 
 
 def collate_fn_distillation(batch: List[Dict]) -> Dict:
