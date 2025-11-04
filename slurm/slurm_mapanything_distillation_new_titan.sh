@@ -25,7 +25,7 @@
 #SBATCH --mem-per-cpu=8192
 #
 # Specify number of required GPUs.
-#SBATCH --gpus=titan_rtx:8
+#SBATCH --gpus=titan_rtx:4
 #
 # Specify disk limit on local scratch.
 #SBATCH --tmp=500000
