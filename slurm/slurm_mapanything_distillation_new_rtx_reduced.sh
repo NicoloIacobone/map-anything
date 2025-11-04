@@ -29,6 +29,10 @@
 #
 # Specify disk limit on local scratch.
 #SBATCH --tmp=500000
+#
+# Specify email notifications.
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=niacobone@student.ethz.ch
 
 echo "=== Job starting on $(hostname) at $(date) ==="
 # DATE_VAR=$(date +%Y%m%d%H%M%S)
