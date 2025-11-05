@@ -1011,6 +1011,7 @@ def distill(args):
                 "epoch_time_sec": epoch_time,
             }
             if val_stats:
+                print(f"[DEBUG] Logging validation stats to W&B: {val_stats}")  # <--- DEBUG
                 log_dict.update({
                     "val_loss": val_stats.get("loss_mean", 0.0),
                     "val_mse_loss": val_stats.get("mse_loss_mean", 0.0),
@@ -1019,6 +1020,8 @@ def distill(args):
                     "val_std_diff": val_stats.get("std_diff", 0.0),
                     "val_cosine_similarity": val_stats.get("cos_sim_mean", 0.0),
                 })
+            else:
+                print(f"[DEBUG] val_stats is empty, skipping validation logging for epoch {epoch+1}")  # <--- DEBUG
             wandb.log(log_dict, step=epoch + 1)
         print(
             f"Epoch {epoch+1}/{args.epochs} | "
