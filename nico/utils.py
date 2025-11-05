@@ -290,11 +290,13 @@ def create_student_original_teacher_side_by_side(
     epoch,
     output_heatmaps,
     is_overfit_image=False,
+    save_embeddings=False,
 ):
     """
     Visualizza teacher e student embeddings con colori coerenti.
     Se is_overfit_image=True → calcola la PCA dai teacher embeddings e la salva/carica localmente.
     Se False → calcola la PCA dinamicamente dai teacher embeddings (senza salvataggio/caricamento su disco).
+    Salva anche gli embeddings se save_embeddings=True.
     """
 
     img_p = Path(img_path)
@@ -304,7 +306,6 @@ def create_student_original_teacher_side_by_side(
     # --- Step 1: gestisci caricamento/salvataggio base PCA ---
     if is_overfit_image:
         if local_basis_path.exists():
-            # print(f"[INFO] Loading PCA basis from {local_basis_path}")
             basis = torch.load(local_basis_path, map_location="cpu")
         else:
             print(f"[INFO] Computing PCA basis from teacher embeddings and saving to {local_basis_path}")
@@ -316,7 +317,6 @@ def create_student_original_teacher_side_by_side(
             basis = {"V": V[:, :3], "mean": feats.mean(0)}
             torch.save(basis, str(local_basis_path))
     else:
-        # Calcola la base PCA dinamicamente dai teacher embeddings (NO salvataggio/caricamento file)
         feats = teacher_embeddings.clone().detach().to("cpu")
         if feats.dim() == 4:
             feats = feats[0]  # [C, H, W]
@@ -369,7 +369,15 @@ def create_student_original_teacher_side_by_side(
     # --- Step 5: salva il risultato ---
     combined_path = os.path.join(output_heatmaps, f"{epoch}.png")
     combined_img.save(combined_path)
-    # print(f"[INFO] Saved side-by-side image: {combined_path}")
+
+    # --- Step 6: salva gli embeddings se richiesto ---
+    if save_embeddings:
+        student_dir = Path(output_heatmaps) / "student"
+        teacher_dir = Path(output_heatmaps) / "teacher"
+        student_dir.mkdir(parents=True, exist_ok=True)
+        teacher_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(student_embeddings.detach().cpu(), student_dir / f"{epoch}.pt")
+        torch.save(teacher_embeddings.detach().cpu(), teacher_dir / f"{epoch}.pt")
 
 def mean_std_difference(student_embeddings, teacher_embeddings):
     """

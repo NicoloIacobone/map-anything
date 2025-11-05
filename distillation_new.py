@@ -748,6 +748,7 @@ def save_pca_visualizations(
                 epoch=epoch,
                 output_heatmaps=str(viz_dir),
                 is_overfit_image=False,  # Dynamic PCA basis (not saved/loaded from disk)
+                save_embeddings=True,
             )
         except Exception as e:
             print(f"[WARN] Failed to create PCA visualization for {img_path}: {e}")
