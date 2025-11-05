@@ -53,7 +53,6 @@ if hasattr(torch.backends.cuda, "matmul") and hasattr(
 ):
     torch.backends.cuda.matmul.allow_tf32 = True
 
-
 # ==================== Runtime/Environment Settings ====================
 # Rilevazione ambiente ed impostazione percorsi:
 # - se non c'è un TTY (tipico dei job su cluster), run_cluster=True;
@@ -185,7 +184,6 @@ class DistillationDataset(Dataset):
                     )
                 continue
 
-
 def collate_fn_distillation(batch: List[Dict]) -> Dict:
     """
     Collate function personalizzata per il dataset di distillazione.
@@ -202,7 +200,6 @@ def collate_fn_distillation(batch: List[Dict]) -> Dict:
         "image_paths": image_paths,
         "teacher_features": teacher_feats,
     }
-
 
 # ==================== Loss Functions ====================
 
@@ -271,7 +268,6 @@ class DistillationLoss(torch.nn.Module):
         
         return total_loss, loss_details
 
-
 # ==================== Data Loaders ====================
 
 def build_distillation_dataloader(
@@ -330,7 +326,6 @@ def build_distillation_dataloader(
     )
     
     return loader
-
 
 # ==================== Training Functions ====================
 
@@ -392,25 +387,6 @@ def forward_pass_distillation(
         )
     
     return student_features
-    
-    # # Forward pass con autocast (AMP); si usa forward (non infer) per mantenere gradienti
-    # with torch.autocast(device_type="cuda", enabled=autocast_enabled, dtype=autocast_dtype):
-    #     predictions = model(
-    #         views,
-    #         memory_efficient_inference=False,
-    #     )
-    
-    # # Estrai le feature dello studente dall'attributo popolato nel forward del modello
-    # # (come fa distillation.py): atteso 'model._last_feat2_8x' con shape (B,C,H,W)
-    # student_features = getattr(model, "_last_feat2_8x", None)
-    # if student_features is None:
-    #     raise KeyError(
-    #         "Student features not found on model (_last_feat2_8x). "
-    #         "Ensure dpt_feature_head_2 populates model._last_feat2_8x during forward."
-    #     )
-    
-    # return student_features
-
 
 def train_one_epoch_distillation(
     model: torch.nn.Module,
@@ -695,7 +671,6 @@ def validate_one_epoch_distillation(
     }
     return results
 
-
 # ==================== Visualization Functions ====================
 
 def save_pca_visualizations(
@@ -755,7 +730,6 @@ def save_pca_visualizations(
             continue
     
     print(f"[VIZ] Saved {B} PCA visualizations to {viz_dir}")
-
 
 # ==================== Main Training Loop ====================
 
@@ -861,8 +835,6 @@ def distill(args):
     for name, param in model.named_parameters():
         if not name.startswith("dpt_feature_head_2"):
             param.requires_grad = False
-        # else:
-        #     print(f"  Trainable: {name} | {param.shape}")
     
     # Initialize criterion
     criterion = DistillationLoss(
@@ -1049,7 +1021,6 @@ def distill(args):
     if args.use_wandb and WANDB_AVAILABLE and global_rank == 0:
         wandb.finish()
 
-
 # ==================== Checkpoint Management ====================
 
 def save_checkpoint_distillation(
@@ -1092,7 +1063,6 @@ def save_checkpoint_distillation(
     ckpt_path = ckpt_dir / f"checkpoint_{tag}.pth"  # ✅ Ora salva in checkpoints/
     torch.save(state, ckpt_path)
     print(f"[SAVE] Checkpoint saved: {ckpt_path}")
-
 
 # ==================== Argument Parser ====================
 
@@ -1163,7 +1133,6 @@ def get_args_parser():
     parser.add_argument("--local_rank", type=int, default=0, help="Local rank for distributed training")
     
     return parser
-
 
 # ==================== Entry Point ====================
 
