@@ -960,7 +960,7 @@ def distill(args):
                 data_loader=data_loader_val,
                 device=device,
                 epoch=epoch,
-                    args=args,
+                args=args,
             )
             
             # Check for new best
