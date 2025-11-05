@@ -79,12 +79,11 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
   --use_wandb \
   --wandb_project "mapanything-distillation" \
   --wandb_name "production_run_4gpu_full_dataset" \
-  --epochs 100 \
+  --epochs 10 \
   --batch_size 4 \
   --num_workers 8 \
   --lr 1e-4 \
   --weight_decay 1e-4 \
-  --lr_scheduler_t_max 100 \
   --lr_min 1e-6 \
   --clip_grad 1.0 \
   --accum_iter 1 \
@@ -96,10 +95,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
   --amp \
   --amp_dtype bf16 \
   --seed 42 \
-  --save_visualization \
-  --wandb_resume_id qs9cdufy \
-  --output_dir /cluster/work/igp_psr/niacobone/distillation/output/production_run_4gpu_full_dataset \
-  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/production_run_4gpu_full_dataset/checkpoints/checkpoint_epoch10.pth
+  --save_visualization
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}

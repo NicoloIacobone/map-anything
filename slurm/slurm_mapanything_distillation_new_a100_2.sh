@@ -79,12 +79,11 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
   --use_wandb \
   --wandb_project "mapanything-distillation" \
   --wandb_name "production_run_4gpu_full_dataset" \
-  --epochs 100 \
+  --epochs 10 \
   --batch_size 4 \
   --num_workers 8 \
   --lr 1e-4 \
   --weight_decay 1e-4 \
-  --lr_scheduler_t_max 100 \
   --lr_min 1e-6 \
   --clip_grad 1.0 \
   --accum_iter 1 \

@@ -1022,7 +1022,7 @@ def distill(args):
                 })
             else:
                 print(f"[DEBUG] val_stats is empty, skipping validation logging for epoch {epoch+1}")  # <--- DEBUG
-            wandb.log(log_dict, step=epoch + 1)
+            wandb.log(log_dict)
         print(
             f"Epoch {epoch+1}/{args.epochs} | "
             f"Train Loss: {train_stats.get('loss_mean', 0):.6f} | "
@@ -1120,7 +1120,7 @@ def get_args_parser():
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
     parser.add_argument("--lr_min", type=float, default=1e-6, help="Minimum learning rate for scheduler")
-    parser.add_argument("--lr_scheduler_t_max", type=int, default=50, help="T_max for CosineAnnealingLR")
+    parser.add_argument("--lr_scheduler_t_max", type=int, default=None, help="T_max for CosineAnnealingLR")
     parser.add_argument("--clip_grad", type=float, default=1.0, help="Gradient clipping max norm (0 to disable)")
     parser.add_argument("--accum_iter", type=int, default=1, help="Gradient accumulation iterations")
     parser.add_argument("--log_freq", type=int, default=100, help="Log to W&B every N batches")
@@ -1172,6 +1172,8 @@ def main():
     """
     parser = get_args_parser()
     args = parser.parse_args()
+    if args.lr_scheduler_t_max is None:
+        args.lr_scheduler_t_max = args.epochs  # Default T_max to epochs if not set
     
     # Crea un oggetto Namespace compatibile con train_tools
     # (train_tools si aspetta args.distributed come oggetto con attributi: distributed/dist_url/gpu).
