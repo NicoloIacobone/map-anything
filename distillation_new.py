@@ -723,8 +723,10 @@ def save_pca_visualizations(
                 epoch=epoch,
                 output_heatmaps=str(viz_dir),
                 is_overfit_image=False,  # Dynamic PCA basis (not saved/loaded from disk)
-                save_embeddings=True,
             )
+            student_save_path = Path(str(viz_dir)) / "student"
+            student_save_path.mkdir(parents=True, exist_ok=True)
+            torch.save(student_single.detach().cpu(), student_save_path / f"{epoch}.pt")
         except Exception as e:
             print(f"[WARN] Failed to create PCA visualization for {img_path}: {e}")
             continue
