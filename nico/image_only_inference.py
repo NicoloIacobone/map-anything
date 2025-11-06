@@ -1,3 +1,5 @@
+# rerun --serve-web --port 2004 --web-viewer-port 2006
+
 # Optional config for better memory efficiency
 import os
 import argparse
