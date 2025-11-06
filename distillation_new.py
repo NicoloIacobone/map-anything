@@ -448,11 +448,11 @@ def train_one_epoch_distillation(
             amp_dtype=args.amp_dtype,
         )
         
-        # Resize teacher features to match student resolution if needed
-        if teacher_features.shape[-2:] != student_features.shape[-2:]:
-            H, W = student_features.shape[-2:]
-            teacher_features = F.interpolate(
-                teacher_features,
+        # Resize student features to match teacher resolution if needed
+        if student_features.shape[-2:] != teacher_features.shape[-2:]:
+            H, W = teacher_features.shape[-2:]
+            student_features = F.interpolate(
+                student_features,
                 size=(H, W),
                 mode="bilinear",
                 align_corners=False,
@@ -603,11 +603,11 @@ def validate_one_epoch_distillation(
             amp_dtype=args.amp_dtype,
         )
         
-        # Resize teacher to match student if needed
-        if teacher_features.shape[-2:] != student_features.shape[-2:]:
-            H, W = student_features.shape[-2:]
-            teacher_features = F.interpolate(
-                teacher_features,
+        # Resize student to match teacher if needed
+        if student_features.shape[-2:] != teacher_features.shape[-2:]:
+            H, W = teacher_features.shape[-2:]
+            student_features = F.interpolate(
+                student_features,
                 size=(H, W),
                 mode="bilinear",
                 align_corners=False,
