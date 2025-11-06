@@ -94,7 +94,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
   --amp \
   --amp_dtype bf16 \
   --seed 42 \
-  --save_visualizations
+  --save_visualizations \
   --wandb_resume_id uqxp8h1i \
   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_1 \
   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_1/checkpoints/checkpoint_epoch8.pth
