@@ -77,7 +77,7 @@ echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
   --distributed \
   --use_wandb \
-  --wandb_name "distillation_1" \
+  --wandb_name "distillation_2" \
   --epochs 10 \
   --batch_size 8 \
   --num_workers 16 \
@@ -94,10 +94,10 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
   --amp \
   --amp_dtype bf16 \
   --seed 42 \
-  --save_visualizations \
-  --wandb_resume_id uqxp8h1i \
-  --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_1 \
-  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_1/checkpoints/checkpoint_epoch8.pth
+  --save_visualizations
+#   --wandb_resume_id uqxp8h1i \
+#   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_1 \
+#   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_1/checkpoints/checkpoint_epoch8.pth
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
