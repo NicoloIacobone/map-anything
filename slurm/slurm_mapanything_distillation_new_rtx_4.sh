@@ -13,7 +13,7 @@
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=23:59:59
+#SBATCH --time=03:59:59
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -95,9 +95,9 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
   --amp_dtype bf16 \
   --seed 42 \
   --save_visualizations
-#   --wandb_resume_id qs9cdufy \
-#   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/production_run_4gpu_full_dataset \
-#   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/production_run_4gpu_full_dataset/checkpoints/checkpoint_best.pth
+  --wandb_resume_id uqxp8h1i \
+  --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_1 \
+  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_1/checkpoints/checkpoint_epoch8.pth
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
