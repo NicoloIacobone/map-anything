@@ -119,7 +119,8 @@ args = parser.parse_args()
 
 save_glb = False  # Whether to save the output as a GLB file
 images = "/scratch2/nico/examples/photos/single_frame"
-output_path = "/scratch2/nico/examples/photos/results"
+images = "/scratch2/nico/examples/photos/test_multi_view_single_inference"
+# output_path = "/scratch2/nico/examples/photos/results"
 
 # Get inference device
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -176,13 +177,42 @@ for view_idx, pred in enumerate(predictions):
     # === Load precomputed SAM segmentation masks ===
     seg_map_resized = None
     seg_colors = None
-    masks_path = os.path.join(images, "masks.npy")
-    if os.path.exists(masks_path):
-        masks_data = np.load(masks_path, allow_pickle=True)
+    # masks_path = os.path.join(images, "masks.npy")
+    mask_paths = [os.path.join(images, "00000.npy"), os.path.join(images, "00001.npy"), os.path.join(images, "00002.npy"), os.path.join(images, "00003.npy"), os.path.join(images, "00004.npy")]
+    # Crea un dizionario di dizionari {frame_idx: {obj_id: mask}} dai singoli file in mask_paths
+    masks_path = f"{images} (multi-file)"
+    frames_to_masks = {}
+
+    for f_idx, fpath in enumerate(mask_paths):
+        if not os.path.exists(fpath):
+            continue
+
+        raw = np.load(fpath, allow_pickle=True)
+        frame_masks = {}
+
+        # Caso: lista/array di dict SAM per frame
+        src_list = raw.tolist()
+        for j, md in enumerate(src_list, start=1):
+            if 'segmentation' in md:
+                m = np.asarray(md['segmentation'])
+                if m.ndim == 3 and m.shape[0] == 1:
+                    m = m[0]
+                oid = int(md.get('class_id', j))
+                frame_masks[oid] = m.astype(bool)
+
+        frames_to_masks[f_idx] = frame_masks
+
+    # Wrap in ndarray 0D object per compatibilità con il codice a valle (Tipologia 2)
+    masks_data = np.array(frames_to_masks, dtype=object)
+    # if os.path.exists(masks_path):
+    if os.path.exists(mask_paths[0]):
+        # print(f"[DEBUG] Loading masks from: {masks_path}")
+        # masks_data = np.load(masks_path, allow_pickle=True)
         masks_for_view = None
 
         # Tipologia 2: dizionario di dizionari {frame_idx: {obj_id: mask}}
         if isinstance(masks_data, np.ndarray) and masks_data.dtype == object and masks_data.shape == ():
+            print(f"[DEBUG] Loaded masks data as dict for multi-view from: {masks_path}")
             # È un dict wrapped in un array 0D
             frame_data = masks_data.item()
             if isinstance(frame_data, dict):
@@ -203,12 +233,25 @@ for view_idx, pred in enumerate(predictions):
                         })
         # Tipologia 1: lista di dict (single-view)
         elif isinstance(masks_data, np.ndarray) and len(masks_data) > 0:
+            print(f"[DEBUG] Loaded masks data as list for single-view from: {masks_path}")
+            print("[DEBUG] type before checking:", type(masks_data[0]))
             if isinstance(masks_data[0], dict) and 'segmentation' in masks_data[0]:
+                print(f"[DEBUG] Using masks for single-view inference.")
                 # Formato già compatibile (lista di dict)
                 masks_for_view = masks_data.tolist() if isinstance(masks_data, np.ndarray) else masks_data
-        
+            else:
+                print(f"[DEBUG] Unexpected masks data format for single-view from: {masks_path}")
+                masks_for_view = masks_data
+                print("[DEBUG] ", type(masks_for_view))
+                # print("[DEBUG] ", masks_for_view[0])
+                print("[DEBUG] ", masks_for_view[0]['segmentation'])
+                raise Exception("Debug stop")
+
+        print("[DEBUG] type after checking:", type(masks_for_view))
+
         # Se abbiamo trovato maschere per questa view, procedi
         if masks_for_view and len(masks_for_view) > 0:
+            print(f"[DEBUG] Using masks for view {view_idx}.")
             seg_map = build_semantic_map(masks_for_view)
 
             # Resize SAM segmentation to match MapAnything resolution
