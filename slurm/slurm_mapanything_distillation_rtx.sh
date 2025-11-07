@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=2_rtx_4090
+#SBATCH --job-name=4_rtx_4090
 #
 # Specify output file.
 #SBATCH --output=mapanything_%j.log
@@ -19,10 +19,10 @@
 #SBATCH --ntasks=1
 #
 # Specify number of CPU cores per task.
-#SBATCH --cpus-per-task=16
+#SBATCH --cpus-per-task=8
 #
 # Specify memory limit per CPU core.
-#SBATCH --mem-per-cpu=8192
+#SBATCH --mem-per-cpu=4096
 #
 # Specify number of required GPUs.
 #SBATCH --gpus=rtx_4090:2
@@ -74,13 +74,12 @@ fi
 echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 
 # Usa automaticamente tutte le GPU disponibili
-torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
+torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --distributed \
   --use_wandb \
-  --wandb_project "mapanything-distillation" \
-  --wandb_name "production_run_4gpu_full_dataset" \
+  --wandb_name "distillation_2" \
   --epochs 10 \
-  --batch_size 4 \
+  --batch_size 16 \
   --num_workers 8 \
   --lr 1e-4 \
   --weight_decay 1e-4 \
@@ -95,7 +94,10 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_new.py \
   --amp \
   --amp_dtype bf16 \
   --seed 42 \
-  --save_visualization
+  --save_visualizations \
+  --wandb_resume_id 80chpr84 \
+  --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_2 \
+  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_2/checkpoints/checkpoint_epoch1.pth
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}

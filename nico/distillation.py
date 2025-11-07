@@ -20,7 +20,6 @@ from pathlib import Path
 import time
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import csv
@@ -28,11 +27,37 @@ import wandb
 
 from mapanything.models import MapAnything
 from mapanything.utils.image import load_images
-from nico.utils import mean_std_difference, heatmap_sanity_check_single_channel, heatmap_sanity_check_avg_all_channels, create_student_original_teacher_side_by_side, resize_to_64x64
+from nico.utils import mean_std_difference, heatmap_sanity_check_single_channel, heatmap_sanity_check_avg_all_channels, create_student_original_teacher_side_by_side, resize_to_64x64, branch_wandb
 import random
 from tqdm import tqdm
 import sys
-from PIL import Image
+import argparse
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Distillation training script for MapAnything.")
+    # parser.add_argument("--input_dir", type=str, default=None, help="Directory containing image folders.")
+    # parser.add_argument("--output_dir", type=str, default=None, help="Directory for logs and checkpoints.")
+    parser.add_argument("--epochs", type=int, default=1000, help="Number of training epochs.")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate.") # 1e-3, 5e-4, 1e-4
+    # parser.add_argument("--batch_size", type=int, default=None, help="Batch size for images.")
+    # parser.add_argument("--seed", type=int, default=None, help="Random seed.")
+    parser.add_argument("--norm", action="store_true", help="Normalize embeddings before loss.")
+    # parser.add_argument("--amp", action="store_true", help="Enable mixed precision training.")
+    # parser.add_argument("--single_image", action="store_true", help="Process one image at a time.")
+    # parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit number of train images for debugging.")
+    # parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit number of val images for debugging.")
+    # parser.add_argument("--validation", action="store_true", help="Run validation every epoch.")
+    # parser.add_argument("--load_checkpoint", type=str, default=None, help="Path to checkpoint to resume from.")
+    # parser.add_argument("--use_wandb", action="store_true", help="Enable wandb logging.")
+    # parser.add_argument("--use_early_stopping", action="store_true", help="Enable early stopping.")
+    # parser.add_argument("--use_lr_on_plateau", action="store_true", help="Enable LR scheduler on plateau.")
+    parser.add_argument("--wandb_name", type=str, default="run_6_distillation", help="Wandb run name.")
+    parser.add_argument("--load_checkpoint", type=str, default=None, help="Checkpoint to load for resuming training.")
+    parser.add_argument("--branch_wandb_run_id", type=str, default=None, help="Pass the ID of the wandb run to branch.")
+    args = parser.parse_args()
+    return args
+
+args = parse_args()
 
 disable_tqdm = not sys.stdout.isatty() # flag used to understand if I'm working on cluster or locally (lab)
 
@@ -44,7 +69,8 @@ if disable_tqdm:
 # ==================== CONFIGURAZIONE MANUALE ====================
 # Modifica qui i parametri invece di passare argomenti da CLI
 USE_WANDB = True                       # Abilita logging su wandb
-WANDB_NOTES = "run_1"
+BRANCH_WANDB_RUN_ID = args.branch_wandb_run_id  # Nome del branch della run wandb da branchare
+WANDB_NAME = args.wandb_name                     # Nome run wandb (None per default)
 if disable_tqdm:
     INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
     BASE_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"         # Directory per log / checkpoint
@@ -53,8 +79,13 @@ else:
     INPUT_DIR = "/scratch2/nico/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
     BASE_DIR = "/scratch2/nico/distillation/output"         # Directory per log / checkpoint
     COCO2017_ROOT = "/scratch2/nico/distillation/coco2017"  # root che contiene 'train' e 'val'
-OUTPUT_DIR = os.path.join(BASE_DIR, WANDB_NOTES)
+# OVERFIT_IMAGE = os.path.join(COCO2017_ROOT, "train/val2017/000000000724.jpg") # immagine su cui fare overfit
+OVERFIT_IMAGE = os.path.join(COCO2017_ROOT, "val/val2017/000000059598.jpg") # immagine su cui fare overfit
+
+OUTPUT_DIR = os.path.join(BASE_DIR, WANDB_NAME)
 CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
+HEATMAPS_DIR = os.path.join(OUTPUT_DIR, "heatmaps")
+EMBEDDINGS_DIR = os.path.join(OUTPUT_DIR, "embeddings")
 IMAGES_DIRNAME = "val2017"              # sottocartella immagini dentro ogni split
 FEATURES_DIRNAME = "teacher_features"   # sottocartella features dentro ogni split
 TRAIN_SPLIT = "train"
@@ -63,9 +94,9 @@ TRAIN_IMAGES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, IMAGES_DIRNAME)
 VAL_IMAGES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, IMAGES_DIRNAME)
 TRAIN_FEATURES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, FEATURES_DIRNAME)
 VAL_FEATURES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, FEATURES_DIRNAME)
-EPOCHS = 200                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
-LR = 1e-4                                   # Learning rate
-WEIGHT_DECAY = 0.0                          # Weight decay AdamW
+EPOCHS = args.epochs                                 # Numero di epoche
+LR = args.lr                                   # Learning rate
+WEIGHT_DECAY = 1e-4                          # Weight decay AdamW
 EMB_POOL_SIZE = 64                          # (Non usato direttamente ora, placeholder se estendi pooling custom)
 SEED = 0                                    # Seed random
 AMP = True                                  # Abilita autocast mixed precision
@@ -73,22 +104,29 @@ NORM = False                                # Normalizza embeddings prima della 
 SINGLE_IMAGE = True                         # Carica e processa una immagine per volta (batch size 1)
 BATCH_SIZE_IMAGES = 1                       # Numero di immagini per batch (per sfruttare meglio la GPU)
 DEBUG_MAX_TRAIN_IMAGES = None               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
-DEBUG_MAX_VAL_IMAGES = 50                   # opzionale: limita anche la val (None o 0 per disabilitare)
+DEBUG_MAX_VAL_IMAGES = 100                   # opzionale: limita anche la val (None o 0 per disabilitare)
 NUM_HEATMAPS = 10                          # Numero di heatmaps da salvare dopo il training
 VALIDATION = True                          # Esegui validazione ad ogni epoca
+FINAL_ANALYSIS = True                     # Esegui analisi finale con heatmap dopo training
+SAVE_STUDENT_EMBEDDINGS_EVERY = 5          # Salva gli embeddings student ogni N epoche (None per disabilitare)
 # ===============================================================
 # Riprendi da checkpoint (se non None)
-# LOAD_CHECKPOINT = "checkpoint_final.pth"  # es: "checkpoint_final.pth" oppure None
-LOAD_CHECKPOINT = None
+# LOAD_CHECKPOINT = "checkpoint_best.pth"  # es: "checkpoint_final.pth" oppure None
+# LOAD_CHECKPOINT = None
+LOAD_CHECKPOINT = args.load_checkpoint
 # ===============================================================
-# Early stopping e ReduceLROnPlateau (impostare a True/False per abilitare/disabilitare)
-USE_EARLY_STOPPING = True
+# Early stopping e ReduceLROnPlateau
+USE_EARLY_STOPPING = False
 EARLY_STOPPING_PATIENCE = 5  # epoche senza miglioramento prima di fermare
-USE_LR_ON_PLATEAU = True
-LR_ON_PLATEAU_PATIENCE = 3   # epoche senza miglioramento prima di ridurre LR
-LR_ON_PLATEAU_FACTOR = 0.5   # fattore di riduzione LR
-MIN_LR = 1e-7                # learning rate minimo consentito
+# USE_LR_ON_PLATEAU = False
+# LR_ON_PLATEAU_PATIENCE = 3   # epoche senza miglioramento prima di ridurre LR
+# LR_ON_PLATEAU_FACTOR = 0.5   # fattore di riduzione LR
+# MIN_LR = 1e-7                # learning rate minimo consentito
 # =================================================================
+Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+Path(HEATMAPS_DIR).mkdir(parents=True, exist_ok=True)
+Path(CHECKPOINT_DIR).mkdir(parents=True, exist_ok=True)
+Path(EMBEDDINGS_DIR).mkdir(parents=True, exist_ok=True)
 
 def save_checkpoint(model, optimizer, epoch, loss, output_dir, tag="last"):
     # Salva solo la dpt_feature_head_2 e l'optimizer
@@ -98,6 +136,9 @@ def save_checkpoint(model, optimizer, epoch, loss, output_dir, tag="last"):
         "epoch": epoch,
         "loss": loss,
     }
+    # salva il run_id per resume
+    if 'wandb' in globals() and wandb.run is not None:
+        state["wandb_run_id"] = wandb.run.id
     ckpt_path = Path(output_dir) / f"checkpoint_{tag}.pth"
     torch.save(state, ckpt_path)
     print(f"[INFO] Checkpoint salvato (solo head): {ckpt_path}")
@@ -116,11 +157,24 @@ def main():
     if CHECKPOINT_DIR:
         Path(CHECKPOINT_DIR).mkdir(parents=True, exist_ok=True) # crea cartella output se non esiste
 
+    resume_run_id = None
+    if LOAD_CHECKPOINT is not None:
+        ckpt_path = Path(CHECKPOINT_DIR) / LOAD_CHECKPOINT
+        tmp = torch.load(ckpt_path, map_location=device) # carica su device
+        if ckpt_path.exists():
+            start_epoch = tmp.get("epoch", 0) # riprendi da epoch successiva
+            if BRANCH_WANDB_RUN_ID is not None:
+                resume_run_id = branch_wandb(BRANCH_WANDB_RUN_ID, WANDB_NAME, start_epoch)
+                # resume_run_id = BRANCH_WANDB_RUN  # usa il nome del branch come id della run
+            else:
+                resume_run_id = tmp.get("wandb_run_id", None)
+        else:
+            print(f"[WARN] Checkpoint {ckpt_path} non trovato: non posso recuperare wandb_run_id, partirà una nuova run.")
 
     if USE_WANDB:
-        wandb.init(
+        wandb_kwargs = dict(
             project="mapanything-distillation",
-            notes=WANDB_NOTES if 'WANDB_NOTES' in os.environ else None,
+            name=WANDB_NAME if WANDB_NAME else "mapanything-distillation",
             config={
                 "learning_rate": LR,
                 "epochs": EPOCHS,
@@ -129,10 +183,10 @@ def main():
                 "amp": AMP,
                 "use_early_stopping": USE_EARLY_STOPPING,
                 "early_stopping_patience": EARLY_STOPPING_PATIENCE,
-                "use_lr_on_plateau": USE_LR_ON_PLATEAU,
-                "lr_on_plateau_patience": LR_ON_PLATEAU_PATIENCE,
-                "lr_on_plateau_factor": LR_ON_PLATEAU_FACTOR,
-                "min_lr": MIN_LR,
+                # "use_lr_on_plateau": USE_LR_ON_PLATEAU,
+                # "lr_on_plateau_patience": LR_ON_PLATEAU_PATIENCE,
+                # "lr_on_plateau_factor": LR_ON_PLATEAU_FACTOR,
+                # "min_lr": MIN_LR,
                 "single_image": SINGLE_IMAGE,
                 "debug_max_train_images": DEBUG_MAX_TRAIN_IMAGES,
                 "debug_max_val_images": DEBUG_MAX_VAL_IMAGES,
@@ -142,7 +196,11 @@ def main():
                 "train_cos_sim": None
             }
         )
-
+        if resume_run_id:
+            wandb_kwargs.update(id=resume_run_id, resume="allow")  # "must" se vuoi fallire se non esiste
+            print(f"[W&B] Resume run id={resume_run_id}")
+        run = wandb.init(**wandb_kwargs)
+        
     print(f"output_dir: {OUTPUT_DIR}")
 
     # Modello + freeze
@@ -173,16 +231,22 @@ def main():
     for name, p in model.named_parameters():
         if not name.startswith("dpt_feature_head_2"):
             p.requires_grad = False
+        # else:
+        #     print(f"{name} | {p.shape}")
 
     # Optimizer (solo head)
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.AdamW(params, lr=LR, weight_decay=WEIGHT_DECAY, betas=(0.9, 0.95))
 
-    # Scheduler ReduceLROnPlateau opzionale
-    if USE_LR_ON_PLATEAU:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="min", factor=LR_ON_PLATEAU_FACTOR, patience=LR_ON_PLATEAU_PATIENCE, min_lr=MIN_LR
-        )
+    # # Scheduler ReduceLROnPlateau opzionale
+    # if USE_LR_ON_PLATEAU:
+    #     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    #         optimizer, mode="min", factor=LR_ON_PLATEAU_FACTOR, patience=LR_ON_PLATEAU_PATIENCE, min_lr=MIN_LR
+    #     )
+
+    # Scheduler dinamico (Cosine Annealing)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50, eta_min=1e-6)
+    print("[INFO] CosineAnnealingLR attivo: riduzione dinamica del learning rate.")
 
     # Caricamento checkpoint se richiesto
     start_epoch = 0
@@ -190,11 +254,15 @@ def main():
     epochs_no_improve = 0 # contatore early stopping
     if LOAD_CHECKPOINT is not None:
         ckpt_path = Path(CHECKPOINT_DIR) / LOAD_CHECKPOINT
+        # ckpt_path = Path(BASE_DIR) / "ep1000_lr00001_normTrue" / "checkpoints" / "checkpoint_final.pth"
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Checkpoint {ckpt_path} non trovato!")
         checkpoint = torch.load(ckpt_path, map_location=device) # carica su device
         model.dpt_feature_head_2.load_state_dict(checkpoint["dpt_feature_head_2"]) # carica solo head
         optimizer.load_state_dict(checkpoint["optimizer"]) # carica stato optimizer
+        for g in optimizer.param_groups:
+            g["lr"] = LR
+            g["weight_decay"] = WEIGHT_DECAY
         start_epoch = checkpoint.get("epoch", 0) # riprendi da epoch successiva
         best_loss = checkpoint.get("loss", None)
         print(f"[INFO] Checkpoint {ckpt_path.name} caricato. Riprendo da epoch {start_epoch+1}.")
@@ -246,9 +314,24 @@ def main():
         val_image_paths.sort()
         # Limita il numero di immagini per il debug: campionamento casuale ad ogni epoca
         train_image_paths_full = train_image_paths.copy()
+        # Assicurati che OVERFIT_IMAGE sia sempre presente nelle immagini di validation.
+        # Rimuovi eventuali occorrenze dalla lista train (e dalla copia train_image_paths_full)
+        overfit_abs = os.path.abspath(OVERFIT_IMAGE)
+        val_image_paths = [p for p in val_image_paths if os.path.abspath(p) != overfit_abs]
+        train_image_paths_full = [p for p in train_image_paths_full if os.path.abspath(p) != overfit_abs]
+
+        if os.path.isfile(OVERFIT_IMAGE):
+            # inserisci l'overfit in testa alla lista di val (evita duplicati grazie alla rimozione sopra)
+            val_image_paths.insert(0, OVERFIT_IMAGE)
+            print(f"[INFO] OVERFIT_IMAGE aggiunta a validation: {OVERFIT_IMAGE}")
+        else:
+            print(f"[WARN] OVERFIT_IMAGE non trovata su disco: {OVERFIT_IMAGE}")
+
+        # Limita il numero di immagini di validation per debug, mantenendo OVERFIT_IMAGE (se presente)
         if DEBUG_MAX_VAL_IMAGES and len(val_image_paths) > DEBUG_MAX_VAL_IMAGES:
+            # Se OVERFIT_IMAGE è in posizione 0 la slice la manterrà; altrimenti si mantiene semplicemente la slice
             val_image_paths = val_image_paths[:DEBUG_MAX_VAL_IMAGES]
-            print(f"[DEBUG] Limito val a {len(val_image_paths)} immagini.")
+            print(f"[DEBUG] Limito val a {len(val_image_paths)} immagini (OVERFIT preserved if present).")
 
         print(f"[SPLIT] Train images: {len(train_image_paths)} | Val images: {len(val_image_paths)}")
         if len(train_image_paths) == 0 or len(val_image_paths) == 0:
@@ -301,11 +384,13 @@ def main():
                     base = os.path.splitext(os.path.basename(p))[0]
                     t_path = Path(TRAIN_FEATURES_DIR) / f"{base}.pt"
                     if not t_path.is_file():
-                        skip = True; break
+                        skip = True
+                        break
                     t = torch.load(str(t_path), map_location="cpu")
                     if t.dim() == 3: t = t.unsqueeze(0)
                     if t.dim() != 4 or t.shape[0] != 1:
-                        skip = True; break
+                        skip = True
+                        break
                     teacher_tensors.append(t)
                 if skip or len(teacher_tensors) == 0:
                     print(f"[WARN] Teacher features mancanti o malformate per alcune immagini, salto batch.")
@@ -327,17 +412,10 @@ def main():
                         student_norm = student_batch
                         teacher_norm = teacher_batch
 
-                    # create_student_original_teacher_side_by_side(student_norm, teacher_norm, "/scratch2/nico/distillation/coco2017/train/val2017/000000000724.jpg", epoch, "/scratch2/nico/distillation/output/heatmaps")
-                    # Salva gli embeddings student e teacher su disco per analisi/debug
-                    # embeddings_dir = os.path.join(OUTPUT_DIR, "embeddings")
-                    # student_save_path = os.path.join(embeddings_dir, f"student_embeddings.pt")
-                    # teacher_save_path = os.path.join(embeddings_dir, f"teacher_embeddings.pt")
-                    # torch.save(student_norm.detach().cpu(), student_save_path)
-                    # torch.save(teacher_norm.detach().cpu(), teacher_save_path)
-
                     cos_loss = 1 - F.cosine_similarity(student_norm, teacher_norm, dim=1).mean() # cosine loss for "teaching the same semantic language"
                     mse_loss = F.mse_loss(student_norm, teacher_norm) # mse loss for the same spatial structure/shape
                     loss = 0.5 * mse_loss + 0.5 * cos_loss
+
                 loss.backward()
                 optimizer.step()
                 train_loss_acc += float(loss.detach().cpu()) * student_batch.shape[0]
@@ -358,7 +436,6 @@ def main():
             train_cos_sim   = train_cos_sim_acc   / train_samples if train_samples > 0 else 0.0
 
             # ---- VALIDATION ----
-            model.eval()
             val_loss_acc = 0.0
             val_samples = 0
             val_mean_diff_acc = 0.0
@@ -368,6 +445,7 @@ def main():
             val_cos_loss_acc = 0.0
 
             if VALIDATION:
+                model.eval()
                 with torch.no_grad():
                     # select the iterator type based on disable_tqdm (cluster or local)
                     if disable_tqdm:
@@ -386,10 +464,14 @@ def main():
                         for p in batch_paths:
                             base = os.path.splitext(os.path.basename(p))[0]
                             t_path = Path(VAL_FEATURES_DIR) / f"{base}.pt"
-                            if not t_path.is_file(): skip = True; break
+                            if not t_path.is_file():
+                                skip = True
+                                break
                             t = torch.load(str(t_path), map_location="cpu")
                             if t.dim() == 3: t = t.unsqueeze(0)
-                            if t.dim() != 4 or t.shape[0] != 1: skip = True; break
+                            if t.dim() != 4 or t.shape[0] != 1:
+                                skip = True
+                                break
                             teacher_tensors.append(t)
                         if skip or len(teacher_tensors) == 0: continue
                         teacher_batch = torch.cat(teacher_tensors, dim=0).to(device)
@@ -411,6 +493,33 @@ def main():
                             cos_loss = 1 - F.cosine_similarity(student_norm, teacher_norm, dim=1).mean()
                             mse_loss = F.mse_loss(student_norm, teacher_norm)
                             vloss = 0.5 * mse_loss + 0.5 * cos_loss
+
+                        # Salvataggio embeddings/heatmap SOLO per l'immagine OVERFIT_IMAGE, durante VALIDATION
+                        if SAVE_STUDENT_EMBEDDINGS_EVERY and (epoch + 1) % SAVE_STUDENT_EMBEDDINGS_EVERY == 0:
+                            if OVERFIT_IMAGE in batch_paths:
+                                try:
+                                    idx = batch_paths.index(OVERFIT_IMAGE)
+                                    # Heatmap side-by-side per sola immagine di overfit (usa PCA coerente)
+                                    create_student_original_teacher_side_by_side(
+                                        student_norm[idx:idx+1].detach().cpu(),
+                                        teacher_norm[idx:idx+1].detach().cpu(),
+                                        OVERFIT_IMAGE,
+                                        epoch + 1,
+                                        HEATMAPS_DIR,
+                                        True
+                                    )
+                                except Exception as e:
+                                    print(f"[WARN] Impossibile creare side-by-side per OVERFIT_IMAGE: {e}")
+                                # Salva embeddings dello studente per l'immagine di overfit
+                                try:
+                                    # overfit_name = os.path.splitext(os.path.basename(OVERFIT_IMAGE))[0]
+                                    # student_save_path = os.path.join(
+                                    #     EMBEDDINGS_DIR, f"student_{overfit_name}_epoch{epoch+1}.pt"
+                                    # )
+                                    student_save_path = os.path.join(EMBEDDINGS_DIR, f"student_embeddings_epoch{epoch+1}.pt")
+                                    torch.save(student_norm[idx:idx+1].detach().cpu(), student_save_path)
+                                except Exception as e:
+                                    print(f"[WARN] Impossibile salvare embeddings student per OVERFIT_IMAGE: {e}")
                         val_loss_acc += float(vloss.detach().cpu()) * student_batch.shape[0]
                         val_samples += student_batch.shape[0]
                         val_mse_loss_acc += float(mse_loss.detach().cpu()) * student_batch.shape[0]
@@ -468,24 +577,27 @@ def main():
                     "val_loss": val_loss_mean if 'val_loss_mean' in locals() else None,
                     "val_mse_loss": val_mse_loss_mean if 'val_mse_loss_mean' in locals() else None,
                     "val_cos_loss": val_cos_loss_mean if 'val_cos_loss_mean' in locals() else None,
-                    "mean_diff": val_mean_diff if 'val_mean_diff' in locals() else mean_diff,
-                    "std_diff": val_std_diff if 'val_std_diff' in locals() else std_diff,
-                    "cosine_similarity": val_cos_sim if 'val_cos_sim' in locals() else avg_cosine_sim,
+                    "val_mean_diff": val_mean_diff if 'val_mean_diff' in locals() else mean_diff,
+                    "val_std_diff": val_std_diff if 'val_std_diff' in locals() else std_diff,
+                    "val_cosine_similarity": val_cos_sim if 'val_cos_sim' in locals() else avg_cosine_sim,
                     "lr": current_lr,
                     "epoch_time_sec": epoch_time
                 })
 
             # Scheduler & Early Stopping sulla val_loss
             target_loss = val_loss_mean
-            if USE_LR_ON_PLATEAU:
-                scheduler.step(target_loss)
-            improved = best_loss is None or target_loss < best_loss - 1e-6
-            if improved:
-                best_loss = target_loss; epochs_no_improve = 0
-                save_checkpoint(model, optimizer, epoch+1, target_loss, CHECKPOINT_DIR, tag="best")
-            else:
-                epochs_no_improve += 1
-                print(f"[INFO] Nessun miglioramento val ({epochs_no_improve}/{EARLY_STOPPING_PATIENCE}).")
+            # Aggiornamento dinamico del LR (CosineAnnealingLR)
+            scheduler.step()
+            if VALIDATION:
+                improved = best_loss is None or target_loss < best_loss - 1e-6
+                if improved:
+                    best_loss = target_loss
+                    epochs_no_improve = 0
+                    save_checkpoint(model, optimizer, epoch+1, target_loss, CHECKPOINT_DIR, tag="best")
+                else:
+                    epochs_no_improve += 1
+                    # print(f"[INFO] Nessun miglioramento val ({epochs_no_improve}/{EARLY_STOPPING_PATIENCE}).")
+                    print(f"[INFO] Nessun miglioramento val ({epochs_no_improve} epochs).")
             if USE_EARLY_STOPPING and epochs_no_improve >= EARLY_STOPPING_PATIENCE:
                 print(f"[EARLY STOP] Stoppo a epoch {epoch+1}.")
                 break
@@ -613,9 +725,8 @@ def main():
                     "epoch_time_sec": epoch_time
                 })
 
-            # Scheduler LR on plateau
-            if USE_LR_ON_PLATEAU:
-                scheduler.step(epoch_loss_mean) # step dello scheduler passando la loss media
+            # Aggiornamento dinamico del LR (CosineAnnealingLR)
+            scheduler.step()
 
             # Early stopping
             improved = best_loss is None or epoch_loss_mean < best_loss - 1e-6
@@ -644,49 +755,91 @@ def main():
         final_epoch = (epoch + 1) if 'epoch' in locals() else start_epoch
         save_checkpoint(model, optimizer, final_epoch, final_loss, CHECKPOINT_DIR, tag="final")
 
-    # Analisi finale con heatmap
-    if SINGLE_IMAGE:
-        # Usa preferibilmente lo split di validazione per le heatmap finali; fallback al train se mancano.
-        source_image_paths = None
-        if 'val_image_paths' in locals() and len(val_image_paths) > 0:
-            source_image_paths = val_image_paths
-            print("[HEATMAP] Uso immagini di validation per l'analisi finale.")
-        elif 'train_image_paths' in locals() and len(train_image_paths) > 0:
-            source_image_paths = train_image_paths
-            print("[HEATMAP] Val vuoto: uso immagini di train per l'analisi finale.")
+    if FINAL_ANALYSIS:
+        # Analisi finale con heatmap
+        if SINGLE_IMAGE:
+            # Usa preferibilmente lo split di validazione per le heatmap finali; fallback al train se mancano.
+            source_image_paths = None
+            if 'val_image_paths' in locals() and len(val_image_paths) > 0:
+                source_image_paths = val_image_paths
+                print("[HEATMAP] Uso immagini di validation per l'analisi finale.")
+            elif 'train_image_paths' in locals() and len(train_image_paths) > 0:
+                source_image_paths = train_image_paths
+                print("[HEATMAP] Val vuoto: uso immagini di train per l'analisi finale.")
+            else:
+                print("[HEATMAP][WARN] Nessuna lista immagini disponibile per generare heatmap.")
+                source_image_paths = []
+
+            num_images = min(NUM_HEATMAPS, len(source_image_paths))
+
+            if num_images == 0:
+                print("[HEATMAP][WARN] Nessuna immagine da processare.")
+            else:
+                selected_paths = random.sample(source_image_paths, num_images)
+                print(f"Analisi heatmap per {num_images} immagini scelte casualmente dallo split selezionato.")
+
+                for img_path in selected_paths:
+                    img_name = os.path.splitext(os.path.basename(img_path))[0]
+                    print(f"Analisi heatmap per immagine: {img_name}")
+                    # Caricamento singola immagine mantenendo compatibilità con load_images
+                    view = load_images([str(img_path)])
+                    if len(view) == 0:
+                        print(f"[WARN] Nessuna immagine caricata da {img_path}")
+                        continue
+                    if isinstance(view, dict):
+                        view = [view]  # normalizza a lista
+                    for v in view:
+                        if "img" in v:
+                            v["img"] = v["img"].to(device, non_blocking=True)
+
+                    model.eval()
+                    model.infer(
+                        view,
+                        memory_efficient_inference=False,
+                        use_amp=True,
+                        amp_dtype="bf16",
+                        apply_mask=True,
+                        mask_edges=True,
+                        apply_confidence_mask=False,
+                        confidence_percentile=0,
+                    )
+                    student_embeddings = getattr(model, "_last_feat2_8x", None)
+                    if student_embeddings is None:
+                        print("[HEATMAP][WARN] _last_feat2_8x non presente dopo infer().")
+                        continue
+
+                    student_embeddings = resize_to_64x64(student_embeddings) # (B*V, 256, 64, 64)
+
+                    # Path teacher: prima prova nello split di validazione, poi fallback al train
+                    candidate_teacher_paths = [
+                        os.path.join(VAL_FEATURES_DIR, f"{img_name}.pt"),
+                        os.path.join(TRAIN_FEATURES_DIR, f"{img_name}.pt"),
+                    ]
+                    teacher_path = None
+                    for ctp in candidate_teacher_paths:
+                        if os.path.isfile(ctp):
+                            teacher_path = ctp
+                            break
+                    if teacher_path is None:
+                        print(f"[HEATMAP][WARN] Teacher feature non trovata per {img_name}.")
+                        continue
+                    teacher_embeddings = torch.load(teacher_path, map_location="cpu")
+
+                    output_heatmaps = os.path.join(OUTPUT_DIR, "heatmaps")
+                    os.makedirs(output_heatmaps, exist_ok=True)
+                    print(f"[HEATMAP] Salvo heatmap in {output_heatmaps}")
+                    # heatmap_sanity_check_single_channel(student_embeddings, teacher_embeddings, img_name, output_heatmaps)
+                    # heatmap_sanity_check_avg_all_channels(student_embeddings, teacher_embeddings, img_name, output_heatmaps)
+                    create_student_original_teacher_side_by_side(student_embeddings, teacher_embeddings, img_path, img_name, output_heatmaps)
         else:
-            print("[HEATMAP][WARN] Nessuna lista immagini disponibile per generare heatmap.")
-            source_image_paths = []
+            for folder in folders:
+                print(f"Analisi heatmap per cartella: {folder.name}")
+                images = os.path.join(INPUT_DIR, folder)
+                views = load_images(images)
 
-        num_images = min(NUM_HEATMAPS, len(source_image_paths))
-
-        if num_images == 0:
-            print("[HEATMAP][WARN] Nessuna immagine da processare.")
-        else:
-            selected_paths = random.sample(source_image_paths, num_images)
-            print(f"Analisi heatmap per {num_images} immagini scelte casualmente dallo split selezionato.")
-
-            for img_path in selected_paths:
-                img_name = os.path.splitext(os.path.basename(img_path))[0]
-                print(f"Analisi heatmap per immagine: {img_name}")
-                # Caricamento singola immagine mantenendo compatibilità con load_images
-                # with Image.open(img_path) as img:
-                #     print(f"[SHAPE] Shape originale immagine: {img.size} (W, H), mode: {img.mode}")
-                view = load_images([str(img_path)])
-                # if len(view) > 0 and "img" in view[0]:
-                #     print(f"[SHAPE] Shape dopo load_images: {view[0]['img'].shape} (N, C, H, W), data_norm_type: {view[0]['data_norm_type']}")
-                if len(view) == 0:
-                    print(f"[WARN] Nessuna immagine caricata da {img_path}")
-                    continue
-                if isinstance(view, dict):
-                    view = [view]  # normalizza a lista
-                for v in view:
-                    if "img" in v:
-                        v["img"] = v["img"].to(device, non_blocking=True)
-
-                model.eval()
+                model.eval() # modalità eval (disabilita dropout, batchnorm, ecc.)
                 model.infer(
-                    view,
+                    views,
                     memory_efficient_inference=False,
                     use_amp=True,
                     amp_dtype="bf16",
@@ -696,63 +849,16 @@ def main():
                     confidence_percentile=0,
                 )
                 student_embeddings = getattr(model, "_last_feat2_8x", None)
-                if student_embeddings is None:
-                    print("[HEATMAP][WARN] _last_feat2_8x non presente dopo infer().")
-                    continue
-
                 student_embeddings = resize_to_64x64(student_embeddings) # (B*V, 256, 64, 64)
 
-                # print("[SHAPE] Student embeddings shape:", student_embeddings.shape)
-
-                # Path teacher: prima prova nello split di validazione, poi fallback al train
-                candidate_teacher_paths = [
-                    os.path.join(VAL_FEATURES_DIR, f"{img_name}.pt"),
-                    os.path.join(TRAIN_FEATURES_DIR, f"{img_name}.pt"),
-                ]
-                teacher_path = None
-                for ctp in candidate_teacher_paths:
-                    if os.path.isfile(ctp):
-                        teacher_path = ctp
-                        break
-                if teacher_path is None:
-                    print(f"[HEATMAP][WARN] Teacher feature non trovata per {img_name}.")
-                    continue
+                teacher_path = Path(folder) / "teacher_embeddings.pt"
                 teacher_embeddings = torch.load(teacher_path, map_location="cpu")
 
                 output_heatmaps = os.path.join(OUTPUT_DIR, "heatmaps")
+                print(f"[DEBUG] Saving heatmaps to {output_heatmaps}")
                 os.makedirs(output_heatmaps, exist_ok=True)
-                print(f"[HEATMAP] Salvo heatmap in {output_heatmaps}")
-                # heatmap_sanity_check_single_channel(student_embeddings, teacher_embeddings, img_name, output_heatmaps)
-                # heatmap_sanity_check_avg_all_channels(student_embeddings, teacher_embeddings, img_name, output_heatmaps)
-                create_student_original_teacher_side_by_side(student_embeddings, teacher_embeddings, img_path, img_name, output_heatmaps)
-    else:
-        for folder in folders:
-            print(f"Analisi heatmap per cartella: {folder.name}")
-            images = os.path.join(INPUT_DIR, folder)
-            views = load_images(images)
-
-            model.eval() # modalità eval (disabilita dropout, batchnorm, ecc.)
-            model.infer(
-                views,
-                memory_efficient_inference=False,
-                use_amp=True,
-                amp_dtype="bf16",
-                apply_mask=True,
-                mask_edges=True,
-                apply_confidence_mask=False,
-                confidence_percentile=0,
-            )
-            student_embeddings = getattr(model, "_last_feat2_8x", None)
-            student_embeddings = resize_to_64x64(student_embeddings) # (B*V, 256, 64, 64)
-
-            teacher_path = Path(folder) / "teacher_embeddings.pt"
-            teacher_embeddings = torch.load(teacher_path, map_location="cpu")
-
-            output_heatmaps = os.path.join(OUTPUT_DIR, "heatmaps")
-            print(f"[DEBUG] Saving heatmaps to {output_heatmaps}")
-            os.makedirs(output_heatmaps, exist_ok=True)
-            # heatmap_sanity_check_single_channel(student_embeddings, teacher_embeddings, folder.name, output_heatmaps)
-            # heatmap_sanity_check_avg_all_channels(student_embeddings, teacher_embeddings, folder.name, output_heatmaps)
+                # heatmap_sanity_check_single_channel(student_embeddings, teacher_embeddings, folder.name, output_heatmaps)
+                # heatmap_sanity_check_avg_all_channels(student_embeddings, teacher_embeddings, folder.name, output_heatmaps)
 
 if __name__ == "__main__":
     try:
