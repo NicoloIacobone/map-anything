@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=4_rtx_4090
+#SBATCH --job-name=2_rtx_4090
 #
 # Specify output file.
 #SBATCH --output=mapanything_%j.log
