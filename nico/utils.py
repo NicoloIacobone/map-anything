@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 import shutil
 import wandb
+import numpy as np
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
@@ -321,7 +322,9 @@ def create_student_original_teacher_side_by_side(
         if feats.dim() == 4:
             feats = feats[0]  # [C, H, W]
         feats = feats.permute(1, 2, 0).reshape(-1, feats.shape[0])  # [H*W, C]
+        print(f"[DEBUG] Teacher feats before PCA: {feats.shape}, mean={feats.mean().item():.4f}, std={feats.std().item():.4f}")
         U, S, V = torch.pca_lowrank(feats, q=3, center=True)
+        print(f"[DEBUG] PCA basis V shape: {V.shape}, singular values: {S[:5]}")
         basis = {"V": V[:, :3], "mean": feats.mean(0)}
 
     # --- Step 2: funzione helper per proiettare embeddings con la base caricata ---
@@ -331,9 +334,14 @@ def create_student_original_teacher_side_by_side(
             feats = feats[0]
         feats = feats.permute(1, 2, 0).reshape(-1, feats.shape[0])  # [H*W, C]
         feats_centered = feats - basis["mean"]
+        print(f"[DEBUG] Projecting embeddings with shape {embeddings.shape}")
+        print(f"[DEBUG] Basis mean shape: {basis['mean'].shape}, V shape: {basis['V'].shape}")
+
         proj = feats_centered @ basis["V"]  # [H*W, 3]
+        print(f"[DEBUG] Projection range before normalization: min={proj.min().item():.4f}, max={proj.max().item():.4f}")
         proj -= proj.min(0, keepdim=True)[0]
         proj /= proj.max(0, keepdim=True)[0].clamp(min=1e-6)
+        print(f"[DEBUG] Projection range after normalization: min={proj.min().item():.4f}, max={proj.max().item():.4f}")
         H, W = embeddings.shape[-2:]
         rgb = proj.reshape(H, W, 3)
         pil_img = Image.fromarray((rgb.cpu().numpy() * 255).astype("uint8"))
@@ -343,8 +351,8 @@ def create_student_original_teacher_side_by_side(
     pil_img_teacher = project_with_basis(teacher_embeddings, basis)
     pil_img_student = project_with_basis(student_embeddings, basis)
 
-    # debug - print shapes of teacher and student pil images
-    print(f"[DEBUG] Teacher PIL image size: {pil_img_teacher.size}, Student PIL image size: {pil_img_student.size}")
+    print(f"[DEBUG] Teacher RGB mean/std: {np.array(pil_img_teacher).mean():.2f}/{np.array(pil_img_teacher).std():.2f}")
+    print(f"[DEBUG] Student RGB mean/std: {np.array(pil_img_student).mean():.2f}/{np.array(pil_img_student).std():.2f}")
 
     # --- Step 4: crea immagine combinata ---
     orig_img = Image.open(img_path).convert("RGB")
@@ -354,8 +362,6 @@ def create_student_original_teacher_side_by_side(
 
     # debug - print shapes of teacher and student resized images
     print(f"[DEBUG] Resized Teacher PIL image size: {pil_img_teacher.size}, Resized Student PIL image size: {pil_img_student.size}")
-
-    raise Exception("Debug stop")
 
     w, h = target_size
     combined_img = Image.new("RGB", (w * 3, h))
