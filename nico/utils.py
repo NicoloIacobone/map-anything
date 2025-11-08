@@ -363,6 +363,8 @@ def create_student_original_teacher_side_by_side(
     # debug - print shapes of teacher and student resized images
     print(f"[DEBUG] Resized Teacher PIL image size: {pil_img_teacher.size}, Resized Student PIL image size: {pil_img_student.size}")
 
+    raise Exception("Debug stop")
+
     w, h = target_size
     combined_img = Image.new("RGB", (w * 3, h))
     combined_img.paste(pil_img_student, (0, 0))
