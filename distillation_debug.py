@@ -740,6 +740,10 @@ def save_pca_visualizations(
             student_save_path.mkdir(parents=True, exist_ok=True)
             print(f"[VIZ] @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ Saving student features with shape: {student_single.shape} to {student_save_path / f'{epoch}.pt'}")
             print(f"[VIZ] @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ Shape teacher features: {teacher_single.shape}")
+            print("Student type:", type(student_single))
+            print("Teacher type:", type(teacher_single))
+            print("Student requires_grad:", getattr(student_single, "requires_grad", None))
+            print("Teacher requires_grad:", getattr(teacher_single, "requires_grad", None))
             torch.save(teacher_single.detach().cpu(), student_save_path / f"teacher_{epoch}.pt")
             torch.save(student_single.detach().cpu(), student_save_path / f"{epoch}.pt")
         except Exception as e:
