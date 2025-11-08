@@ -644,9 +644,9 @@ def validate_one_epoch_distillation(
             # print student and teacher features shapes
             print(f"[DEBUG] Student features shape: {student_features.shape}, Teacher features shape: {teacher_features.shape}")
             # DEBUG: Carica student features da file .pt specificato manualmente
-            student_features_path = "/scratch2/nico/distillation/output/distill_20251108_175643/visualizations/student/2.pt"  # <-- Modifica con il path desiderato
-            student_features = torch.load(student_features_path, map_location="cpu")
-            print(f"[DEBUG] Loaded student features from {student_features_path}: {student_features.shape}")
+            # student_features_path = "/scratch2/nico/distillation/output/distill_20251108_175643/visualizations/student/2.pt"  # <-- Modifica con il path desiderato
+            # student_features = torch.load(student_features_path, map_location="cpu")
+            # print(f"[DEBUG] Loaded student features from {student_features_path}: {student_features.shape}")
             save_pca_visualizations(
                 student_features=student_features,
                 teacher_features=teacher_features,
