@@ -717,13 +717,15 @@ def save_pca_visualizations(
         # This function handles PCA, image loading, compositing, and saving
         try:
             create_student_original_teacher_side_by_side(
-                student_embeddings=student_single,
+                # student_embeddings=student_single,
+                student_embeddings=teacher_single,  # Intentional swap for visualization
                 teacher_embeddings=teacher_single,
                 img_path=img_path,
                 epoch=epoch,
                 output_heatmaps=str(viz_dir),
                 is_overfit_image=False,  # Dynamic PCA basis (not saved/loaded from disk)
             )
+            raise Exception("Debug Exception to test warning handling")
             student_save_path = Path(str(viz_dir)) / "student"
             student_save_path.mkdir(parents=True, exist_ok=True)
             torch.save(student_single.detach().cpu(), student_save_path / f"{epoch}.pt")
