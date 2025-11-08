@@ -739,6 +739,8 @@ def save_pca_visualizations(
             student_save_path = Path(str(viz_dir)) / "student"
             student_save_path.mkdir(parents=True, exist_ok=True)
             print(f"[VIZ] @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ Saving student features with shape: {student_single.shape} to {student_save_path / f'{epoch}.pt'}")
+            print(f"[VIZ] @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ Shape teacher features: {teacher_single.shape}")
+            torch.save(teacher_single.detach().cpu(), viz_dir / f"teacher_{epoch}.pt")
             torch.save(student_single.detach().cpu(), student_save_path / f"{epoch}.pt")
         except Exception as e:
             print(f"[WARN] Failed to create PCA visualization for {img_path}: {e}")
