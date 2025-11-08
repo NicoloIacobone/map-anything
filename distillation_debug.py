@@ -644,12 +644,15 @@ def validate_one_epoch_distillation(
             # print student and teacher features shapes
             print(f"[DEBUG] Student features shape: {student_features.shape}, Teacher features shape: {teacher_features.shape}")
             save_pca_visualizations(
-                student_features=student_features,
+                # student_features=student_features,
+                student_features=teacher_features, # debug
                 teacher_features=teacher_features,
                 image_paths=image_paths,
                 epoch=epoch,
                 output_dir=args.output_dir,
             )
+
+        raise Exception("Debug stop")
         
         # Accumulate weighted sums
         batch_size = student_features.shape[0]
