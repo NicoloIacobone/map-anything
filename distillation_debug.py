@@ -643,16 +643,17 @@ def validate_one_epoch_distillation(
         if args.save_visualizations and batch_idx == 0:
             # print student and teacher features shapes
             print(f"[DEBUG] Student features shape: {student_features.shape}, Teacher features shape: {teacher_features.shape}")
+            # DEBUG: Carica student features da file .pt specificato manualmente
+            student_features_path = "/scratch2/nico/distillation/output/distill_20251108_175643/visualizations/student/2.pt"  # <-- Modifica con il path desiderato
+            student_features = torch.load(student_features_path, map_location="cpu")
+            print(f"[DEBUG] Loaded student features from {student_features_path}: {student_features.shape}")
             save_pca_visualizations(
-                # student_features=student_features,
-                student_features=teacher_features, # debug
+                student_features=student_features,
                 teacher_features=teacher_features,
                 image_paths=image_paths,
                 epoch=epoch,
                 output_dir=args.output_dir,
             )
-
-        raise Exception("Debug stop")
         
         # Accumulate weighted sums
         batch_size = student_features.shape[0]
@@ -737,6 +738,7 @@ def save_pca_visualizations(
             )
             student_save_path = Path(str(viz_dir)) / "student"
             student_save_path.mkdir(parents=True, exist_ok=True)
+            print(f"[VIZ] @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@ Saving student features with shape: {student_single.shape} to {student_save_path / f'{epoch}.pt'}")
             torch.save(student_single.detach().cpu(), student_save_path / f"{epoch}.pt")
         except Exception as e:
             print(f"[WARN] Failed to create PCA visualization for {img_path}: {e}")
