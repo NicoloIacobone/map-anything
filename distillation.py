@@ -726,6 +726,21 @@ def save_pca_visualizations(
             )
             student_save_path = Path(str(viz_dir)) / "student"
             student_save_path.mkdir(parents=True, exist_ok=True)
+
+            # Debug info about the saved tensor
+            tensor = student_single
+            print(tensor.shape)
+            print("Student type:", type(tensor))
+            print("Student requires_grad:", getattr(tensor, "requires_grad", None))
+            print("is_contiguous:", tensor.is_contiguous())
+            print("storage size:", tensor.storage().size())
+            print("numel:", tensor.numel())
+            print("storage / numel ratio:", tensor.storage().size() / tensor.numel())
+            print(tensor.device)
+            print(f"[DBG] rank={torch.distributed.get_rank() if torch.distributed.is_initialized() else 0} "
+                  f"shape={tuple(tensor.shape)} dtype={tensor.dtype} "
+                  f"expectedMB={tensor.numel()*torch.finfo(tensor.dtype).bits//8/1024**2:.2f}")
+
             torch.save(student_single.detach().cpu(), student_save_path / f"{epoch}.pt")
         except Exception as e:
             print(f"[WARN] Failed to create PCA visualization for {img_path}: {e}")
