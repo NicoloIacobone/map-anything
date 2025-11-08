@@ -343,11 +343,19 @@ def create_student_original_teacher_side_by_side(
     pil_img_teacher = project_with_basis(teacher_embeddings, basis)
     pil_img_student = project_with_basis(student_embeddings, basis)
 
+    # debug - print shapes of teacher and student pil images
+    print(f"[DEBUG] Teacher PIL image size: {pil_img_teacher.size}, Student PIL image size: {pil_img_student.size}")
+
     # --- Step 4: crea immagine combinata ---
     orig_img = Image.open(img_path).convert("RGB")
     target_size = orig_img.size
     pil_img_student = pil_img_student.resize(target_size, Image.BILINEAR)
     pil_img_teacher = pil_img_teacher.resize(target_size, Image.BILINEAR)
+
+    # debug - print shapes of teacher and student resized images
+    print(f"[DEBUG] Resized Teacher PIL image size: {pil_img_teacher.size}, Resized Student PIL image size: {pil_img_student.size}")
+
+    raise Exception("Debug stop")
 
     w, h = target_size
     combined_img = Image.new("RGB", (w * 3, h))
