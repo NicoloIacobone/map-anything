@@ -641,6 +641,9 @@ def validate_one_epoch_distillation(
         
         # Salva visualizzazioni se richiesto (solo primo batch per epoca per limitare I/O)
         if args.save_visualizations and batch_idx == 0:
+            # print student and teacher features shapes
+            print(f"[DEBUG] Student features shape: {student_features.shape}, Teacher features shape: {teacher_features.shape}")
+            raise Exception("Debug stop")
             save_pca_visualizations(
                 student_features=student_features,
                 teacher_features=teacher_features,
