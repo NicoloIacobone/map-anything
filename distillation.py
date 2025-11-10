@@ -27,11 +27,19 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+import os
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
+
+# Optional: psutil for CPU memory monitoring
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
 
 # Optional: wandb for experiment tracking
 try:
@@ -420,6 +428,15 @@ def train_one_epoch_distillation(
     accum_iter = args.accum_iter
     optimizer.zero_grad()
 
+    # Memory monitoring at epoch start
+    if torch.cuda.is_available():
+        alloc = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+        res = torch.cuda.memory_reserved() if torch.cuda.is_available() else 0
+        print(f"[DEBUG][GPU] Epoch {epoch} | Step START | Allocated: {alloc/1e9:.2f} GB | Reserved: {res/1e9:.2f} GB", flush=True)
+    if PSUTIL_AVAILABLE:
+        vm = psutil.virtual_memory()
+        print(f"[DEBUG][CPU] Epoch {epoch} | Step START | Used: {vm.used/1e9:.2f} GB | Available: {vm.available/1e9:.2f} GB", flush=True)
+
     # Accumulatori per medie pesate sull'intera epoca (coerenti con distillation.py):
     # sommiamo loss/metriche pesate per batch_size e dividiamo a fine epoca.
     total_samples = 0
@@ -435,6 +452,16 @@ def train_one_epoch_distillation(
     ):
         epoch_f = epoch + data_iter_step / max(1, len(data_loader))
         
+        # Print memory usage every 500 batches
+        if data_iter_step % 500 == 0:
+            if torch.cuda.is_available():
+                alloc = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+                res = torch.cuda.memory_reserved() if torch.cuda.is_available() else 0
+                print(f"[DEBUG][GPU] Epoch {epoch} | Step {data_iter_step} | Allocated: {alloc/1e9:.2f} GB | Reserved: {res/1e9:.2f} GB", flush=True)
+            if PSUTIL_AVAILABLE:
+                vm = psutil.virtual_memory()
+                print(f"[DEBUG][CPU] Epoch {epoch} | Step {data_iter_step} | Used: {vm.used/1e9:.2f} GB | Available: {vm.available/1e9:.2f} GB", flush=True)
+
         # Get data
         image_paths = batch["image_paths"]
         teacher_features = batch["teacher_features"].to(device, non_blocking=True)
@@ -534,6 +561,15 @@ def train_one_epoch_distillation(
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(loss=loss_value, **loss_details)
         
+    # Memory monitoring at epoch end
+    if torch.cuda.is_available():
+        alloc = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+        res = torch.cuda.memory_reserved() if torch.cuda.is_available() else 0
+        print(f"[DEBUG][GPU] Epoch {epoch} | Step END | Allocated: {alloc/1e9:.2f} GB | Reserved: {res/1e9:.2f} GB", flush=True)
+    if PSUTIL_AVAILABLE:
+        vm = psutil.virtual_memory()
+        print(f"[DEBUG][CPU] Epoch {epoch} | Step END | Used: {vm.used/1e9:.2f} GB | Available: {vm.available/1e9:.2f} GB", flush=True)
+
     # Return averaged stats (weighted by batch size)
     denom = max(1, total_samples)
     results = {
@@ -656,6 +692,14 @@ def validate_one_epoch_distillation(
         # Clean up
         del student_features, teacher_features
     
+    # Print memory usage after validation
+    if torch.cuda.is_available():
+        alloc = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+        res = torch.cuda.memory_reserved() if torch.cuda.is_available() else 0
+        print(f"[DEBUG][GPU] Epoch {epoch} | VALIDATION END | Allocated: {alloc/1e9:.2f} GB | Reserved: {res/1e9:.2f} GB", flush=True)
+    if PSUTIL_AVAILABLE:
+        vm = psutil.virtual_memory()
+        print(f"[DEBUG][CPU] Epoch {epoch} | VALIDATION END | Used: {vm.used/1e9:.2f} GB | Available: {vm.available/1e9:.2f} GB", flush=True)
     # Compute aggregates (weighted means)
     denom = max(1, total_samples)
     results = {
