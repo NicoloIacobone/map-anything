@@ -800,7 +800,11 @@ def save_pca_visualizations(
                   f"shape={tuple(teacher_tensor.shape)} dtype={teacher_tensor.dtype} "
                   f"expectedMB={teacher_tensor.numel()*torch.finfo(teacher_tensor.dtype).bits//8/1024**2:.2f}")
 
-            torch.save(student_single.detach().cpu(), student_save_path / f"{epoch}.pt")
+            # Ensure tensors are detached, cloned, and contiguous before saving
+            student_single = student_single.detach().cpu().contiguous().clone()
+            teacher_single = teacher_single.detach().cpu().contiguous().clone()
+            # torch.save(student_single.detach().cpu(), student_save_path / f"{epoch}.pt")
+            torch.save(student_single, student_save_path / f"{epoch}.pt")
         except Exception as e:
             print(f"[WARN] Failed to create PCA visualization for {img_path}: {e}")
             continue
