@@ -79,7 +79,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --wandb_name "distillation_2" \
   --epochs 20 \
-  --batch_size 18 \
+  --batch_size 16 \
   --num_workers 8 \
   --lr 1e-4 \
   --weight_decay 1e-4 \
