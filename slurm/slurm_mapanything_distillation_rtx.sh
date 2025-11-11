@@ -22,7 +22,7 @@
 #SBATCH --cpus-per-task=8
 #
 # Specify memory limit per CPU core.
-#SBATCH --mem-per-cpu=2048
+#SBATCH --mem-per-cpu=4096
 #
 # Specify number of required GPUs.
 #SBATCH --gpus=rtx_4090:2
@@ -79,7 +79,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --wandb_name "distillation_2" \
   --epochs 20 \
-  --batch_size 16 \
+  --batch_size 20 \
   --num_workers 8 \
   --lr 1e-4 \
   --weight_decay 1e-4 \
