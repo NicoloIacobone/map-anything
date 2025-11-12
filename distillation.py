@@ -964,8 +964,14 @@ def distill(args):
         ckpt = torch.load(args.resume_ckpt, map_location=device, weights_only=False)
         model_without_ddp.dpt_feature_head_2.load_state_dict(ckpt["dpt_feature_head_2"])
         optimizer.load_state_dict(ckpt["optimizer"])
+        # Scheduler resume logic with T_max override
         if "scheduler" in ckpt:
             scheduler.load_state_dict(ckpt["scheduler"])
+            # If user provided a new T_max, overwrite it in the scheduler
+            if hasattr(scheduler, "T_max") and getattr(args, "overwrite_scheduler", False):
+                old_tmax = getattr(scheduler, "T_max", None)
+                scheduler.T_max = args.lr_scheduler_t_max
+                print(f"[INFO] Overriding scheduler T_max: {old_tmax} -> {scheduler.T_max}")
         start_epoch = ckpt.get("epoch", 0) + 1
         best_val_loss = ckpt.get("best_val_loss", float("inf"))
         print(f"Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
@@ -1172,6 +1178,7 @@ def get_args_parser():
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
     parser.add_argument("--lr_min", type=float, default=1e-6, help="Minimum learning rate for scheduler")
     parser.add_argument("--lr_scheduler_t_max", type=int, default=None, help="T_max for CosineAnnealingLR")
+    parser.add_argument("--overwrite_scheduler", action="store_true", help="Overwrite scheduler T_max when resuming")
     parser.add_argument("--clip_grad", type=float, default=1.0, help="Gradient clipping max norm (0 to disable)")
     parser.add_argument("--accum_iter", type=int, default=1, help="Gradient accumulation iterations")
     parser.add_argument("--log_freq", type=int, default=100, help="Log to W&B every N batches")
