@@ -13,7 +13,7 @@
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=47:59:59
+#SBATCH --time=72:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -77,8 +77,8 @@ echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --distributed \
   --use_wandb \
-  --wandb_name "distillation_3" \
-  --epochs 25 \
+  --wandb_name "distillation_4" \
+  --epochs 45 \
   --batch_size 20 \
   --num_workers 8 \
   --lr 1e-4 \
