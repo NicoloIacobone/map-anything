@@ -658,6 +658,18 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
             image=all_imgs_across_views, data_norm_type=data_norm_type
         )
         encoder_output = self.encoder(encoder_input)
+
+        ############ DEBUG NICO ############
+        # # Salva encoder_output.features su disco --> DINOv2 Features
+        # torch.save(encoder_output.features, "/scratch2/nico/distillation/hdbscan_test/dino_features/dino_features.pt")
+
+        # # Stampa la shape
+        # print("encoder_output.features shape:", tuple(encoder_output.features.shape))
+
+        # # Lancia eccezione di debug
+        # raise Exception("debug")
+        ####################################
+
         all_encoder_features_across_views = encoder_output.features.chunk(
             num_views, dim=0
         )
@@ -1599,7 +1611,32 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         # print("[SHAPE] intermediate_info_sharing_multi_view_feat[1].features shapes:",
         #       [x.shape for x in intermediate_info_sharing_multi_view_feat[1].features])
 
-        ##################################################
+        ############ DEBUG NICO ############
+        # # Salva le feature finali del transformer (prima delle downstream head)
+        # # Puoi salvare sia le feature finali che quelle intermedie
+
+        # # 1. Feature finali (ultimo layer del transformer) --> Transformer features
+        # final_features = torch.cat(final_info_sharing_multi_view_feat.features, dim=0)  # (B*V, C, H, W)
+        # torch.save(final_features, "/scratch2/nico/distillation/hdbscan_test/transformer_features/transformer_features.pt")
+        # print("final_features shape:", tuple(final_features.shape))
+
+        # # 2. (Opzionale) Feature intermedie (se disponibili)
+        # # if self.info_sharing_return_type == "intermediate_features":
+        # #     intermediate_1 = torch.cat(intermediate_info_sharing_multi_view_feat[0].features, dim=0)
+        # #     intermediate_2 = torch.cat(intermediate_info_sharing_multi_view_feat[1].features, dim=0)
+        # #     torch.save(intermediate_1, "/scratch2/nico/distillation/transformer_features/intermediate_1.pt")
+        # #     torch.save(intermediate_2, "/scratch2/nico/distillation/transformer_features/intermediate_2.pt")
+        # #     print("intermediate_1 shape:", tuple(intermediate_1.shape))
+        # #     print("intermediate_2 shape:", tuple(intermediate_2.shape))
+
+        # # 3. (Opzionale) Scale token features
+        # # scale_token_features = final_info_sharing_multi_view_feat.additional_token_features
+        # # torch.save(scale_token_features, "/scratch2/nico/distillation/transformer_features/scale_token.pt")
+        # # print("scale_token shape:", tuple(scale_token_features.shape))
+
+        # # Lancia eccezione di debug
+        # # raise Exception("debug transformer output")
+        ####################################
 
         ############### MLP, Single DPT Head, Pose Head ###############
 

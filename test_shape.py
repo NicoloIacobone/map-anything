@@ -11,7 +11,8 @@ from mapanything.utils.image import load_images
 
 import os
 
-images = "/scratch2/nico/examples/photos/test_features"
+images = ["/scratch2/nico/distillation/dataset/coco2017/images/val2017/000000003553.jpg"]
+# images = "/scratch2/nico/examples/photos/test_features"
 
 # Get inference device
 device = "cuda" if torch.cuda.is_available() else "cpu"
