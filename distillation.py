@@ -1089,31 +1089,30 @@ def distill(args):
         normalize=args.normalize_features,
     ).to(device)
 
+    # ========== ALIGNMENT LAYER (CREATE BEFORE OPTIMIZER) ==========
     alignment_layer = None
     if hasattr(args, "use_conv_alignment") and args.use_conv_alignment:
-        # Teacher and student channels assumed identical; if not, adjust teacher_features.shape[1]
-        teacher_channels = 128  # Replace with the actual teacher_channels if known
-        student_channels = 128  # Replace with actual student_channels if known
+        # Verified empirically: both student and teacher have 256 channels (shape: 1,256,64,64)
+        teacher_channels = 256
+        student_channels = 256
         alignment_layer = ConvAlignmentLayer(student_channels, teacher_channels).to(device)
+        
+        # if student_channels != teacher_channels:
+        #     print(f"[INFO] Creating alignment layer: {student_channels} -> {teacher_channels} channels")
+        #     alignment_layer = ConvAlignmentLayer(student_channels, teacher_channels).to(device)
+        # else:
+        #     print(f"[INFO] Student and teacher channels match ({student_channels}), alignment layer not needed")
+        #     alignment_layer = None  # No alignment needed
     
-    # Wrapping in DDP se distribuito (usa la GPU locale in device_ids)
-    if args.distributed.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(
-            model,
-            device_ids=[args.distributed.gpu],
-            find_unused_parameters=False,
-        )
-        model_without_ddp = model.module
-        # If the module graph is static across iterations, avoid re-registering DDP hooks every iteration.
-        # This prevents errors like "marked ready twice" when using checkpointing / reentrant autograd.
-        try:
-            if hasattr(model, "_set_static_graph"):
-                model._set_static_graph()
-        except Exception:
-            pass
-    
-    # Ottimizzatore su soli parametri addestrabili; AdamW con betas impostati come nello script originale
+    # ========== OPTIMIZER (AFTER ALIGNMENT LAYER) ==========
     trainable_params = [p for p in model.parameters() if p.requires_grad]
+
+    # Add alignment layer parameters if it exists
+    if alignment_layer is not None:
+        trainable_params.extend(alignment_layer.parameters())
+        num_align_params = sum(p.numel() for p in alignment_layer.parameters())
+        print(f"[INFO] Added {num_align_params} parameters from alignment layer to optimizer")
+
     optimizer = optim.AdamW(
         trainable_params,
         lr=args.lr,
@@ -1121,6 +1120,32 @@ def distill(args):
         betas=(0.9, 0.95),
     )
     print(optimizer)
+    
+    # ========== WRAPPING IN DDP (AFTER ALIGNMENT CREATION) ==========
+    if args.distributed.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[args.distributed.gpu],
+            find_unused_parameters=False,
+        )
+        model_without_ddp = model.module
+        
+        # Wrap alignment layer in DDP if it exists
+        if alignment_layer is not None:
+            alignment_layer = torch.nn.parallel.DistributedDataParallel(
+                alignment_layer,
+                device_ids=[args.distributed.gpu],
+                find_unused_parameters=False,
+            )
+            print("[INFO] Alignment layer wrapped in DDP")
+        
+        # If the module graph is static across iterations, avoid re-registering DDP hooks every iteration.
+        # This prevents errors like "marked ready twice" when using checkpointing / reentrant autograd.
+        try:
+            if hasattr(model, "_set_static_graph"):
+                model._set_static_graph()
+        except Exception:
+            pass
     
     # Scheduler LR: Cosine annealing per epoca, coerente con distillation.py
     if not args.disable_scheduler:
@@ -1141,6 +1166,16 @@ def distill(args):
         ckpt = torch.load(args.resume_ckpt, map_location=device, weights_only=False)
         model_without_ddp.dpt_feature_head_2.load_state_dict(ckpt["dpt_feature_head_2"])
         optimizer.load_state_dict(ckpt["optimizer"])
+
+        # Load alignment layer if present (check both checkpoint and current config)
+        if alignment_layer is not None:
+            if "alignment_layer" in ckpt:
+                alignment_layer_unwrapped = alignment_layer.module if hasattr(alignment_layer, "module") else alignment_layer
+                alignment_layer_unwrapped.load_state_dict(ckpt["alignment_layer"])
+                print("[INFO] Loaded alignment layer from checkpoint")
+            else:
+                print("[WARN] Alignment layer exists but not found in checkpoint (training from scratch)")
+
         # Scheduler resume logic with T_max override
         if not args.disable_scheduler and "scheduler" in ckpt:
             scheduler.load_state_dict(ckpt["scheduler"])
@@ -1215,6 +1250,7 @@ def distill(args):
                         best_val_loss,
                         args.output_dir,
                         tag="best",
+                        alignment_layer=alignment_layer,
                     )
         
         # Step scheduler
@@ -1232,6 +1268,7 @@ def distill(args):
                     best_val_loss,
                     args.output_dir,
                     tag=f"epoch{epoch+1}",
+                    alignment_layer=alignment_layer,
                 )
         
         epoch_time = time.time() - epoch_start
@@ -1279,6 +1316,7 @@ def distill(args):
             best_val_loss,
             args.output_dir,
             tag="final",
+            alignment_layer=alignment_layer,
         )
     
     total_time = time.time() - start_time
@@ -1296,6 +1334,7 @@ def save_checkpoint_distillation(
     best_val_loss: float,
     output_dir: str,
     tag: str = "last",
+    alignment_layer=None,
 ):
     """
     Save checkpoint containing only dpt_feature_head_2 and optimizer state.
@@ -1312,13 +1351,17 @@ def save_checkpoint_distillation(
     state = {
         "dpt_feature_head_2": model_without_ddp.dpt_feature_head_2.state_dict(),
         "optimizer": optimizer.state_dict(),
-        # "scheduler": scheduler.state_dict(),
         "epoch": epoch,
         "best_val_loss": best_val_loss,
     }
 
     if scheduler is not None:
         state["scheduler"] = scheduler.state_dict()
+
+    # Save alignment layer if present
+    if alignment_layer is not None:
+        alignment_layer_unwrapped = alignment_layer.module if hasattr(alignment_layer, "module") else alignment_layer
+        state["alignment_layer"] = alignment_layer_unwrapped.state_dict()
     
     # Save wandb run_id if available
     if WANDB_AVAILABLE and wandb.run is not None:
