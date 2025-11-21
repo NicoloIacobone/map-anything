@@ -8,36 +8,67 @@ import torch
 import time
 from mapanything.models import MapAnything
 from mapanything.utils.image import load_images
-
+from pathlib import Path
 import os
 
-images = ["/scratch2/nico/distillation/dataset/coco2017/images/val2017/000000003553.jpg"]
-# images = "/scratch2/nico/examples/photos/test_features"
+images = ["/scratch2/nico/distillation/dataset/coco2017/images/train2017/000000000030.jpg"]
+OUTPUT_DIR = Path("/scratch2/nico/distillation/tests/embeddings/student")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+resume_ckpt = "/scratch2/nico/distillation/output/distillation_3/checkpoints/checkpoint_best.pth"
 
 # Get inference device
 device = "cuda" if torch.cuda.is_available() else "cpu"
+# Load model
 model = MapAnything.from_pretrained("facebook/map-anything", strict=False).to(device)
+print(f"Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
+
+# Load weights
+ckpt = torch.load(resume_ckpt, map_location=device, weights_only=False)
+# Load DPT feature head weights
+model.dpt_feature_head_2.load_state_dict(ckpt["dpt_feature_head_2"])
+# Set model to eval mode
+model.eval()
 
 # Load and preprocess images from a folder or list of paths
 print(f"Loading images from: {images}")
 views = load_images(images)
 print(f"Loaded {len(views)} views")
 
+# Set dtype for autocasting
+dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+for v in views:
+    v["img"] = v["img"].to(device=device, dtype=dtype, non_blocking=True)
+
 # Run inference
 print("Running inference...")
 start_time = time.time()
-predictions = model.infer(
-    views,
-    memory_efficient_inference=False,
-    use_amp=True,
-    amp_dtype="bf16",
-    apply_mask=True,
-    mask_edges=True,
-    apply_confidence_mask=False,
-    confidence_percentile=0,
-)
+
+# Inference with autocasting for better performance
+with torch.autocast(device_type="cuda", enabled=True, dtype=dtype):
+    predictions = model(
+        views,
+        memory_efficient_inference=False,
+    )
+
+# Extract and save student features
+student_features = getattr(model, "_last_feat2_8x", None)
+torch.save(student_features.detach().cpu(), OUTPUT_DIR / f"000000000030.pt")
+print(f"Saved student features to {OUTPUT_DIR / f'000000000030.pt'}")
+
 elapsed_time = time.time() - start_time
 print(f"Inference complete! Elapsed time: {elapsed_time:.2f} seconds")
+
+# predictions = model.infer(
+#     views,
+#     memory_efficient_inference=False,
+#     use_amp=True,
+#     amp_dtype="bf16",
+#     apply_mask=True,
+#     mask_edges=True,
+#     apply_confidence_mask=False,
+#     confidence_percentile=0,
+# )
 
 # Access results for each view - Complete list of metric outputs
 # for i, pred in enumerate(predictions):

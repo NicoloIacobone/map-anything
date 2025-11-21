@@ -647,6 +647,7 @@ def train_one_epoch_distillation(
         
         # Resize student features to match teacher resolution if needed
         if student_features.shape[-2:] != teacher_features.shape[-2:]:
+            print(f"[DEBUG] Resizing student features from {student_features.shape[-2:]} to {teacher_features.shape[-2:]} using bilinear interpolation", flush=True)
             H, W = teacher_features.shape[-2:]
             student_features = F.interpolate(
                 student_features,
@@ -821,6 +822,7 @@ def validate_one_epoch_distillation(
         
         # Resize student to match teacher if needed
         if student_features.shape[-2:] != teacher_features.shape[-2:]:
+            print(f"[DEBUG] Resizing student features from {student_features.shape[-2:]} to {teacher_features.shape[-2:]} using bilinear interpolation", flush=True)
             H, W = teacher_features.shape[-2:]
             student_features = F.interpolate(
                 student_features,
@@ -1330,7 +1332,7 @@ def save_checkpoint_distillation(
     ckpt_dir = Path(output_dir) / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     
-    ckpt_path = ckpt_dir / f"checkpoint_{tag}.pth"  # ✅ Ora salva in checkpoints/
+    ckpt_path = ckpt_dir / f"checkpoint_{tag}.pth"  # Ora salva in checkpoints/
     torch.save(state, ckpt_path)
     print(f"[SAVE] Checkpoint saved: {ckpt_path}")
 
@@ -1353,6 +1355,7 @@ def get_args_parser():
     # Note: dataset paths are derived from COCO2017_ROOT constants depending on run_cluster
     
     # Model
+    # Config file path: /scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a/config.json
     parser.add_argument("--model_name", type=str, default="facebook/map-anything", help="MapAnything model name or path")
     
     # Training hyperparameters

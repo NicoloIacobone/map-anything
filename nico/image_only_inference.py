@@ -273,15 +273,15 @@ for view_idx, pred in enumerate(predictions):
                 rr.SegmentationImage(seg_map_resized))
 
     # Store data for GLB export if needed
-    if save_glb:
-        # Prepare lists for GLB export if needed
-        world_points_list = []
-        images_list = []
-        masks_list = []
+    # if save_glb:
+    #     # Prepare lists for GLB export if needed
+    #     world_points_list = []
+    #     images_list = []
+    #     masks_list = []
         
-        world_points_list.append(pts3d_np)
-        images_list.append(image_np)
-        masks_list.append(mask)
+    #     world_points_list.append(pts3d_np)
+    #     images_list.append(image_np)
+    #     masks_list.append(mask)
 
     # Log to Rerun for visualization with semantic colors
     log_data_to_rerun(
@@ -300,29 +300,29 @@ for view_idx, pred in enumerate(predictions):
 print("Visualization complete! Check the Rerun viewer.")
 
 # Export GLB if requested
-if save_glb:
-    print(f"Saving GLB file to: {output_path}")
+# if save_glb:
+#     print(f"Saving GLB file to: {output_path}")
 
-    # Stack all views
-    world_points = np.stack(world_points_list, axis=0)
-    images = np.stack(images_list, axis=0)
-    final_masks = np.stack(masks_list, axis=0)
+#     # Stack all views
+#     world_points = np.stack(world_points_list, axis=0)
+#     images = np.stack(images_list, axis=0)
+#     final_masks = np.stack(masks_list, axis=0)
 
-    # Create predictions dict for GLB export
-    predictions = {
-        "world_points": world_points,
-        "images": images,
-        "final_masks": final_masks,
-    }
+#     # Create predictions dict for GLB export
+#     predictions = {
+#         "world_points": world_points,
+#         "images": images,
+#         "final_masks": final_masks,
+#     }
 
-    # Convert to GLB scene
-    scene_3d = predictions_to_glb(predictions, as_mesh=True)
+#     # Convert to GLB scene
+#     scene_3d = predictions_to_glb(predictions, as_mesh=True)
 
-    # Save GLB file
-    scene_3d.export(output_path)
-    print(f"Successfully saved GLB file: {output_path}")
-else:
-    print("Skipping GLB export.")
+#     # Save GLB file
+#     scene_3d.export(output_path)
+#     print(f"Successfully saved GLB file: {output_path}")
+# else:
+#     print("Skipping GLB export.")
 
 # Access results for each view - Complete list of metric outputs
 # for i, pred in enumerate(predictions):

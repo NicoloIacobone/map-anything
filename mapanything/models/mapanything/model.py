@@ -1362,18 +1362,32 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                     output_shape_hw=img_shape,
                 )
             )
+
             # [NICO] seconda head
             if hasattr(self, "dpt_feature_head_2"):
-                # print(">>> [NICO] Using second dense head and adaptor!")
+                # target_hw_2 = self.pred_head_config["feature_head_2"].get("target_hw", None)
+                target_hw_2 = (64, 64)  # hardcoded per ora
+                if target_hw_2 is None:
+                    target_hw_2 = img_shape
+                    print("Using image shape for target_hw_2:", target_hw_2)
                 dpt_features_2 = self.dpt_feature_head_2(
                     PredictionHeadLayeredInput(
                         list_features=dense_head_inputs,
-                        target_output_shape=img_shape,
+                        target_output_shape=target_hw_2,
                     )
                 )
-                self._last_feat2_8x = dpt_features_2.features_upsampled_8x  # (B*V, C2, H, W)
-
-                # print("[SHAPE] self._last_feat2_8x", tuple(self._last_feat2_8x.shape))
+                # FORZA resize a target_hw_2 (DPTFeature ignora target_output_shape per l'upsampling)
+                feat_8x = dpt_features_2.features_upsampled_8x  # (B*V, C, H, W)
+                if feat_8x.shape[-2:] != target_hw_2:
+                    import torch.nn.functional as F
+                    feat_8x = F.interpolate(
+                        feat_8x, 
+                        size=target_hw_2, 
+                        mode="bilinear", 
+                        align_corners=False
+                    )
+                self._last_feat2_8x = feat_8x
+                print("[SHAPE] self._last_feat2_8x", tuple(self._last_feat2_8x.shape))
         else:
             raise ValueError(
                 f"Invalid pred_head_type: {self.pred_head_type}. Valid options: ['linear', 'dpt', 'dpt+pose']"
