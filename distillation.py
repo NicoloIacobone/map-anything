@@ -952,6 +952,8 @@ def save_pca_visualizations(
             )
             student_save_path = Path(str(viz_dir)) / "student"
             student_save_path.mkdir(parents=True, exist_ok=True)
+            teacher_save_path = Path(str(viz_dir)) / "teacher"
+            teacher_save_path.mkdir(parents=True, exist_ok=True)
             print(f"Image path: {img_path}")
 
             # Debug info about the saved tensor
@@ -987,6 +989,7 @@ def save_pca_visualizations(
             teacher_single = teacher_single.detach().cpu().contiguous().clone()
             # torch.save(student_single.detach().cpu(), student_save_path / f"{epoch}.pt")
             torch.save(student_single, student_save_path / f"{epoch}.pt")
+            torch.save(teacher_single, teacher_save_path / f"{epoch}.pt")
         except Exception as e:
             print(f"[WARN] Failed to create PCA visualization for {img_path}: {e}")
             continue
