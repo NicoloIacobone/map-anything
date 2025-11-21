@@ -25,7 +25,7 @@
 #SBATCH --mem-per-cpu=4096
 #
 # Specify number of required GPUs.
-#SBATCH --gpus=rtx_4090:2
+#SBATCH --gpus=rtx_4090:1
 #
 # Specify disk limit on local scratch.
 #SBATCH --tmp=500000
