@@ -613,7 +613,7 @@ def train_one_epoch_distillation(
         epoch_f = epoch + data_iter_step / max(1, len(data_loader))
         
         # Print memory usage every 500 batches
-        if data_iter_step % 500 == 0:
+        if data_iter_step % getattr(args, "print_freq", 500) == 0:
             if torch.cuda.is_available():
                 alloc = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
                 res = torch.cuda.memory_reserved() if torch.cuda.is_available() else 0

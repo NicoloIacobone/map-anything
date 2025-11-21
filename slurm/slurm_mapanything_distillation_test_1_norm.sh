@@ -77,7 +77,7 @@ echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 python distillation.py \
   --use_wandb \
   --wandb_name "test_1_normalize" \
-  --epochs 3 \
+  --epochs 50 \
   --batch_size 20 \
   --num_workers 8 \
   --lr 1e-4 \
