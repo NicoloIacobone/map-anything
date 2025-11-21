@@ -13,7 +13,7 @@
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=00:07:00
+#SBATCH --time=02:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -25,7 +25,7 @@
 #SBATCH --mem-per-cpu=4096
 #
 # Specify number of required GPUs.
-#SBATCH --gpus=rtx_4090:2
+#SBATCH --gpus=rtx_4090:1
 #
 # Specify disk limit on local scratch.
 #SBATCH --tmp=500000
@@ -73,9 +73,7 @@ fi
 
 echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 
-# Usa automaticamente tutte le GPU disponibili
-torchrun --nproc_per_node=$NUM_GPUS distillation.py \
-  --distributed \
+python distillation.py \
   --use_wandb \
   --wandb_name "test_2_no_normalize" \
   --epochs 3 \
@@ -95,10 +93,9 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --amp_dtype bf16 \
   --seed 42 \
   --save_visualizations \
-  --disable_scheduler
-#   --wandb_resume_id 80chpr84 \
-#   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_2 \
-#   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_2/checkpoints/checkpoint_epoch9.pth
+  --disable_scheduler \
+  --debug_max_train_images 4000 \
+  --debug_max_val_images 1000
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
