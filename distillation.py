@@ -13,7 +13,6 @@ References:
 - MapAnything training: mapanything/train/training.py
 - Original distillation script: distillation.py
 """
-
 import argparse
 import datetime
 import math
@@ -103,7 +102,6 @@ print(f"[INFO] Using TRAIN_FEATURES_DIR: {TRAIN_FEATURES_DIR}")
 print(f"[INFO] Using VAL_FEATURES_DIR: {VAL_FEATURES_DIR}")
 
 # ==================== Dataset Classes ====================
-
 class DistillationDataset(Dataset):
     """
     Dataset per la distillazione: carica immagini e le corrispondenti feature del teacher.
@@ -304,7 +302,6 @@ def collate_fn_distillation(batch: List[Dict]) -> Dict:
         }
 
 # ==================== Loss Functions ====================
-
 class DistillationLoss(torch.nn.Module):
     """
     Loss combinata MSE + (1 - Cosine Similarity) per la distillazione delle feature.
@@ -370,8 +367,16 @@ class DistillationLoss(torch.nn.Module):
         
         return total_loss, loss_details
 
-# ==================== Data Loaders ====================
+# ==================== Conv Alignment Layer ====================
+class ConvAlignmentLayer(torch.nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.proj = torch.nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0, bias=False)
 
+    def forward(self, x):
+        return self.proj(x)
+
+# ==================== Data Loaders ====================
 def build_distillation_dataloader(
     image_dir: str,
     features_dir: str,
@@ -436,7 +441,6 @@ def build_distillation_dataloader(
     return loader
 
 # ==================== Training Functions ====================
-
 def forward_pass_distillation(
     model: torch.nn.Module,
     image_paths: List[str],
@@ -496,7 +500,6 @@ def forward_pass_distillation(
     
     return student_features
 
-
 def forward_pass_multiview_distillation(
     model: torch.nn.Module,
     batch: Dict,
@@ -555,7 +558,6 @@ def forward_pass_multiview_distillation(
     # Concatena tutte le feature: (B*N, C, H, W)
     return torch.cat(all_student_feats, dim=0)
 
-
 def train_one_epoch_distillation(
     model: torch.nn.Module,
     criterion: torch.nn.Module,
@@ -564,6 +566,7 @@ def train_one_epoch_distillation(
     device: torch.device,
     epoch: int,
     args,
+    alignment_layer=None,
 ) -> Dict:
     """
     Train the model for one epoch on distillation task.
@@ -657,6 +660,8 @@ def train_one_epoch_distillation(
             )
         
         # Compute loss
+        if hasattr(args, "use_conv_alignment") and args.use_conv_alignment and alignment_layer is not None:
+            student_features = alignment_layer(student_features)
         loss, loss_details = criterion(student_features, teacher_features)
         loss_value = loss.detach().cpu().item()
         mse_value = float(loss_details.get("mse_loss", 0.0))
@@ -755,7 +760,6 @@ def train_one_epoch_distillation(
     }
     return results
 
-
 @torch.no_grad()
 def validate_one_epoch_distillation(
     model: torch.nn.Module,
@@ -764,6 +768,7 @@ def validate_one_epoch_distillation(
     device: torch.device,
     epoch: int,
     args,
+    alignment_layer=None,
 ) -> Dict:
     """
     Validate the model for one epoch on distillation task.
@@ -832,6 +837,8 @@ def validate_one_epoch_distillation(
             )
         
         # Compute loss
+        if hasattr(args, "use_conv_alignment") and args.use_conv_alignment and alignment_layer is not None:
+            student_features = alignment_layer(student_features)
         loss, loss_details = criterion(student_features, teacher_features)
         loss_value = loss.detach().cpu().item()
         mse_value = float(loss_details.get("mse_loss", 0.0))
@@ -898,7 +905,6 @@ def validate_one_epoch_distillation(
     return results
 
 # ==================== Visualization Functions ====================
-
 def save_pca_visualizations(
     student_features: torch.Tensor,
     teacher_features: torch.Tensor,
@@ -956,34 +962,6 @@ def save_pca_visualizations(
             teacher_save_path.mkdir(parents=True, exist_ok=True)
             print(f"Image path: {img_path}")
 
-            # Debug info about the saved tensor
-            tensor = student_single
-            # print("Student shape:", tensor.shape)
-            # print("Student type:", type(tensor))
-            # print("Student requires_grad:", getattr(tensor, "requires_grad", None))
-            # print("is_contiguous:", tensor.is_contiguous())
-            # print("storage size:", tensor.storage().size())
-            # print("numel:", tensor.numel())
-            # print("storage / numel ratio:", tensor.storage().size() / tensor.numel())
-            # print("Student device:", tensor.device)
-            # print(f"[DBG] rank={torch.distributed.get_rank() if torch.distributed.is_initialized() else 0} "
-            #       f"shape={tuple(tensor.shape)} dtype={tensor.dtype} "
-            #       f"expectedMB={tensor.numel()*torch.finfo(tensor.dtype).bits//8/1024**2:.2f}")
-
-            # Print same info for teacher
-            teacher_tensor = teacher_single
-            # print("Teacher shape:", teacher_tensor.shape)
-            # print("Teacher type:", type(teacher_tensor))
-            # print("Teacher requires_grad:", getattr(teacher_tensor, "requires_grad", None))
-            # print("is_contiguous:", teacher_tensor.is_contiguous())
-            # print("storage size:", teacher_tensor.storage().size())
-            # print("numel:", teacher_tensor.numel())
-            # print("storage / numel ratio:", teacher_tensor.storage().size() / teacher_tensor.numel())
-            # print("Teacher device:", teacher_tensor.device)
-            # print(f"[DBG] rank={torch.distributed.get_rank() if torch.distributed.is_initialized() else 0} "
-            #       f"shape={tuple(teacher_tensor.shape)} dtype={teacher_tensor.dtype} "
-            #       f"expectedMB={teacher_tensor.numel()*torch.finfo(teacher_tensor.dtype).bits//8/1024**2:.2f}")
-
             # Ensure tensors are detached, cloned, and contiguous before saving
             student_single = student_single.detach().cpu().contiguous().clone()
             teacher_single = teacher_single.detach().cpu().contiguous().clone()
@@ -997,7 +975,6 @@ def save_pca_visualizations(
     print(f"[VIZ] Saved {B} PCA visualizations to {viz_dir}")
 
 # ==================== Main Training Loop ====================
-
 def distill(args):
     """
     Main distillation training function.
@@ -1111,6 +1088,13 @@ def distill(args):
         cosine_weight=args.cosine_weight,
         normalize=args.normalize_features,
     ).to(device)
+
+    alignment_layer = None
+    if hasattr(args, "use_conv_alignment") and args.use_conv_alignment:
+        # Teacher and student channels assumed identical; if not, adjust teacher_features.shape[1]
+        teacher_channels = 128  # Replace with the actual teacher_channels if known
+        student_channels = 128  # Replace with actual student_channels if known
+        alignment_layer = ConvAlignmentLayer(student_channels, teacher_channels).to(device)
     
     # Wrapping in DDP se distribuito (usa la GPU locale in device_ids)
     if args.distributed.distributed:
@@ -1199,7 +1183,8 @@ def distill(args):
             optimizer=optimizer,
             device=device,
             epoch=epoch,
-                args=args,
+            args=args,
+            alignment_layer=alignment_layer,
         )
         
         # Validation
@@ -1212,6 +1197,7 @@ def distill(args):
                 device=device,
                 epoch=epoch,
                 args=args,
+                alignment_layer=alignment_layer,
             )
             
             # Check for new best
@@ -1302,7 +1288,6 @@ def distill(args):
         wandb.finish()
 
 # ==================== Checkpoint Management ====================
-
 def save_checkpoint_distillation(
     model_without_ddp,
     optimizer,
@@ -1348,7 +1333,6 @@ def save_checkpoint_distillation(
     print(f"[SAVE] Checkpoint saved: {ckpt_path}")
 
 # ==================== Argument Parser ====================
-
 def get_args_parser():
     """
     Create argument parser for distillation training.
@@ -1386,6 +1370,7 @@ def get_args_parser():
     parser.add_argument("--mse_weight", type=float, default=0.5, help="Weight for MSE loss")
     parser.add_argument("--cosine_weight", type=float, default=0.5, help="Weight for cosine loss")
     parser.add_argument("--normalize_features", action="store_true", help="Normalize features before loss")
+    parser.add_argument("--use_conv_alignment", action="store_true", help="Enable 1x1 conv alignment layer before loss")
     
     # Data
     parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
@@ -1424,7 +1409,6 @@ def get_args_parser():
     return parser
 
 # ==================== Entry Point ====================
-
 def main():
     """
     Entry point for distillation training script.
@@ -1460,7 +1444,6 @@ def main():
         # Cleanup
         if args.use_wandb and WANDB_AVAILABLE:
             wandb.finish()
-
 
 if __name__ == "__main__":
     main()
