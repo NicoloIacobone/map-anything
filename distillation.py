@@ -1136,11 +1136,15 @@ def distill(args):
     print(optimizer)
     
     # Scheduler LR: Cosine annealing per epoca, coerente con distillation.py
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=args.lr_scheduler_t_max,
-        eta_min=args.lr_min,
-    )
+    if not args.disable_scheduler:
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args.lr_scheduler_t_max,
+            eta_min=args.lr_min,
+        )
+    else:
+        scheduler = None
+        print(f"[INFO] Learning rate scheduler disabled. LR will remain constant at {args.lr}")
     
     # Resume: ricarica head 2 + optimizer + scheduler; riparte dall'epoca successiva
     start_epoch = 0
@@ -1151,7 +1155,7 @@ def distill(args):
         model_without_ddp.dpt_feature_head_2.load_state_dict(ckpt["dpt_feature_head_2"])
         optimizer.load_state_dict(ckpt["optimizer"])
         # Scheduler resume logic with T_max override
-        if "scheduler" in ckpt:
+        if not args.disable_scheduler and "scheduler" in ckpt:
             scheduler.load_state_dict(ckpt["scheduler"])
             # If user provided a new T_max, overwrite it in the scheduler
             if hasattr(scheduler, "T_max") and getattr(args, "overwrite_scheduler", False):
@@ -1225,7 +1229,8 @@ def distill(args):
                     )
         
         # Step scheduler
-        scheduler.step()
+        if not args.disable_scheduler and scheduler is not None:
+            scheduler.step()
         
         # Save checkpoint periodically
         if (epoch + 1) % args.save_freq == 0 or (epoch + 1) == args.epochs:
@@ -1319,10 +1324,13 @@ def save_checkpoint_distillation(
     state = {
         "dpt_feature_head_2": model_without_ddp.dpt_feature_head_2.state_dict(),
         "optimizer": optimizer.state_dict(),
-        "scheduler": scheduler.state_dict(),
+        # "scheduler": scheduler.state_dict(),
         "epoch": epoch,
         "best_val_loss": best_val_loss,
     }
+
+    if scheduler is not None:
+        state["scheduler"] = scheduler.state_dict()
     
     # Save wandb run_id if available
     if WANDB_AVAILABLE and wandb.run is not None:
@@ -1369,6 +1377,7 @@ def get_args_parser():
     parser.add_argument("--clip_grad", type=float, default=1.0, help="Gradient clipping max norm (0 to disable)")
     parser.add_argument("--accum_iter", type=int, default=1, help="Gradient accumulation iterations")
     parser.add_argument("--log_freq", type=int, default=100, help="Log to W&B every N batches")
+    parser.add_argument("--disable_scheduler", action="store_true", help="Disable learning rate scheduler (keep lr constant)")
     
     # Loss
     parser.add_argument("--mse_weight", type=float, default=0.5, help="Weight for MSE loss")
