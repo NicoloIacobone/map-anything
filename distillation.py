@@ -958,31 +958,31 @@ def save_pca_visualizations(
 
             # Debug info about the saved tensor
             tensor = student_single
-            print("Student shape:", tensor.shape)
-            print("Student type:", type(tensor))
-            print("Student requires_grad:", getattr(tensor, "requires_grad", None))
-            print("is_contiguous:", tensor.is_contiguous())
-            print("storage size:", tensor.storage().size())
-            print("numel:", tensor.numel())
-            print("storage / numel ratio:", tensor.storage().size() / tensor.numel())
-            print("Student device:", tensor.device)
-            print(f"[DBG] rank={torch.distributed.get_rank() if torch.distributed.is_initialized() else 0} "
-                  f"shape={tuple(tensor.shape)} dtype={tensor.dtype} "
-                  f"expectedMB={tensor.numel()*torch.finfo(tensor.dtype).bits//8/1024**2:.2f}")
+            # print("Student shape:", tensor.shape)
+            # print("Student type:", type(tensor))
+            # print("Student requires_grad:", getattr(tensor, "requires_grad", None))
+            # print("is_contiguous:", tensor.is_contiguous())
+            # print("storage size:", tensor.storage().size())
+            # print("numel:", tensor.numel())
+            # print("storage / numel ratio:", tensor.storage().size() / tensor.numel())
+            # print("Student device:", tensor.device)
+            # print(f"[DBG] rank={torch.distributed.get_rank() if torch.distributed.is_initialized() else 0} "
+            #       f"shape={tuple(tensor.shape)} dtype={tensor.dtype} "
+            #       f"expectedMB={tensor.numel()*torch.finfo(tensor.dtype).bits//8/1024**2:.2f}")
 
             # Print same info for teacher
             teacher_tensor = teacher_single
-            print("Teacher shape:", teacher_tensor.shape)
-            print("Teacher type:", type(teacher_tensor))
-            print("Teacher requires_grad:", getattr(teacher_tensor, "requires_grad", None))
-            print("is_contiguous:", teacher_tensor.is_contiguous())
-            print("storage size:", teacher_tensor.storage().size())
-            print("numel:", teacher_tensor.numel())
-            print("storage / numel ratio:", teacher_tensor.storage().size() / teacher_tensor.numel())
-            print("Teacher device:", teacher_tensor.device)
-            print(f"[DBG] rank={torch.distributed.get_rank() if torch.distributed.is_initialized() else 0} "
-                  f"shape={tuple(teacher_tensor.shape)} dtype={teacher_tensor.dtype} "
-                  f"expectedMB={teacher_tensor.numel()*torch.finfo(teacher_tensor.dtype).bits//8/1024**2:.2f}")
+            # print("Teacher shape:", teacher_tensor.shape)
+            # print("Teacher type:", type(teacher_tensor))
+            # print("Teacher requires_grad:", getattr(teacher_tensor, "requires_grad", None))
+            # print("is_contiguous:", teacher_tensor.is_contiguous())
+            # print("storage size:", teacher_tensor.storage().size())
+            # print("numel:", teacher_tensor.numel())
+            # print("storage / numel ratio:", teacher_tensor.storage().size() / teacher_tensor.numel())
+            # print("Teacher device:", teacher_tensor.device)
+            # print(f"[DBG] rank={torch.distributed.get_rank() if torch.distributed.is_initialized() else 0} "
+            #       f"shape={tuple(teacher_tensor.shape)} dtype={teacher_tensor.dtype} "
+            #       f"expectedMB={teacher_tensor.numel()*torch.finfo(teacher_tensor.dtype).bits//8/1024**2:.2f}")
 
             # Ensure tensors are detached, cloned, and contiguous before saving
             student_single = student_single.detach().cpu().contiguous().clone()

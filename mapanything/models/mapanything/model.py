@@ -1387,7 +1387,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                         align_corners=False
                     )
                 self._last_feat2_8x = feat_8x
-                print("[SHAPE] self._last_feat2_8x", tuple(self._last_feat2_8x.shape))
+                # print("[SHAPE] self._last_feat2_8x", tuple(self._last_feat2_8x.shape))
         else:
             raise ValueError(
                 f"Invalid pred_head_type: {self.pred_head_type}. Valid options: ['linear', 'dpt', 'dpt+pose']"
