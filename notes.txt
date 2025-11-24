@@ -1,0 +1,33 @@
+DPTFeature (Feature Extraction + Fusion)
+Input
+- PredictionHeadLayeredInput:
+    -list_features: 4 tensori BCHW da layer intermedi del ViT (hooks: [2, 5, 8, 11])
+    -Shapes tipiche: (B, 768/1024, H//14, W//14) (patch size 14)
+
+Architettura
+1. Input Processing (per ogni layer):
+    - Conv2d(C_in → layer_dim) (proiezione canali)
+    - ConvTranspose2d per upsampling differenziato:
+        - Layer 0 (hook 2): 4× upsample (ConvTranspose stride=4)
+        - Layer 1 (hook 5): 2× upsample (ConvTranspose stride=2)
+        - Layer 2 (hook 8): 1× (no upsample)
+        - Layer 3 (hook 11): 0.5× downsample (Conv stride=2)
+
+2.Multi-Scale Fusion (bottom-up):
+    - path_4 = refinenet4(layer_3_processed)               # più profondo
+    - path_3 = refinenet3(path_4, layer_2_processed)       # fonde con layer intermedio
+    - path_2 = refinenet2(path_3, layer_1_processed)
+    - output = refinenet1(path_2, layer_0_processed)       # fonde con layer più superficiale
+Ogni refinenet è un FeatureFusionBlock:
+    - ResidualConvUnit (Conv3×3 + optional BatchNorm)
+    - Element-wise sum delle feature a scala diversa
+    - Riproiezione con Conv2d(feature_dim → feature_dim)
+
+3. Output:
+    - features_upsampled_8x: (B, 256, 8×(H//14), 8×(W//14))
+
+4. Componenti Chiave
+    - make_scratch: crea layer di proiezione (layer_rn) per uniformare i canali
+    - make_fusion_block: blocchi residuali con fusion
+    - No LayerNorm: solo Conv + optional BatchNorm
+    - Gradient Checkpointing: opzionale per ridurre memoria
