@@ -638,7 +638,7 @@ def train_one_epoch_distillation(
                 amp_dtype=args.amp_dtype,
             )
 
-        print(f"[DEBUG] student_features shape: {student_features.shape}", flush=True)
+        # print(f"[DEBUG] student_features shape: {student_features.shape}", flush=True)
         
         # Resize student features to match teacher resolution if needed
         if student_features.shape[-2:] != teacher_features.shape[-2:]:
@@ -1124,6 +1124,14 @@ def distill(args):
         print(f"Resuming from checkpoint: {args.resume_ckpt}")
         ckpt = torch.load(args.resume_ckpt, map_location=device, weights_only=False)
         model_without_ddp.dpt_feature_head_2.load_state_dict(ckpt["dpt_feature_head_2"])
+
+        # Load sam2_compat if present in checkpoint
+        if "sam2_compat" in ckpt and hasattr(model_without_ddp, "sam2_compat"):
+            model_without_ddp.sam2_compat.load_state_dict(ckpt["sam2_compat"])
+            print("[INFO] Loaded sam2_compat state from checkpoint")
+        elif hasattr(model_without_ddp, "sam2_compat"):
+            print("[WARN] sam2_compat exists on model but not found in checkpoint. Using random initialization.")
+        
         optimizer.load_state_dict(ckpt["optimizer"])
 
         # Scheduler resume logic with T_max override
@@ -1298,6 +1306,11 @@ def save_checkpoint_distillation(
         "epoch": epoch,
         "best_val_loss": best_val_loss,
     }
+
+    # Save sam2_compat if present
+    if hasattr(model_without_ddp, "sam2_compat"):
+        state["sam2_compat"] = model_without_ddp.sam2_compat.state_dict()
+        print("[INFO] sam2_compat state added to checkpoint")
 
     if scheduler is not None:
         state["scheduler"] = scheduler.state_dict()
