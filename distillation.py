@@ -367,15 +367,6 @@ class DistillationLoss(torch.nn.Module):
         
         return total_loss, loss_details
 
-# ==================== Conv Alignment Layer ====================
-# class ConvAlignmentLayer(torch.nn.Module):
-#     def __init__(self, in_channels, out_channels):
-#         super().__init__()
-#         self.proj = torch.nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0, bias=False)
-
-#     def forward(self, x):
-#         return self.proj(x)
-
 # ==================== Data Loaders ====================
 def build_distillation_dataloader(
     image_dir: str,
@@ -481,7 +472,7 @@ def forward_pass_distillation(
     autocast_enabled = use_amp and (device.type == "cuda")
     
     with torch.autocast(device_type="cuda", enabled=autocast_enabled, dtype=autocast_dtype):
-        predictions = model(
+        _ = model(
             views,
             memory_efficient_inference=False,
         )
@@ -566,7 +557,6 @@ def train_one_epoch_distillation(
     device: torch.device,
     epoch: int,
     args,
-    # alignment_layer=None,
 ) -> Dict:
     """
     Train the model for one epoch on distillation task.
@@ -662,8 +652,6 @@ def train_one_epoch_distillation(
             )
         
         # Compute loss
-        # if hasattr(args, "use_conv_alignment") and args.use_conv_alignment and alignment_layer is not None:
-        #     student_features = alignment_layer(student_features)
         loss, loss_details = criterion(student_features, teacher_features)
         loss_value = loss.detach().cpu().item()
         mse_value = float(loss_details.get("mse_loss", 0.0))
@@ -770,7 +758,6 @@ def validate_one_epoch_distillation(
     device: torch.device,
     epoch: int,
     args,
-    # alignment_layer=None,
 ) -> Dict:
     """
     Validate the model for one epoch on distillation task.
@@ -788,6 +775,7 @@ def validate_one_epoch_distillation(
     """
     model.eval()
     metric_logger = train_tools.MetricLogger(delimiter=" | ")
+
     # Finestra molto grande per rendere la stampa simile a una media globale
     metric_logger.meters = defaultdict(lambda: train_tools.SmoothedValue(window_size=int(1e6)))
     header = f"Distillation Validation: [{epoch}]"
@@ -839,8 +827,6 @@ def validate_one_epoch_distillation(
             )
         
         # Compute loss
-        # if hasattr(args, "use_conv_alignment") and args.use_conv_alignment and alignment_layer is not None:
-        #     student_features = alignment_layer(student_features)
         loss, loss_details = criterion(student_features, teacher_features)
         loss_value = loss.detach().cpu().item()
         mse_value = float(loss_details.get("mse_loss", 0.0))
@@ -891,6 +877,7 @@ def validate_one_epoch_distillation(
     if PSUTIL_AVAILABLE:
         vm = psutil.virtual_memory()
         print(f"[DEBUG][CPU] Epoch {epoch} | VALIDATION END | Used: {vm.used/1e9:.2f} GB | Available: {vm.available/1e9:.2f} GB", flush=True)
+
     # Compute aggregates (weighted means)
     denom = max(1, total_samples)
     results = {
@@ -1083,25 +1070,6 @@ def distill(args):
     for name, param in model.named_parameters():
         if not (name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat")):
             param.requires_grad = False
-
-    # [DEBUG] Verifica quali parametri sono trainable
-    trainable_names = [name for name, p in model.named_parameters() if p.requires_grad]
-    print(f"[DEBUG] Trainable parameters ({len(trainable_names)}):")
-    for name in trainable_names:
-        num_params = sum(p.numel() for n, p in model.named_parameters() if n == name)
-        print(f"  - {name}: {num_params} params")
-    
-    # Verifica esplicita di sam2_compat
-    sam2_compat_params = [name for name in trainable_names if "sam2_compat" in name]
-    if sam2_compat_params:
-        print(f"[OK] sam2_compat parameters are trainable: {sam2_compat_params}")
-    else:
-        print("[ERROR] sam2_compat parameters NOT FOUND in trainable params!")
-        print(f"[DEBUG] All model parameter names containing 'sam2':")
-        for name, _ in model.named_parameters():
-            if "sam2" in name.lower():
-                print(f"  - {name}")
-    # DEBUG END
     
     # Initialize criterion
     criterion = DistillationLoss(
@@ -1110,29 +1078,8 @@ def distill(args):
         normalize=args.normalize_features,
     ).to(device)
 
-    # ========== ALIGNMENT LAYER (CREATE BEFORE OPTIMIZER) ==========
-    # alignment_layer = None
-    # if hasattr(args, "use_conv_alignment") and args.use_conv_alignment:
-    #     # Verified empirically: both student and teacher have 256 channels (shape: 1,256,64,64)
-    #     teacher_channels = 256
-    #     student_channels = 256
-    #     alignment_layer = ConvAlignmentLayer(student_channels, teacher_channels).to(device)
-        
-        # if student_channels != teacher_channels:
-        #     print(f"[INFO] Creating alignment layer: {student_channels} -> {teacher_channels} channels")
-        #     alignment_layer = ConvAlignmentLayer(student_channels, teacher_channels).to(device)
-        # else:
-        #     print(f"[INFO] Student and teacher channels match ({student_channels}), alignment layer not needed")
-        #     alignment_layer = None  # No alignment needed
-    
-    # ========== OPTIMIZER (AFTER ALIGNMENT LAYER) ==========
+    # ========== OPTIMIZER ==========
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-
-    # # Add alignment layer parameters if it exists
-    # if alignment_layer is not None:
-    #     trainable_params.extend(alignment_layer.parameters())
-    #     num_align_params = sum(p.numel() for p in alignment_layer.parameters())
-    #     print(f"[INFO] Added {num_align_params} parameters from alignment layer to optimizer")
 
     optimizer = optim.AdamW(
         trainable_params,
@@ -1142,7 +1089,7 @@ def distill(args):
     )
     print(optimizer)
     
-    # ========== WRAPPING IN DDP (AFTER ALIGNMENT CREATION) ==========
+    # ========== WRAPPING IN DDP ==========
     if args.distributed.distributed:
         model = torch.nn.parallel.DistributedDataParallel(
             model,
@@ -1150,15 +1097,6 @@ def distill(args):
             find_unused_parameters=False,
         )
         model_without_ddp = model.module
-        
-        # Wrap alignment layer in DDP if it exists
-        # if alignment_layer is not None:
-        #     alignment_layer = torch.nn.parallel.DistributedDataParallel(
-        #         alignment_layer,
-        #         device_ids=[args.distributed.gpu],
-        #         find_unused_parameters=False,
-        #     )
-        #     print("[INFO] Alignment layer wrapped in DDP")
         
         # If the module graph is static across iterations, avoid re-registering DDP hooks every iteration.
         # This prevents errors like "marked ready twice" when using checkpointing / reentrant autograd.
@@ -1187,15 +1125,6 @@ def distill(args):
         ckpt = torch.load(args.resume_ckpt, map_location=device, weights_only=False)
         model_without_ddp.dpt_feature_head_2.load_state_dict(ckpt["dpt_feature_head_2"])
         optimizer.load_state_dict(ckpt["optimizer"])
-
-        # Load alignment layer if present (check both checkpoint and current config)
-        # if alignment_layer is not None:
-        #     if "alignment_layer" in ckpt:
-        #         alignment_layer_unwrapped = alignment_layer.module if hasattr(alignment_layer, "module") else alignment_layer
-        #         alignment_layer_unwrapped.load_state_dict(ckpt["alignment_layer"])
-        #         print("[INFO] Loaded alignment layer from checkpoint")
-        #     else:
-        #         print("[WARN] Alignment layer exists but not found in checkpoint (training from scratch)")
 
         # Scheduler resume logic with T_max override
         if not args.disable_scheduler and "scheduler" in ckpt:
@@ -1240,7 +1169,6 @@ def distill(args):
             device=device,
             epoch=epoch,
             args=args,
-            # alignment_layer=alignment_layer,
         )
         
         # Validation
@@ -1253,7 +1181,6 @@ def distill(args):
                 device=device,
                 epoch=epoch,
                 args=args,
-                # alignment_layer=alignment_layer,
             )
             
             # Check for new best
@@ -1271,7 +1198,6 @@ def distill(args):
                         best_val_loss,
                         args.output_dir,
                         tag="best",
-                        # alignment_layer=alignment_layer,
                     )
         
         # Step scheduler
@@ -1289,7 +1215,6 @@ def distill(args):
                     best_val_loss,
                     args.output_dir,
                     tag=f"epoch{epoch+1}",
-                    # alignment_layer=alignment_layer,
                 )
         
         epoch_time = time.time() - epoch_start
@@ -1337,7 +1262,6 @@ def distill(args):
             best_val_loss,
             args.output_dir,
             tag="final",
-            # alignment_layer=alignment_layer,
         )
     
     total_time = time.time() - start_time
@@ -1355,7 +1279,6 @@ def save_checkpoint_distillation(
     best_val_loss: float,
     output_dir: str,
     tag: str = "last",
-    # alignment_layer=None,
 ):
     """
     Save checkpoint containing only dpt_feature_head_2 and optimizer state.
@@ -1378,11 +1301,6 @@ def save_checkpoint_distillation(
 
     if scheduler is not None:
         state["scheduler"] = scheduler.state_dict()
-
-    # Save alignment layer if present
-    # if alignment_layer is not None:
-    #     alignment_layer_unwrapped = alignment_layer.module if hasattr(alignment_layer, "module") else alignment_layer
-    #     state["alignment_layer"] = alignment_layer_unwrapped.state_dict()
     
     # Save wandb run_id if available
     if WANDB_AVAILABLE and wandb.run is not None:
@@ -1434,7 +1352,6 @@ def get_args_parser():
     parser.add_argument("--mse_weight", type=float, default=0.5, help="Weight for MSE loss")
     parser.add_argument("--cosine_weight", type=float, default=0.5, help="Weight for cosine loss")
     parser.add_argument("--normalize_features", action="store_true", help="Normalize features before loss")
-    # parser.add_argument("--use_conv_alignment", action="store_true", help="Enable 1x1 conv alignment layer before loss")
     
     # Data
     parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
