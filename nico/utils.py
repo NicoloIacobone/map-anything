@@ -251,54 +251,6 @@ def pca_features_to_rgb(
         return rgb, pil_img
     return rgb
 
-# def create_student_original_teacher_side_by_side(
-#     student_embeddings,
-#     teacher_embeddings,
-#     img_path,
-#     img_name,
-#     output_heatmaps,
-# ):
-#     _, pil_img_student = pca_features_to_rgb(student_embeddings, num_components=3, outlier_rejection=False)
-#     _, pil_img_teacher = pca_features_to_rgb(teacher_embeddings, num_components=3, outlier_rejection=False)
-#     # Resize both images to the same size if needed
-#     # Load original image
-#     orig_img = Image.open(img_path).convert("RGB")
-
-#     # Upsample student and teacher images to match original image size if needed
-#     target_size = orig_img.size
-#     if pil_img_student.size != target_size:
-#         pil_img_student = pil_img_student.resize(target_size, Image.BILINEAR)
-#     if pil_img_teacher.size != target_size:
-#         pil_img_teacher = pil_img_teacher.resize(target_size, Image.BILINEAR)
-
-#     # Create a new image with triple width to place student, original, and teacher side by side
-#     w, h = target_size
-#     combined_img = Image.new("RGB", (w * 3, h))
-#     combined_img.paste(pil_img_student, (0, 0))
-#     combined_img.paste(orig_img, (w, 0))
-#     combined_img.paste(pil_img_teacher, (w * 2, 0))
-
-#     # Add labels to each image
-
-#     draw = ImageDraw.Draw(combined_img)
-#     font = ImageFont.load_default(size=32)
-
-#     label_height = 40
-#     # Draw rectangles for label backgrounds
-#     draw.rectangle([(0, 0), (w, label_height)], fill=(0, 0, 0, 128))
-#     draw.rectangle([(w, 0), (w * 2, label_height)], fill=(0, 0, 0, 128))
-#     draw.rectangle([(w * 2, 0), (w * 3, label_height)], fill=(0, 0, 0, 128))
-
-#     draw.text((10, 5), "STUDENT EMBEDDINGS", fill=(255, 255, 255), font=font)   
-#     draw.text((w + 10, 5), "ORIGINAL IMAGE", fill=(255, 255, 255), font=font)
-#     draw.text((w * 2 + 10, 5), "TEACHER EMBEDDINGS", fill=(255, 255, 255), font=font)
-
-#     # Save the combined image
-#     # combined_path = os.path.join(output_heatmaps, f"{img_name}_student_original_teacher_side_by_side.png")
-#     combined_path = os.path.join(output_heatmaps, f"{img_name}.png")
-#     combined_img.save(combined_path)
-#     # print(f"[INFO] Saved side-by-side image: {combined_path}")
-
 def create_student_original_teacher_side_by_side(
     student_embeddings,
     teacher_embeddings,
