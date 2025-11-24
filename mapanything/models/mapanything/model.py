@@ -77,6 +77,7 @@ from uniception.models.prediction_heads.linear import LinearFeature
 from uniception.models.prediction_heads.mlp_head import MLPHead
 from uniception.models.prediction_heads.pose_head import PoseHead
 
+from nico.utils import SAM2CompatibilityLayer # additional LayerNorm + 1x1Conv
 # from nico.my_head import InstanceSegmentationHead
 
 # Enable TF32 precision if supported (for GPU >= Ampere and PyTorch >= 1.12)
@@ -381,12 +382,12 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 self.dpt_feature_head, self.dpt_regressor_head
             )
 
-            # [NICO] Seconda DPT head parallela - mi dovrebbe servire solo dpt_featuer_head dato che devo produrre degli embeddings
-
+            # [NICO] Seconda DPT head parallela
             if pred_head_config.get("enable_second_dense_head", False):
                 self.dpt_feature_head_2 = DPTFeature(**pred_head_config["feature_head_2"])
-                # self.dpt_regressor_head_2 = DPTRegressionProcessor(**pred_head_config["regressor_head_2"])
-                # self.dense_head_2 = nn.Sequential(self.dpt_feature_head_2, self.dpt_regressor_head_2)
+                # Layer di compatibilità per allineare a SAM2 (256 canali, LayerNorm)
+                dpt_out_dim = pred_head_config["feature_head_2"]["feature_dim"]  # es. 256
+                self.sam2_compat = SAM2CompatibilityLayer(channels=dpt_out_dim)
 
             # Add your head with in_dim inferred
             # dpt_feat_dim = pred_head_config["feature_head"]["feature_dim"]
@@ -1378,6 +1379,11 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 )
                 # FORZA resize a target_hw_2 (DPTFeature ignora target_output_shape per l'upsampling)
                 feat_8x = dpt_features_2.features_upsampled_8x  # (B*V, C, H, W)
+
+                # Applica SAM2 compatibility layer (LayerNorm + proiezione a 256 canali)
+                if hasattr(self, "sam2_compat"):
+                    feat_8x = self.sam2_compat(feat_8x)  # (B*V, 256, H, W)
+
                 if feat_8x.shape[-2:] != target_hw_2:
                     import torch.nn.functional as F
                     feat_8x = F.interpolate(
