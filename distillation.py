@@ -1063,46 +1063,85 @@ def distill(args):
         model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
     
     model_without_ddp = model
+    print(f"Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
 
-    # ========== DEBUG: INSPECT info_sharing STRUCTURE ==========
-    if global_rank == 0 and hasattr(model, "info_sharing"):
-        print("\n" + "="*80)
-        print("INFO_SHARING TRANSFORMER STRUCTURE")
-        print("="*80)
-        
+    # ========== FREEZE STRATEGY ==========
+    # 1. Freeze tutto inizialmente
+    print("Freezing all parameters...")
+    for param in model.parameters():
+        param.requires_grad = False
+    
+    # 2. Unfreeze dpt_feature_head_2 e sam2_compat (sempre trainable)
+    print("Unfreezing dpt_feature_head_2 and sam2_compat...")
+    for name, param in model.named_parameters():
+        if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat"):
+            param.requires_grad = True
+
+    # 3. Unfreeze ultimi N blocchi di info_sharing.self_attention_blocks (opzionale)
+    num_info_sharing_blocks = getattr(args, 'num_info_sharing_blocks_unfreeze', 0)
+    if num_info_sharing_blocks > 0 and hasattr(model, "info_sharing"):
         info_sharing = model.info_sharing
         
-        # Check for 'self_attention_blocks' (MapAnything specific)
+        # Trova i blocchi (self_attention_blocks per MapAnything)
         if hasattr(info_sharing, "self_attention_blocks"):
             blocks = info_sharing.self_attention_blocks
-            print(f"✅ Found {len(blocks)} transformer blocks in info_sharing.self_attention_blocks")
-            for i, block in enumerate(blocks):
-                num_params = sum(p.numel() for p in block.parameters())
-                print(f"   Block {i}: {num_params:,} params")
         elif hasattr(info_sharing, "blocks"):
             blocks = info_sharing.blocks
-            print(f"✅ Found {len(blocks)} transformer blocks in info_sharing.blocks")
         elif hasattr(info_sharing, "layers"):
-            layers = info_sharing.layers
-            print(f"✅ Found {len(layers)} transformer layers in info_sharing.layers")
+            blocks = info_sharing.layers
         else:
-            # Fallback: list all children
-            print("⚠️  No 'blocks', 'layers', or 'self_attention_blocks' found. Listing children:")
-            for name, module in info_sharing.named_children():
-                num_params = sum(p.numel() for p in module.parameters())
-                print(f"   - {name}: {type(module).__name__} ({num_params:,} params)")
+            print("[WARN] info_sharing has no 'self_attention_blocks', 'blocks', or 'layers'. Skipping unfreezing.")
+            blocks = []
         
-        print("="*80 + "\n")
-    raise Exception
-    # ========== END DEBUG ==========
+        if len(blocks) > 0:
+            # Unfreeze ultimi N blocchi
+            start_idx = max(0, len(blocks) - num_info_sharing_blocks)
+            unfrozen_count = 0
+            for i in range(start_idx, len(blocks)):
+                for param in blocks[i].parameters():
+                    param.requires_grad = True
+                    unfrozen_count += param.numel()
+            
+            print(f"[INFO] Unfroze last {num_info_sharing_blocks} info_sharing blocks (indices {start_idx}-{len(blocks)-1})")
+            print(f"[INFO] Unfroze {unfrozen_count:,} parameters in info_sharing")
 
-    print(f"Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
+    # ========== VERIFY TRAINABLE PARAMETERS ==========
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    frozen_params = [p for p in model.parameters() if not p.requires_grad]
     
-    # Congela tutto tranne la testa dpt_feature_head_2 (oggetto della distillazione)
-    print("Freezing all parameters except dpt_feature_head_2...")
+    trainable_count = sum(p.numel() for p in trainable_params)
+    frozen_count = sum(p.numel() for p in frozen_params)
+    total_count = trainable_count + frozen_count
+    
+    print("\n" + "="*80)
+    print("TRAINABLE PARAMETERS SUMMARY")
+    print("="*80)
+    print(f"Trainable params: {trainable_count:,} ({100*trainable_count/total_count:.2f}%)")
+    print(f"Frozen params:    {frozen_count:,} ({100*frozen_count/total_count:.2f}%)")
+    print(f"Total params:     {total_count:,}")
+    
+    # Lista dei gruppi trainable
+    trainable_groups = {}
     for name, param in model.named_parameters():
-        if not (name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat")):
-            param.requires_grad = False
+        if param.requires_grad:
+            # Estrai il gruppo (es. "info_sharing.self_attention_blocks.10")
+            parts = name.split(".")
+            if len(parts) >= 4 and parts[0] == "info_sharing" and parts[1] == "self_attention_blocks":
+                # info_sharing.self_attention_blocks.10.attn.qkv.weight -> info_sharing.self_attention_blocks.10
+                group = ".".join(parts[:3])
+            elif len(parts) >= 3:
+                group = ".".join(parts[:3])
+            else:
+                group = ".".join(parts[:2])
+            
+            if group not in trainable_groups:
+                trainable_groups[group] = 0
+            trainable_groups[group] += param.numel()
+    
+    print("\n📦 Trainable parameter groups:")
+    for group, count in sorted(trainable_groups.items()):
+        print(f"   - {group}: {count:,} params")
+    print("="*80 + "\n")
     
     # Initialize criterion
     criterion = DistillationLoss(
@@ -1432,9 +1471,13 @@ def get_args_parser():
     parser.add_argument("--distributed", action="store_true", help="Enable distributed training")
     parser.add_argument("--dist_url", type=str, default="env://", help="URL for distributed training")
     parser.add_argument("--local_rank", type=int, default=0, help="Local rank for distributed training")
+
+    # Unfreeze strategy
+    parser.add_argument("--num_info_sharing_blocks_unfreeze", type=int, default=0, help="Number of last info_sharing transformer blocks to unfreeze")
     
     # comando debug pc lab
-    # python distillation.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations
+    # python distillation.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2
+    # python distillation.py --epochs 10 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 4 --resume_ckpt /scratch2/nico/distillation/output/distill_20251125_143157/checkpoints/checkpoint_best.pth
 
     return parser
 
