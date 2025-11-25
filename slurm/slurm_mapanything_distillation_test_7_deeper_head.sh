@@ -4,16 +4,16 @@
 #SBATCH --job-name=2_rtx_4090
 #
 # Specify output file.
-#SBATCH --output=mapanything_%j.log
+#SBATCH --output=test_7_%j.log
 #
 # Specify error file.
-#SBATCH --error=mapanything_%j.err
+#SBATCH --error=test_7_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=02:00:00
+#SBATCH --time=01:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -74,10 +74,9 @@ fi
 echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 
 python distillation.py \
-  --use_wandb \
-  --wandb_name "test_2_no_normalize" \
-  --epochs 50 \
-  --batch_size 20 \
+  --wandb_name "test_7_deeper_head" \
+  --epochs 2 \
+  --batch_size 12 \
   --num_workers 8 \
   --lr 1e-4 \
   --weight_decay 0.0 \
