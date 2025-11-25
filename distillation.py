@@ -700,7 +700,31 @@ def train_one_epoch_distillation(
         
         # Backward pass
         loss.backward()
-        
+
+        ############ DEBUG ###########################################################################################
+        # debug grads for info_sharing last blocks
+        def log_grad_stats(model, prefix="DBG"):
+            for name, param in model.named_parameters():
+                if "info_sharing.self_attention_blocks" in name:
+                    if param.requires_grad:
+                        grad = param.grad
+                        if grad is None:
+                            print(f"[{prefix}] {name} grad=None")
+                        else:
+                            gnorm = grad.norm().item()
+                            print(f"[{prefix}] {name} grad_norm={gnorm:.6e}")
+        ########################################################################################################
+
+        # call it
+        log_grad_stats(model if not hasattr(model, "module") else model.module, prefix=f"epoch{epoch}_step{data_iter_step}")
+
+        ############ DEBUG #######################################################################################
+        # pick a param tensor to monitor
+        pname = "info_sharing.self_attention_blocks.23.attn.qkv.weight"  # esempio: adattalo a quelli che hai
+        param = dict(model.named_parameters())[pname] if not hasattr(model, "module") else dict(model.module.named_parameters())[pname]
+        before = param.detach().cpu().clone()
+        ########################################################################################################
+
         # Step ottimizzatore ogni 'accum_iter' iterazioni (simula batch più grande)
         if (data_iter_step + 1) % accum_iter == 0:
             # Gradient clipping
@@ -709,6 +733,13 @@ def train_one_epoch_distillation(
             optimizer.step()
             optimizer.zero_grad()
         
+        ############# DEBUG ###########################################################################################
+        # dopo backward e optimizer.step():
+        after = param.detach().cpu().clone()
+        delta = (after - before).norm().item()
+        print(f"[PARAM_UPDATE] {pname} || delta norm = {delta:.6e}")
+        ########################################################################################################
+
         # Accumulate weighted sums
         batch_size = student_features.shape[0]
         total_samples += batch_size
@@ -1165,6 +1196,17 @@ def distill(args):
         betas=(0.9, 0.95),
     )
     print(optimizer)
+
+    #################### DEBUG ########################
+    # subito DOPO aver creato optimizer (una sola volta)
+    print("OPTIMIZER param groups summary:")
+    for i, pg in enumerate(optimizer.param_groups):
+        n_params = sum(p.numel() for p in pg['params'])
+        print(f" pg {i}: lr={pg.get('lr')}, params={n_params:,}")
+    # totale trainable come prima stampata
+    trainable_opt_params = sum(p.numel() for p in optimizer.param_groups[0]['params'])
+    print("Total params in first group (approx):", trainable_opt_params)
+    ###################################################
     
     # ========== WRAPPING IN DDP ==========
     if args.distributed.distributed:
