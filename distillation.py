@@ -1094,16 +1094,21 @@ def distill(args):
             blocks = []
         
         if len(blocks) > 0:
-            # Unfreeze ultimi N blocchi
             start_idx = max(0, len(blocks) - num_info_sharing_blocks)
             unfrozen_count = 0
+            unfrozen_indices = []
             for i in range(start_idx, len(blocks)):
                 for param in blocks[i].parameters():
                     param.requires_grad = True
                     unfrozen_count += param.numel()
-            
-            print(f"[INFO] Unfroze last {num_info_sharing_blocks} info_sharing blocks (indices {start_idx}-{len(blocks)-1})")
+                unfrozen_indices.append(i)
+            args.info_sharing_unfrozen_indices = unfrozen_indices
+            print(f"[INFO] Unfroze last {num_info_sharing_blocks} info_sharing blocks (indices {unfrozen_indices})")
             print(f"[INFO] Unfroze {unfrozen_count:,} parameters in info_sharing")
+        else:
+            args.info_sharing_unfrozen_indices = []
+    else:
+        args.info_sharing_unfrozen_indices = []
 
     # ========== VERIFY TRAINABLE PARAMETERS ==========
     trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -1203,7 +1208,33 @@ def distill(args):
             print("[INFO] Loaded sam2_compat state from checkpoint")
         elif hasattr(model_without_ddp, "sam2_compat"):
             print("[WARN] sam2_compat exists on model but not found in checkpoint. Using random initialization.")
-        
+
+        # Restore unfrozen info_sharing blocks if present
+        if "info_sharing_blocks" in ckpt and hasattr(model_without_ddp, "info_sharing"):
+            info = model_without_ddp.info_sharing
+            if hasattr(info, "self_attention_blocks"):
+                blocks = info.self_attention_blocks
+            elif hasattr(info, "blocks"):
+                blocks = info.blocks
+            elif hasattr(info, "layers"):
+                blocks = info.layers
+            else:
+                blocks = []
+            saved_indices = ckpt.get("info_sharing_unfrozen_indices", [])
+            missing = []
+            for idx, state_dict in ckpt["info_sharing_blocks"].items():
+                if idx < len(blocks):
+                    try:
+                        blocks[idx].load_state_dict(state_dict)
+                    except Exception as e:
+                        print(f"[WARN] Failed loading info_sharing block {idx}: {e}")
+                else:
+                    missing.append(idx)
+            print(f"[INFO] Restored unfrozen info_sharing blocks from checkpoint: {saved_indices}")
+            if missing:
+                print(f"[WARN] Saved block indices not present in current model: {missing}")
+            args.info_sharing_unfrozen_indices = saved_indices
+
         optimizer.load_state_dict(ckpt["optimizer"])
 
         # Scheduler resume logic with T_max override
@@ -1278,6 +1309,7 @@ def distill(args):
                         best_val_loss,
                         args.output_dir,
                         tag="best",
+                        args=args,
                     )
         
         # Step scheduler
@@ -1295,6 +1327,7 @@ def distill(args):
                     best_val_loss,
                     args.output_dir,
                     tag=f"epoch{epoch+1}",
+                    args=args,
                 )
         
         epoch_time = time.time() - epoch_start
@@ -1342,6 +1375,7 @@ def distill(args):
             best_val_loss,
             args.output_dir,
             tag="final",
+            args=args,
         )
     
     total_time = time.time() - start_time
@@ -1359,6 +1393,7 @@ def save_checkpoint_distillation(
     best_val_loss: float,
     output_dir: str,
     tag: str = "last",
+    args=None,
 ):
     """
     Save checkpoint containing only dpt_feature_head_2 and optimizer state.
@@ -1383,6 +1418,22 @@ def save_checkpoint_distillation(
     if hasattr(model_without_ddp, "sam2_compat"):
         state["sam2_compat"] = model_without_ddp.sam2_compat.state_dict()
         print("[INFO] sam2_compat state added to checkpoint")
+
+    # Save unfrozen info_sharing blocks if any
+    if args is not None and hasattr(model_without_ddp, "info_sharing") and getattr(args, "info_sharing_unfrozen_indices", []):
+        info = model_without_ddp.info_sharing
+        if hasattr(info, "self_attention_blocks"):
+            blocks = info.self_attention_blocks
+        elif hasattr(info, "blocks"):
+            blocks = info.blocks
+        elif hasattr(info, "layers"):
+            blocks = info.layers
+        else:
+            blocks = []
+        indices = [i for i in getattr(args, "info_sharing_unfrozen_indices", []) if i < len(blocks)]
+        state["info_sharing_unfrozen_indices"] = indices
+        state["info_sharing_blocks"] = {i: blocks[i].state_dict() for i in indices}
+        print(f"[INFO] Added {len(indices)} unfrozen info_sharing blocks to checkpoint: {indices}")
 
     if scheduler is not None:
         state["scheduler"] = scheduler.state_dict()
