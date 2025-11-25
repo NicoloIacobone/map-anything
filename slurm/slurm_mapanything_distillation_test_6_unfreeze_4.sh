@@ -77,7 +77,7 @@ python distillation.py \
   --use_wandb \
   --wandb_name "test_6_unfreeze_4" \
   --epochs 50 \
-  --batch_size 14 \
+  --batch_size 12 \
   --num_workers 8 \
   --lr 1e-4 \
   --weight_decay 0.0 \
