@@ -15,13 +15,13 @@ MODEL_NAME = "facebook/map-anything"
 
 # Path to a checkpoint saved by distillation that contains only dpt_feature_head_2
 # e.g., "/scratch2/nico/distillation/output/<run_name>/checkpoints/checkpoint_best.pth"
-CHECKPOINT_PATH = "/scratch2/nico/distillation/output/distillation_3/checkpoints/checkpoint_best.pth"
+CHECKPOINT_PATH = "/scratch2/nico/distillation/output/distillation_4/checkpoints/checkpoint_epoch9.pth"
 
 # Single image path to run inference on
-IMAGE_PATH = "/scratch2/nico/distillation/dataset/coco2017/images/train2017/000000000030.jpg"
+IMAGE_PATH = "/scratch2/nico/distillation/dataset/coco2017/images/val2017/000000002587.jpg"
 
 # Where to save the student embeddings tensor (.pt)
-OUTPUT_PATH = "/scratch2/nico/distillation/tests/embeddings/student/000000000030.pt"
+OUTPUT_PATH = "/scratch2/nico/distillation/output/distillation_4/visualizations/student/000000002587.pt"
 
 # AMP settings (mirrors distillation.py behavior)
 USE_AMP = True
@@ -50,6 +50,16 @@ def main():
         raise KeyError("Checkpoint does not contain 'dpt_feature_head_2' state.")
     model.dpt_feature_head_2.load_state_dict(ckpt["dpt_feature_head_2"], strict=True)
     print("[INFO] Loaded dpt_feature_head_2 from checkpoint.")
+
+    # Load sam2_compat
+    if hasattr(model, "sam2_compat"):
+        if "sam2_compat" in ckpt:
+            model.sam2_compat.load_state_dict(ckpt["sam2_compat"], strict=True)
+            print("[INFO] Loaded sam2_compat from checkpoint.")
+        else:
+            print("[WARN] sam2_compat exists on model but not found in checkpoint. Using random initialization.")
+    else:
+        print("[WARN] Model does not have sam2_compat attribute. Check if enable_second_dense_head is active in config.")
 
     # 3) Load image via project utility (consistent with distillation.py)
     img_path = Path(IMAGE_PATH)
