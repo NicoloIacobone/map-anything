@@ -386,8 +386,9 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
             if pred_head_config.get("enable_second_dense_head", False):
                 self.dpt_feature_head_2 = DPTFeature(**pred_head_config["feature_head_2"])
                 # Layer di compatibilità per allineare a SAM2 (256 canali, LayerNorm)
-                dpt_out_dim = pred_head_config["feature_head_2"]["feature_dim"]  # es. 256
-                self.sam2_compat = SAM2CompatibilityLayer(channels=dpt_out_dim)
+                dpt_out_dim = pred_head_config["feature_head_2"]["feature_dim"]  # può essere 512 ora
+                # self.sam2_compat = SAM2CompatibilityLayer(channels=dpt_out_dim)
+                self.sam2_compat = SAM2CompatibilityLayer(in_channels=dpt_out_dim, out_channels=256)
 
             # Add your head with in_dim inferred
             # dpt_feat_dim = pred_head_config["feature_head"]["feature_dim"]
@@ -1366,34 +1367,34 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
 
             # [NICO] seconda head
             if hasattr(self, "dpt_feature_head_2"):
-                # target_hw_2 = self.pred_head_config["feature_head_2"].get("target_hw", None)
-                target_hw_2 = (64, 64)  # hardcoded per ora
-                if target_hw_2 is None:
-                    target_hw_2 = img_shape
-                    print("Using image shape for target_hw_2:", target_hw_2)
+                target_hw_2 = (64, 64)
                 dpt_features_2 = self.dpt_feature_head_2(
                     PredictionHeadLayeredInput(
                         list_features=dense_head_inputs,
                         target_output_shape=target_hw_2,
                     )
                 )
-                # FORZA resize a target_hw_2 (DPTFeature ignora target_output_shape per l'upsampling)
                 feat_8x = dpt_features_2.features_upsampled_8x  # (B*V, C, H, W)
+                # print(f"[NICO] Extracted feat2_8x with shape: {feat_8x.shape}")
 
-                # Applica SAM2 compatibility layer (LayerNorm + proiezione a 256 canali)
-                if hasattr(self, "sam2_compat"):
-                    feat_8x = self.sam2_compat(feat_8x)  # (B*V, 256, H, W)
-
+                # Garantisce dimensione spaziale fissa
                 if feat_8x.shape[-2:] != target_hw_2:
                     import torch.nn.functional as F
                     feat_8x = F.interpolate(
-                        feat_8x, 
-                        size=target_hw_2, 
-                        mode="bilinear", 
-                        align_corners=False
+                        feat_8x,
+                        size=target_hw_2,
+                        mode="bilinear",
+                        align_corners=False,
                     )
+                # print(f"[NICO] Resized feat2_8x to shape: {feat_8x.shape}")
+
+                # Proiezione a 256 canali
+                if hasattr(self, "sam2_compat"):
+                    feat_8x = self.sam2_compat(feat_8x)
+                    assert feat_8x.shape[1] == 256, f"Expected 256 channels, got {feat_8x.shape[1]}"
+
                 self._last_feat2_8x = feat_8x
-                # print("[SHAPE] self._last_feat2_8x", tuple(self._last_feat2_8x.shape))
+                # print(f"[NICO] Stored feat2_8x with shape: {feat_8x.shape}")
         else:
             raise ValueError(
                 f"Invalid pred_head_type: {self.pred_head_type}. Valid options: ['linear', 'dpt', 'dpt+pose']"

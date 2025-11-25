@@ -11,18 +11,29 @@ from PIL import Image, ImageDraw, ImageFont
 from torch import nn
 
 class SAM2CompatibilityLayer(nn.Module):
-    def __init__(self, channels):
+    def __init__(self, in_channels: int, out_channels: int = 256):
         super().__init__()
-        self.ln = nn.LayerNorm(channels, eps=1e-6)
-        self.proj = nn.Conv2d(channels, 256, kernel_size=1)
+        # self.ln = nn.LayerNorm(channels, eps=1e-6)
+        # self.proj = nn.Conv2d(channels, 256, kernel_size=1)
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.ln = nn.LayerNorm(in_channels)
+        self.proj = nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=True)
 
     def forward(self, x):  # x: (B,C,H,W)
         # LayerNorm expects (B,H*W,C) or (B,C)
-        B, C, H, W = x.shape
-        x = x.permute(0, 2, 3, 1)        # (B,H,W,C)
-        x = self.ln(x)                  # LN over C
-        x = x.permute(0, 3, 1, 2)       # (B,C,H,W)
-        x = self.proj(x)                # match SAM2 feature dim
+        # B, C, H, W = x.shape
+        # x = x.permute(0, 2, 3, 1)        # (B,H,W,C)
+        # x = self.ln(x)                  # LN over C
+        # x = x.permute(0, 3, 1, 2)       # (B,C,H,W)
+        # x = self.proj(x)                # match SAM2 feature dim
+        # return x
+        b, c, h, w = x.shape
+        assert c == self.in_channels, f"Expected {self.in_channels}, got {c}"
+        x = x.permute(0, 2, 3, 1).contiguous()
+        x = self.ln(x)
+        x = x.permute(0, 3, 1, 2).contiguous()
+        x = self.proj(x)
         return x
 
 def branch_wandb(old_id: str, new_name: str, start_epoch: int = 0) -> str:
