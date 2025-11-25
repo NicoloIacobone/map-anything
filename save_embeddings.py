@@ -37,6 +37,7 @@ def main():
     # 1) Instantiate model (strict=False to allow extra head)
     print("[INFO] Loading MapAnything model...")
     model = MapAnything.from_pretrained(MODEL_NAME, strict=False).to(device)
+
     model.eval()
 
     # 2) Load head-2 weights from checkpoint (as saved by distillation)
@@ -113,3 +114,61 @@ if __name__ == "__main__":
         print(f"[ERR] {e}")
         sys.exit(1)
     sys.exit(0)
+
+
+    # ========== DEBUG: VERIFY MODEL STRUCTURE ==========
+    # print("\n" + "="*70)
+    # print("DEBUG: MODEL STRUCTURE VERIFICATION")
+    # print("="*70)
+    
+    # # 1. Check if dpt_feature_head_2 exists
+    # if hasattr(model, "dpt_feature_head_2"):
+    #     print("✅ [OK] dpt_feature_head_2 exists on model")
+    #     num_params = sum(p.numel() for p in model.dpt_feature_head_2.parameters())
+    #     print(f"     → {num_params:,} parameters")
+    # else:
+    #     print("❌ [ERROR] dpt_feature_head_2 NOT FOUND on model")
+    #     print("     → Check config.json: 'enable_second_dense_head' must be true")
+    
+    # # 2. Check if sam2_compat exists
+    # if hasattr(model, "sam2_compat"):
+    #     print("✅ [OK] sam2_compat exists on model")
+    #     num_params = sum(p.numel() for p in model.sam2_compat.parameters())
+    #     print(f"     → {num_params:,} parameters")
+        
+    #     # List parameters
+    #     print("     → Parameters:")
+    #     for name, param in model.sam2_compat.named_parameters():
+    #         print(f"       - {name}: shape={tuple(param.shape)}")
+    # else:
+    #     print("❌ [ERROR] sam2_compat NOT FOUND on model")
+    #     print("     → Check if SAM2CompatibilityLayer is initialized in model.py")
+    
+    # # 3. List all top-level modules
+    # print("\n📦 Top-level modules:")
+    # for name, _ in model.named_children():
+    #     print(f"   - {name}")
+    
+    # # 4. Check parameters containing 'dpt_feature_head_2' or 'sam2_compat'
+    # print("\n🔍 Parameters matching 'dpt_feature_head_2' or 'sam2_compat':")
+    # found_head2 = False
+    # found_sam2 = False
+    # for name, param in model.named_parameters():
+    #     if "dpt_feature_head_2" in name:
+    #         if not found_head2:
+    #             print(f"   ✅ Found dpt_feature_head_2 parameters:")
+    #             found_head2 = True
+    #         print(f"      - {name}: shape={tuple(param.shape)}")
+    #     elif "sam2_compat" in name:
+    #         if not found_sam2:
+    #             print(f"   ✅ Found sam2_compat parameters:")
+    #             found_sam2 = True
+    #         print(f"      - {name}: shape={tuple(param.shape)}")
+    
+    # if not found_head2:
+    #     print("   ❌ No dpt_feature_head_2 parameters found")
+    # if not found_sam2:
+    #     print("   ❌ No sam2_compat parameters found")
+    
+    # print("="*70 + "\n")
+    # ========== END DEBUG ==========

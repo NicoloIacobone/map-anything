@@ -1063,6 +1063,39 @@ def distill(args):
         model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
     
     model_without_ddp = model
+
+    # ========== DEBUG: INSPECT info_sharing STRUCTURE ==========
+    if global_rank == 0 and hasattr(model, "info_sharing"):
+        print("\n" + "="*80)
+        print("INFO_SHARING TRANSFORMER STRUCTURE")
+        print("="*80)
+        
+        info_sharing = model.info_sharing
+        
+        # Check for 'self_attention_blocks' (MapAnything specific)
+        if hasattr(info_sharing, "self_attention_blocks"):
+            blocks = info_sharing.self_attention_blocks
+            print(f"✅ Found {len(blocks)} transformer blocks in info_sharing.self_attention_blocks")
+            for i, block in enumerate(blocks):
+                num_params = sum(p.numel() for p in block.parameters())
+                print(f"   Block {i}: {num_params:,} params")
+        elif hasattr(info_sharing, "blocks"):
+            blocks = info_sharing.blocks
+            print(f"✅ Found {len(blocks)} transformer blocks in info_sharing.blocks")
+        elif hasattr(info_sharing, "layers"):
+            layers = info_sharing.layers
+            print(f"✅ Found {len(layers)} transformer layers in info_sharing.layers")
+        else:
+            # Fallback: list all children
+            print("⚠️  No 'blocks', 'layers', or 'self_attention_blocks' found. Listing children:")
+            for name, module in info_sharing.named_children():
+                num_params = sum(p.numel() for p in module.parameters())
+                print(f"   - {name}: {type(module).__name__} ({num_params:,} params)")
+        
+        print("="*80 + "\n")
+    raise Exception
+    # ========== END DEBUG ==========
+
     print(f"Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
     
     # Congela tutto tranne la testa dpt_feature_head_2 (oggetto della distillazione)

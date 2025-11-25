@@ -31,3 +31,33 @@ Ogni refinenet è un FeatureFusionBlock:
     - make_fusion_block: blocchi residuali con fusion
     - No LayerNorm: solo Conv + optional BatchNorm
     - Gradient Checkpointing: opzionale per ridurre memoria
+
+
+Top-level modules:
+- encoder: DINOv2Encoder (304,367,616 params)
+- ray_dirs_encoder: DenseRepresentationEncoder (31,295,068 params)
+- depth_encoder: DenseRepresentationEncoder (29,220,604 params)
+- depth_scale_encoder: GlobalRepresentationEncoder (692,224 params)
+- cam_rot_encoder: GlobalRepresentationEncoder (692,608 params)
+- cam_trans_encoder: GlobalRepresentationEncoder (692,480 params)
+- cam_trans_scale_encoder: GlobalRepresentationEncoder (692,224 params)
+- fusion_norm_layer: LayerNorm (2,048 params)
+- info_sharing: MultiViewAlternatingAttentionTransformerIFR (170,897,664 params)
+- dpt_feature_head: DPTFeature (18,578,368 params)
+- dpt_regressor_head: DPTRegressionProcessor (443,398 params)
+- dense_head: Sequential (19,021,766 params)
+- dpt_feature_head_2: DPTFeature (18,578,368 params)
+- sam2_compat: SAM2CompatibilityLayer (66,304 params)
+- pose_head: PoseHead (5,531,911 params)
+- scale_head: MLPHead (228,145 params)
+- dense_adaptor: RayDirectionsPlusDepthWithConfidenceAndMaskAdaptor (0 params)
+- pose_adaptor: CamTranslationPlusQuatsAdaptor (0 params)
+- scale_adaptor: ScaleAdaptor (0 params)
+
+Quello che mi interessa è MultiViewAlternatingAttentionTransformerIFR
+
+Found 24 transformer blocks in info_sharing.self_attention_blocks
+- Block 0: 7,087,872 params
+- Block 1: 7,087,872 params
+...
+- Block 23: 7,087,872 params
