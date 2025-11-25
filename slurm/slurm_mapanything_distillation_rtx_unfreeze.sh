@@ -4,10 +4,10 @@
 #SBATCH --job-name=2_rtx_4090
 #
 # Specify output file.
-#SBATCH --output=deeper_dpt_%j.log
+#SBATCH --output=deeper_dpt_unfreeze_%j.log
 #
 # Specify error file.
-#SBATCH --error=deeper_dpt_%j.err
+#SBATCH --error=deeper_dpt_unfreeze_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -77,7 +77,7 @@ echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --distributed \
   --use_wandb \
-  --wandb_name "distillation_7_deeper_dpt" \
+  --wandb_name "distillation_8_deeper_dpt_unfreeze" \
   --epochs 20 \
   --batch_size 12 \
   --num_workers 8 \
@@ -95,7 +95,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --amp_dtype bf16 \
   --seed 42 \
   --save_visualizations \
-#   --num_info_sharing_blocks_unfreeze 4
+  --num_info_sharing_blocks_unfreeze 4
 #   --wandb_resume_id 80chpr84 \
 #   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_2 \
 #   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_2/checkpoints/checkpoint_epoch9.pth
