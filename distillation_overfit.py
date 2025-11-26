@@ -996,8 +996,11 @@ def save_pca_visualizations(
             print(f"Image path: {img_path}")
 
             # Ensure tensors are detached, cloned, and contiguous before saving
-            student_single = student_single.detach().cpu().contiguous().clone()
-            teacher_single = teacher_single.detach().cpu().contiguous().clone()
+            # student_single = student_single.detach().cpu().contiguous().clone()
+            # teacher_single = teacher_single.detach().cpu().contiguous().clone()
+            img_basename = Path(img_path).stem  # Es: "000000544826"
+            torch.save(student_single, student_save_path / f"{epoch}_{img_basename}.pt")
+            torch.save(teacher_single, teacher_save_path / f"{epoch}_{img_basename}.pt")
             # torch.save(student_single.detach().cpu(), student_save_path / f"{epoch}.pt")
             torch.save(student_single, student_save_path / f"{epoch}.pt")
             torch.save(teacher_single, teacher_save_path / f"{epoch}.pt")
@@ -1339,7 +1342,7 @@ def distill(args):
 
         if args.distributed.distributed and hasattr(data_loader_train.sampler, 'set_epoch'):
             data_loader_train.sampler.set_epoch(epoch)
-            
+
         epoch_start = time.time()
         
         # Train one epoch
