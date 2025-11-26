@@ -75,17 +75,18 @@ echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 
 python distillation_overfit.py \
   --overfit_single_image \
-  --epochs 500 \
+  --epochs 5000 \
   --batch_size 1 \
-  --lr 1e-3 \
+  --lr 1e-4 \
   --num_workers 0 \
-  --print_freq 10 \
-  --eval_freq 10 \
-  --save_freq 50 \
+  --print_freq 500 \
+  --eval_freq 500 \
+  --save_freq 500 \
   --save_visualizations \
   --amp \
   --use_wandb \
-  --wandb_name "overfit_single_image_test"
+  --wandb_name "overfit_single_image_test_2" \
+  --disable_scheduler
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
