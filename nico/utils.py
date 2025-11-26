@@ -345,7 +345,8 @@ def create_student_original_teacher_side_by_side(
     draw.text((w * 2 + 10, 5), "TEACHER EMBEDDINGS", fill=(255, 255, 255), font=font)
 
     # --- Step 5: salva il risultato ---
-    combined_path = os.path.join(output_heatmaps, f"{epoch}.png")
+    # include image base name together with epoch to make filenames unique
+    combined_path = os.path.join(output_heatmaps, f"{epoch}_{img_name}.png")
     combined_img.save(combined_path)
 
     # --- Step 6: salva gli embeddings se richiesto ---

@@ -986,8 +986,11 @@ def save_pca_visualizations(
             student_single = student_single.detach().cpu().contiguous().clone()
             teacher_single = teacher_single.detach().cpu().contiguous().clone()
             # torch.save(student_single.detach().cpu(), student_save_path / f"{epoch}.pt")
-            torch.save(student_single, student_save_path / f"{epoch}.pt")
-            torch.save(teacher_single, teacher_save_path / f"{epoch}.pt")
+            # torch.save(student_single, student_save_path / f"{epoch}.pt")
+            # torch.save(teacher_single, teacher_save_path / f"{epoch}.pt")
+            img_basename = Path(img_path).stem  # Es: "000000544826"
+            torch.save(student_single, student_save_path / f"{epoch}_{img_basename}.pt")
+            torch.save(teacher_single, teacher_save_path / f"{epoch}_{img_basename}.pt")
         except Exception as e:
             print(f"[WARN] Failed to create PCA visualization for {img_path}: {e}")
             continue
