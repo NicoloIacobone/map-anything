@@ -1076,7 +1076,7 @@ def distill(args):
         multi_view_mode=args.multi_view_mode,
         overfit_single_image=overfit_mode,
     )
-    
+
     print(f"Building val dataloader from {VAL_IMAGES_DIR}")
     if overfit_mode:
         data_loader_val = data_loader_train
@@ -1091,19 +1091,19 @@ def distill(args):
                 if DistillationDataset._is_image_file(f)
             ])
             val_image_paths = all_val_imgs[:args.debug_max_val_images]
-    
-    data_loader_val = build_distillation_dataloader(
-        image_dir=VAL_IMAGES_DIR,
-        features_dir=VAL_FEATURES_DIR,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        shuffle=False,
-        image_paths=val_image_paths,
-        distributed=args.distributed.distributed,
-        scenes_file=getattr(args, 'val_scenes_file', None),
-        multi_view_mode=args.multi_view_mode,
-        overfit_single_image=False,
-    )
+        
+        data_loader_val = build_distillation_dataloader(
+            image_dir=VAL_IMAGES_DIR,
+            features_dir=VAL_FEATURES_DIR,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            shuffle=False,
+            image_paths=val_image_paths,
+            distributed=args.distributed.distributed,
+            scenes_file=getattr(args, 'val_scenes_file', None),
+            multi_view_mode=args.multi_view_mode,
+            overfit_single_image=False,
+        )
     
     # Carica il modello pre-addestrato (strict=False per permettere head extra)
     print("Loading MapAnything model...")
