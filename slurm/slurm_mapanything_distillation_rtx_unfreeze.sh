@@ -4,16 +4,16 @@
 #SBATCH --job-name=2_rtx_4090
 #
 # Specify output file.
-#SBATCH --output=deeper_dpt_unfreeze_%j.log
+#SBATCH --output=deeper_dpt_unfreeze_4_%j.log
 #
 # Specify error file.
-#SBATCH --error=deeper_dpt_unfreeze_%j.err
+#SBATCH --error=deeper_dpt_unfreeze_4_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=48:00:00
+#SBATCH --time=24:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -78,7 +78,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --distributed \
   --use_wandb \
   --wandb_name "distillation_8_deeper_dpt_unfreeze" \
-  --epochs 20 \
+  --epochs 15 \
   --batch_size 12 \
   --num_workers 8 \
   --lr 1e-4 \
