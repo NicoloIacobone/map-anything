@@ -127,11 +127,13 @@ class DistillationDataset(Dataset):
         transform=None,
         scenes_file: Optional[str] = None,
         multi_view_mode: bool = False,
+        overfit_single_image: bool = False,
     ):
         self.image_dir = Path(image_dir)
         self.features_dir = Path(features_dir)
         self.transform = transform
         self.multi_view_mode = multi_view_mode
+        self.overfit_single_image = overfit_single_image
         
         if multi_view_mode:
             # Multi-view mode: load scenes from JSON
@@ -153,6 +155,11 @@ class DistillationDataset(Dataset):
                 ])
             else:
                 self.image_paths = image_paths
+
+            if self.overfit_single_image and len(self.image_paths) > 0:
+                self.image_paths = [self.image_paths[0]]
+                print(f"[OVERFIT] Using single image: {self.image_paths[0]}")
+
             print(f"[Dataset] Loaded {len(self.image_paths)} images (single-view) from {image_dir}")
     
     @staticmethod
@@ -379,6 +386,7 @@ def build_distillation_dataloader(
     distributed: bool = False,
     scenes_file: Optional[str] = None,
     multi_view_mode: bool = False,
+    overfit_single_image: bool = False,
 ) -> DataLoader:
     """
     Build a DataLoader for distillation training/validation.
@@ -404,7 +412,11 @@ def build_distillation_dataloader(
         image_paths=image_paths,
         scenes_file=scenes_file,
         multi_view_mode=multi_view_mode,
+        overfit_single_image=overfit_single_image,
     )
+
+    if overfit_single_image:
+        shuffle = False
     
     # DistributedSampler partiziona automaticamente il dataset tra le GPU
     # evitando duplicati e garantendo che ogni GPU processi un subset esclusivo
@@ -426,7 +438,8 @@ def build_distillation_dataloader(
         num_workers=num_workers,
         pin_memory=pin_memory,
         collate_fn=collate_fn_distillation,
-        drop_last=shuffle and sampler is None,  # Drop last solo se non c'è sampler
+        # drop_last=shuffle and sampler is None,  # Drop last solo se non c'è sampler
+        drop_last=False,
     )
     
     return loader
@@ -1037,6 +1050,8 @@ def distill(args):
     if run_cluster and getattr(args, "print_freq", 10) < 200:
         args.print_freq = 200
 
+    overfit_mode = getattr(args, "overfit_single_image", False)
+
     # Costruzione DataLoader: usa path derivati da COCO2017_ROOT (come distillation.py)
     print(f"Building train dataloader from {TRAIN_IMAGES_DIR}")
     train_image_paths = None
@@ -1059,18 +1074,23 @@ def distill(args):
         distributed=args.distributed.distributed,
         scenes_file=getattr(args, 'train_scenes_file', None),
         multi_view_mode=args.multi_view_mode,
+        overfit_single_image=overfit_mode,
     )
     
     print(f"Building val dataloader from {VAL_IMAGES_DIR}")
-    val_image_paths = None
-    if args.debug_max_val_images:
-        # Primi N elementi per validazione rapida di debug
-        all_val_imgs = sorted([
-            os.path.join(VAL_IMAGES_DIR, f)
-            for f in os.listdir(VAL_IMAGES_DIR)
-            if DistillationDataset._is_image_file(f)
-        ])
-        val_image_paths = all_val_imgs[:args.debug_max_val_images]
+    if overfit_mode:
+        data_loader_val = data_loader_train
+        print("[OVERFIT] Using train dataloader for validation (same image)")
+    else:
+        val_image_paths = None
+        if args.debug_max_val_images:
+            # Primi N elementi per validazione rapida di debug
+            all_val_imgs = sorted([
+                os.path.join(VAL_IMAGES_DIR, f)
+                for f in os.listdir(VAL_IMAGES_DIR)
+                if DistillationDataset._is_image_file(f)
+            ])
+            val_image_paths = all_val_imgs[:args.debug_max_val_images]
     
     data_loader_val = build_distillation_dataloader(
         image_dir=VAL_IMAGES_DIR,
@@ -1082,6 +1102,7 @@ def distill(args):
         distributed=args.distributed.distributed,
         scenes_file=getattr(args, 'val_scenes_file', None),
         multi_view_mode=args.multi_view_mode,
+        overfit_single_image=False,
     )
     
     # Carica il modello pre-addestrato (strict=False per permettere head extra)
@@ -1308,9 +1329,12 @@ def distill(args):
     
     for epoch in range(start_epoch, args.epochs):
         # Set epoch per DistributedSampler per garantire shuffle diverso ad ogni epoca
-        if args.distributed.distributed and hasattr(data_loader_train.sampler, 'set_epoch'):
+        # if args.distributed.distributed and hasattr(data_loader_train.sampler, 'set_epoch'):
+        #     data_loader_train.sampler.set_epoch(epoch)
+
+        if args.distributed.distributed and hasattr(data_loader_train.sampler, 'set_epoch') and not args.overfit_single_image:
             data_loader_train.sampler.set_epoch(epoch)
-        
+
         epoch_start = time.time()
         
         # Train one epoch
@@ -1567,6 +1591,9 @@ def get_args_parser():
 
     # Unfreeze strategy
     parser.add_argument("--num_info_sharing_blocks_unfreeze", type=int, default=0, help="Number of last info_sharing transformer blocks to unfreeze")
+
+    # Overfit mode
+    parser.add_argument("--overfit_single_image", action="store_true", help="Overfit on a single image (sanity check)")
     
     # comando debug pc lab
     # python distillation.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2
