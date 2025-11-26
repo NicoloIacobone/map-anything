@@ -79,12 +79,12 @@ python distillation_overfit.py \
   --lr 1e-4 \
   --num_workers 0 \
   --print_freq 500 \
-  --eval_freq 500 \
-  --save_freq 500 \
+  --eval_freq 50 \
+  --save_freq 50 \
   --save_visualizations \
   --amp \
   --use_wandb \
-  --wandb_name "overfit_single_image_test_5" \
+  --wandb_name "overfit_single_image_test_4" \
   --disable_scheduler \
   --debug_max_train_images 1000
 
