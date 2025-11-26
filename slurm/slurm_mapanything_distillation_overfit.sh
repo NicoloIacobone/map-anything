@@ -84,7 +84,7 @@ python distillation_overfit.py \
   --save_visualizations \
   --amp \
   --use_wandb \
-  --wandb_name "overfit_single_image_test_4" \
+  --wandb_name "overfit_single_image_test_5" \
   --disable_scheduler \
   --debug_max_train_images 1000
 
