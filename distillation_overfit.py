@@ -467,8 +467,8 @@ def forward_pass_distillation(
         student_features: (B, C, H, W) tensor of student features from dpt_feature_head_2
     """
     # Carica le immagini usando l'utility del progetto (gestisce pre-processing coerente)
-    # views = load_images(image_paths)
-    views = load_images(image_paths, resize_mode="fixed_size", size=(518, 518))
+    views = load_images(image_paths)
+    # views = load_images(image_paths, resize_mode="fixed_size", size=(518, 518))
 
     # Sposta i tensori immagine sul device per evitare mismatch CPU/GPU (come in distillation.py)
     for v in views:
@@ -540,7 +540,7 @@ def forward_pass_multiview_distillation(
     start_idx = 0
     for n_views in num_views_per_scene:
         scene_paths = image_paths[start_idx:start_idx + n_views]
-        scene_views = load_images(scene_paths, resize_mode="fixed_size", size=(518, 518))
+        scene_views = load_images(scene_paths)
         
         for v in scene_views:
             img = v.get("img")

@@ -84,9 +84,10 @@ python distillation_overfit.py \
   --save_visualizations \
   --amp \
   --use_wandb \
-  --wandb_name "overfit_single_image_test_6_batchsize" \
+  --wandb_name "overfit_single_image_test_6_wd0" \
   --disable_scheduler \
-  --debug_max_train_images 100
+  --debug_max_train_images 100 \
+  --weight_decay 0
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
