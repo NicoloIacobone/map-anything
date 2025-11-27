@@ -939,13 +939,21 @@ def validate_one_epoch_distillation(
                 amp_dtype=args.amp_dtype,
             )
         else:
-            student_features = forward_pass_distillation(
+            # ✅ Usa lo stesso wrapper batch-safe della fase di training
+            student_features = forward_pass_distillation_batch_safe(
                 model=model,
                 image_paths=image_paths,
                 device=device,
                 use_amp=args.amp,
                 amp_dtype=args.amp_dtype,
             )
+            # student_features = forward_pass_distillation(
+            #     model=model,
+            #     image_paths=image_paths,
+            #     device=device,
+            #     use_amp=args.amp,
+            #     amp_dtype=args.amp_dtype,
+            # )
         
         # Resize student to match teacher if needed
         if student_features.shape[-2:] != teacher_features.shape[-2:]:
