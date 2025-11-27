@@ -679,7 +679,6 @@ def train_one_epoch_distillation(
                     }
                 )
 
-        # Compute additional metrics to mirror distillation.py
         try:
             md, sd, cs = mean_std_difference(student_features, teacher_features)
             md = float(md)
