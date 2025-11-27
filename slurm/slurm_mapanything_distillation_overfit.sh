@@ -74,8 +74,8 @@ fi
 echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 
 python distillation_overfit.py \
-  --epochs 1000 \
-  --batch_size 1 \
+  --epochs 2000 \
+  --batch_size 2 \
   --lr 1e-4 \
   --num_workers 0 \
   --print_freq 500 \
@@ -84,7 +84,7 @@ python distillation_overfit.py \
   --save_visualizations \
   --amp \
   --use_wandb \
-  --wandb_name "2img_1bs_1kE" \
+  --wandb_name "2img_2bs_2kE" \
   --disable_scheduler \
   --debug_max_train_images 2 \
   --weight_decay 0
