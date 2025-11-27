@@ -33,6 +33,9 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
+
 # Optional: psutil for CPU memory monitoring
 try:
     import psutil
@@ -127,13 +130,11 @@ class DistillationDataset(Dataset):
         transform=None,
         scenes_file: Optional[str] = None,
         multi_view_mode: bool = False,
-        # overfit_single_image: bool = False,
     ):
         self.image_dir = Path(image_dir)
         self.features_dir = Path(features_dir)
         self.transform = transform
         self.multi_view_mode = multi_view_mode
-        # self.overfit_single_image = overfit_single_image
         
         if multi_view_mode:
             # Multi-view mode: load scenes from JSON
@@ -155,10 +156,6 @@ class DistillationDataset(Dataset):
                 ])
             else:
                 self.image_paths = image_paths
-
-            # if self.overfit_single_image and len(self.image_paths) > 0:
-            #     self.image_paths = [self.image_paths[0]]
-            #     print(f"[OVERFIT] Using single image: {self.image_paths[0]}")
 
             print(f"[Dataset] Loaded {len(self.image_paths)} images (single-view) from {image_dir}")
     
@@ -356,34 +353,34 @@ class DistillationLoss(torch.nn.Module):
             student_norm = student_features
             teacher_norm = teacher_features
         
-        # # MSE loss
-        # mse_loss = F.mse_loss(student_norm, teacher_norm)
+        # MSE loss
+        mse_loss = F.mse_loss(student_norm, teacher_norm)
         
-        # # Cosine similarity loss (1 - cosine_similarity)
-        # cos_sim = F.cosine_similarity(student_norm, teacher_norm, dim=1).mean()
-        # cos_loss = 1.0 - cos_sim
-        
-        # # Combined loss
-        # total_loss = self.mse_weight * mse_loss + self.cosine_weight * cos_loss
-
-        # ✅ FIX: MSE loss PER SAMPLE (media su C,H,W), poi media su batch
-        mse_per_sample = F.mse_loss(
-            student_norm, 
-            teacher_norm, 
-            reduction='none'  # (B, C, H, W)
-        ).mean(dim=(1, 2, 3))  # Media su (C,H,W) → (B,)
-        
-        mse_loss = mse_per_sample.mean()  # Media su batch → scalare
-        
-        # ✅ FIX: Cosine similarity PER SAMPLE
-        cos_map = F.cosine_similarity(student_norm, teacher_norm, dim=1)  # (B, H, W)
-        cos_sim_per_image = cos_map.flatten(1).mean(dim=1)  # Media su (H,W) → (B,)
-        cos_sim = cos_sim_per_image.mean()  # Media su batch → scalare
-        
+        # Cosine similarity loss (1 - cosine_similarity)
+        cos_sim = F.cosine_similarity(student_norm, teacher_norm, dim=1).mean()
         cos_loss = 1.0 - cos_sim
         
         # Combined loss
         total_loss = self.mse_weight * mse_loss + self.cosine_weight * cos_loss
+
+        # # ✅ FIX: MSE loss PER SAMPLE (media su C,H,W), poi media su batch
+        # mse_per_sample = F.mse_loss(
+        #     student_norm, 
+        #     teacher_norm, 
+        #     reduction='none'  # (B, C, H, W)
+        # ).mean(dim=(1, 2, 3))  # Media su (C,H,W) → (B,)
+        
+        # mse_loss = mse_per_sample.mean()  # Media su batch → scalare
+        
+        # # ✅ FIX: Cosine similarity PER SAMPLE
+        # cos_map = F.cosine_similarity(student_norm, teacher_norm, dim=1)  # (B, H, W)
+        # cos_sim_per_image = cos_map.flatten(1).mean(dim=1)  # Media su (H,W) → (B,)
+        # cos_sim = cos_sim_per_image.mean()  # Media su batch → scalare
+        
+        # cos_loss = 1.0 - cos_sim
+        
+        # # Combined loss
+        # total_loss = self.mse_weight * mse_loss + self.cosine_weight * cos_loss
         
         loss_details = {
             "mse_loss": mse_loss.item(),
@@ -405,7 +402,6 @@ def build_distillation_dataloader(
     distributed: bool = False,
     scenes_file: Optional[str] = None,
     multi_view_mode: bool = False,
-    # overfit_single_image: bool = False,
 ) -> DataLoader:
     """
     Build a DataLoader for distillation training/validation.
@@ -431,11 +427,7 @@ def build_distillation_dataloader(
         image_paths=image_paths,
         scenes_file=scenes_file,
         multi_view_mode=multi_view_mode,
-        # overfit_single_image=overfit_single_image,
     )
-
-    # if overfit_single_image:
-    #     shuffle = False
     
     # DistributedSampler partiziona automaticamente il dataset tra le GPU
     # evitando duplicati e garantendo che ogni GPU processi un subset esclusivo
@@ -457,7 +449,6 @@ def build_distillation_dataloader(
         num_workers=num_workers,
         pin_memory=pin_memory,
         collate_fn=collate_fn_distillation,
-        # drop_last=shuffle and sampler is None,  # Drop last solo se non c'è sampler
         drop_last=False,
     )
     
@@ -487,9 +478,47 @@ def forward_pass_distillation(
     """
     # Carica le immagini usando l'utility del progetto (gestisce pre-processing coerente)
     views = load_images(image_paths)
-    # views = load_images(image_paths, resize_mode="fixed_size", size=(518, 518))
+    # Visualizza ogni view singolarmente
+    # for i, v in enumerate(views):
+    #     img = v.get("img")
+    #     if isinstance(img, torch.Tensor):
+    #         img_np = img.detach().cpu().numpy()
+            
+    #         # ✅ FIX: Rimuovi batch dimension se presente
+    #         if img_np.ndim == 4 and img_np.shape[0] == 1:
+    #             img_np = img_np.squeeze(0)  # (1, C, H, W) → (C, H, W)
+            
+    #         # Se img è (C, H, W), trasponi a (H, W, C) per matplotlib
+    #         if img_np.ndim == 3 and img_np.shape[0] <= 4:
+    #             img_np = np.transpose(img_np, (1, 2, 0))  # (C, H, W) → (H, W, C)
+            
+    #         # ✅ FIX: Se C=1 (grayscale), rimuovi la dimensione canale
+    #         if img_np.ndim == 3 and img_np.shape[2] == 1:
+    #             img_np = img_np.squeeze(2)  # (H, W, 1) → (H, W)
+            
+    #         # ✅ FIX: Normalizza con clipping per evitare valori fuori range
+    #         img_min, img_max = img_np.min(), img_np.max()
+    #         if img_max > img_min:  # Evita divisione per zero
+    #             img_np = (img_np - img_min) / (img_max - img_min)
+    #         else:
+    #             img_np = np.zeros_like(img_np)
+            
+    #         # ✅ FIX: Clip a [0, 1] per sicurezza
+    #         img_np = np.clip(img_np, 0, 1)
+            
+    #         plt.figure(figsize=(4, 4))
+            
+    #         # ✅ FIX: Usa cmap='gray' se l'immagine è grayscale
+    #         if img_np.ndim == 2:
+    #             plt.imshow(img_np, cmap='gray')
+    #         else:
+    #             plt.imshow(img_np)
+            
+    #         plt.title(f"View {i}")
+    #         plt.axis('off')
+    #         plt.show()
 
-    # Sposta i tensori immagine sul device per evitare mismatch CPU/GPU (come in distillation.py)
+    # Sposta i tensori immagine sul device per evitare mismatch CPU/GPU
     for v in views:
         img = v.get("img")
         if isinstance(img, torch.Tensor):
@@ -505,6 +534,7 @@ def forward_pass_distillation(
     autocast_enabled = use_amp and (device.type == "cuda")
     
     with torch.autocast(device_type="cuda", enabled=autocast_enabled, dtype=autocast_dtype):
+        # controlla se model può essere il problema con batch_size > 1
         _ = model(
             views,
             memory_efficient_inference=False,
@@ -521,7 +551,7 @@ def forward_pass_distillation(
             f"Has dpt_feature_head_2: {has_head2}. "
             "Ensure the forward populates this attr in MapAnything."
         )
-    
+
     return student_features
 
 def forward_pass_multiview_distillation(
@@ -710,6 +740,7 @@ def train_one_epoch_distillation(
 
         # Get data
         image_paths = batch["image_paths"]
+        print(f"[DEBUG] Images in batch: {image_paths}", flush=True)
         teacher_features = batch["teacher_features"].to(device, non_blocking=True)
         is_multi_view = batch.get("multi_view", False)
         
@@ -751,6 +782,43 @@ def train_one_epoch_distillation(
                 mode="bilinear",
                 align_corners=False,
             )
+
+        # def show_pca_features(student_features, teacher_features):
+        #     # student_features, teacher_features: (B, C, H, W)
+        #     B = student_features.shape[0]
+        #     for i in range(B):
+        #         sf = student_features[i].detach().cpu().numpy()  # (C, H, W)
+        #         tf = teacher_features[i].detach().cpu().numpy()  # (C, H, W)
+        #         # Reshape to (C, H*W)
+        #         sf_flat = sf.reshape(sf.shape[0], -1).T  # (H*W, C)
+        #         tf_flat = tf.reshape(tf.shape[0], -1).T  # (H*W, C)
+        #         # PCA to 3 components
+        #         pca = PCA(n_components=3)
+        #         sf_pca = pca.fit_transform(sf_flat)
+        #         sf_img = sf_pca.reshape(student_features.shape[2], student_features.shape[3], 3)
+        #         pca = PCA(n_components=3)
+        #         tf_pca = pca.fit_transform(tf_flat)
+        #         tf_img = tf_pca.reshape(teacher_features.shape[2], teacher_features.shape[3], 3)
+        #         # Normalize to [0,1]
+        #         sf_img = (sf_img - sf_img.min()) / (sf_img.max() - sf_img.min() + 1e-8)
+        #         tf_img = (tf_img - tf_img.min()) / (tf_img.max() - tf_img.min() + 1e-8)
+        #         # Show side by side
+        #         fig, axs = plt.subplots(1, 2, figsize=(8, 4))
+        #         axs[0].imshow(sf_img)
+        #         axs[0].set_title("Student PCA")
+        #         axs[0].axis('off')
+        #         axs[1].imshow(tf_img)
+        #         axs[1].set_title("Teacher PCA")
+        #         axs[1].axis('off')
+        #         plt.show()
+
+        # # Visualizza a schermo ogni coppia student/teacher usando PCA
+        # for i in range(student_features.shape[0]):
+        #     show_pca_features(
+        #     student_features[i:i+1],  # (1, C, H, W)
+        #     teacher_features[i:i+1],  # (1, C, H, W)
+        #     )
+        #     print(f"Student features shape: {student_features[i:i+1].shape}, Teacher features shape: {teacher_features[i:i+1].shape}", flush=True)
         
         # Compute loss
         loss, loss_details = criterion(student_features, teacher_features)
@@ -1141,8 +1209,6 @@ def distill(args):
     if run_cluster and getattr(args, "print_freq", 10) < 200:
         args.print_freq = 200
 
-    # overfit_mode = getattr(args, "overfit_single_image", False)
-
     # Costruzione DataLoader: usa path derivati da COCO2017_ROOT (come distillation.py)
     print(f"Building train dataloader from {TRAIN_IMAGES_DIR}")
     train_image_paths = None
@@ -1165,7 +1231,6 @@ def distill(args):
         distributed=args.distributed.distributed,
         scenes_file=getattr(args, 'train_scenes_file', None),
         multi_view_mode=args.multi_view_mode,
-        # overfit_single_image=overfit_mode,
     )
 
     print(f"Building val dataloader from {VAL_IMAGES_DIR}")
@@ -1421,13 +1486,7 @@ def distill(args):
     start_time = time.time()
     
     for epoch in range(start_epoch, args.epochs):
-        # Set epoch per DistributedSampler per garantire shuffle diverso ad ogni epoca
-        # if args.distributed.distributed and hasattr(data_loader_train.sampler, 'set_epoch'):
-        #     data_loader_train.sampler.set_epoch(epoch)
-
-        # if args.distributed.distributed and hasattr(data_loader_train.sampler, 'set_epoch') and not args.overfit_single_image:
-        #     data_loader_train.sampler.set_epoch(epoch)
-
+        # Aggiorna epoch per DistributedSampler
         if args.distributed.distributed and hasattr(data_loader_train.sampler, 'set_epoch'):
             data_loader_train.sampler.set_epoch(epoch)
 
@@ -1612,6 +1671,59 @@ def save_checkpoint_distillation(
     torch.save(state, ckpt_path)
     print(f"[SAVE] Checkpoint saved: {ckpt_path}")
 
+
+def compare_single_vs_batch(model, device, img0_path, img1_path, use_amp=True, amp_dtype="bf16"):
+    model.eval()
+
+    # Carica immagini come tensori (C,H,W)
+    views0 = load_images([img0_path])
+    views1 = load_images([img1_path])
+    img0 = views0[0]["img"].to(device)
+    img1 = views1[0]["img"].to(device)
+    if img0.dim() == 4 and img0.shape[0] == 1:
+        img0 = img0.squeeze(0)
+    if img1.dim() == 4 and img1.shape[0] == 1:
+        img1 = img1.squeeze(0)
+
+    # Pad a size comune (maxH,maxW) per ENTRAMBE le modalità
+    H0, W0 = img0.shape[-2], img0.shape[-1]
+    H1, W1 = img1.shape[-2], img1.shape[-1]
+    target_h, target_w = max(H0, H1), max(W0, W1)
+    def pad_to(img, th, tw):
+        ph = th - img.shape[-2]
+        pw = tw - img.shape[-1]
+        return F.pad(img, (0, pw, 0, ph), mode="constant", value=0)
+    img0p = pad_to(img0, target_h, target_w)
+    img1p = pad_to(img1, target_h, target_w)
+
+    # Forward singole con TENSOR pre-pad (una sola view, batch=1)
+    with torch.no_grad():
+        one_view_single0 = [{"img": img0p.unsqueeze(0), "data_norm_type": views0[0].get("data_norm_type", ["sam2"])}]
+        _ = model(one_view_single0, memory_efficient_inference=False)
+        base_model = model.module if hasattr(model, "module") else model
+        feat0_single = base_model._last_feat2_8x.detach().cpu()[0]
+
+        one_view_single1 = [{"img": img1p.unsqueeze(0), "data_norm_type": views1[0].get("data_norm_type", ["sam2"])}]
+        _ = model(one_view_single1, memory_efficient_inference=False)
+        feat1_single = base_model._last_feat2_8x.detach().cpu()[0]
+
+    # Forward batched (stessa view, batch=2) con gli stessi tensori pad
+    imgs_batched = torch.stack([img0p, img1p], dim=0)
+    one_view_batched = [{"img": imgs_batched, "data_norm_type": views0[0].get("data_norm_type", ["sam2"])}]
+    with torch.no_grad():
+        _ = model(one_view_batched, memory_efficient_inference=False)
+        feat_batch = base_model._last_feat2_8x.detach().cpu()
+    fb0, fb1 = feat_batch[0], feat_batch[1]
+
+    # Confronti
+    def stats(a, b, name):
+        d = (a - b).abs()
+        print(f"{name}: max|diff|={d.max().item():.6e}, mean|diff|={d.mean().item():.6e}")
+    stats(feat0_single, fb0, "img0 single-pad vs batched-pad[0]")
+    stats(feat1_single, fb1, "img1 single-pad vs batched-pad[1]")
+    print("img0 allclose:", torch.allclose(feat0_single, fb0, atol=1e-6, rtol=1e-5))
+    print("img1 allclose:", torch.allclose(feat1_single, fb1, atol=1e-6, rtol=1e-5))
+
 # ==================== Argument Parser ====================
 def get_args_parser():
     """
@@ -1706,6 +1818,32 @@ def main():
     args = parser.parse_args()
     if args.lr_scheduler_t_max is None:
         args.lr_scheduler_t_max = args.epochs  # Default T_max to epochs if not set
+
+    # # ========== QUICK TEST: single vs batch ==========
+    # device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # model = MapAnything.from_pretrained(args.model_name, strict=False).to(device).eval()
+
+    # # Prendi 2 immagini dal subset train usato sopra (o scegli tu i path)
+    # if args.debug_max_train_images:
+    #     all_imgs = sorted([
+    #         os.path.join(TRAIN_IMAGES_DIR, f)
+    #         for f in os.listdir(TRAIN_IMAGES_DIR)
+    #         if DistillationDataset._is_image_file(f)
+    #     ])
+    #     img0 = all_imgs[0]
+    #     img1 = all_imgs[1]
+    # else:
+    #     # Se non limiti, prendi le prime due immagini della cartella
+    #     imgs = sorted([
+    #         os.path.join(TRAIN_IMAGES_DIR, f)
+    #         for f in os.listdir(TRAIN_IMAGES_DIR)
+    #         if DistillationDataset._is_image_file(f)
+    #     ])
+    #     img0, img1 = imgs[0], imgs[1]
+
+    # compare_single_vs_batch(model, device, img0, img1, use_amp=args.amp, amp_dtype=args.amp_dtype)
+
+    # raise Exception
     
     # Crea un oggetto Namespace compatibile con train_tools
     # (train_tools si aspetta args.distributed come oggetto con attributi: distributed/dist_url/gpu).
