@@ -4,10 +4,10 @@
 #SBATCH --job-name=overfit_1
 #
 # Specify output file.
-#SBATCH --output=overfit_1%j.log
+#SBATCH --output=overfit_1_%j.log
 #
 # Specify error file.
-#SBATCH --error=overfit_1%j.err
+#SBATCH --error=overfit_1_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
