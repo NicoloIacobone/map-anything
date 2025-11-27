@@ -1,19 +1,19 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=overfit
+#SBATCH --job-name=overfit_1
 #
 # Specify output file.
-#SBATCH --output=overfit_%j.log
+#SBATCH --output=overfit_1%j.log
 #
 # Specify error file.
-#SBATCH --error=overfit_%j.err
+#SBATCH --error=overfit_1%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=02:00:00
+#SBATCH --time=01:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -74,19 +74,19 @@ fi
 echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 
 python distillation_overfit.py \
-  --epochs 5000 \
+  --epochs 1000 \
   --batch_size 2 \
   --lr 1e-4 \
   --num_workers 0 \
   --print_freq 500 \
-  --eval_freq 100 \
-  --save_freq 100 \
+  --eval_freq 1 \
+  --save_freq 1 \
   --save_visualizations \
   --amp \
   --use_wandb \
-  --wandb_name "overfit_single_image_test_6_lrx10" \
+  --wandb_name "overfit_1" \
   --disable_scheduler \
-  --debug_max_train_images 100 \
+  --debug_max_train_images 1 \
   --weight_decay 0
 
 echo "=== Job finished at $(date) ==="
