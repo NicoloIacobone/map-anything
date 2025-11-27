@@ -75,7 +75,7 @@ echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 
 python distillation_overfit.py \
   --epochs 1000 \
-  --batch_size 2 \
+  --batch_size 1 \
   --lr 1e-4 \
   --num_workers 0 \
   --print_freq 500 \
@@ -84,9 +84,9 @@ python distillation_overfit.py \
   --save_visualizations \
   --amp \
   --use_wandb \
-  --wandb_name "overfit_1" \
+  --wandb_name "2img_1bs_1kE" \
   --disable_scheduler \
-  --debug_max_train_images 1 \
+  --debug_max_train_images 2 \
   --weight_decay 0
 
 echo "=== Job finished at $(date) ==="
