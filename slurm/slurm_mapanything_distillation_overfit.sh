@@ -75,8 +75,8 @@ echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 
 python distillation_overfit.py \
   --epochs 5000 \
-  --batch_size 20 \
-  --lr 1e-4 \
+  --batch_size 16 \
+  --lr 1e-3 \
   --num_workers 0 \
   --print_freq 500 \
   --eval_freq 100 \
