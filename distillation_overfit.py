@@ -366,21 +366,22 @@ class DistillationLoss(torch.nn.Module):
         # # Combined loss
         # total_loss = self.mse_weight * mse_loss + self.cosine_weight * cos_loss
 
-        # MSE loss
-        mse_loss = F.mse_loss(student_norm, teacher_norm)
-
-        # Cosine similarity per-pixel: (B, H, W)
-        cos_map = F.cosine_similarity(student_norm, teacher_norm, dim=1)
-
-        # Cosine similarity per-immagine → (B,)
-        cos_sim_per_image = cos_map.flatten(1).mean(dim=1)
-
-        # Media sul batch → scalare
-        cos_sim = cos_sim_per_image.mean()
-
-        # Loss finale
+        # ✅ FIX: MSE loss PER SAMPLE (media su C,H,W), poi media su batch
+        mse_per_sample = F.mse_loss(
+            student_norm, 
+            teacher_norm, 
+            reduction='none'  # (B, C, H, W)
+        ).mean(dim=(1, 2, 3))  # Media su (C,H,W) → (B,)
+        
+        mse_loss = mse_per_sample.mean()  # Media su batch → scalare
+        
+        # ✅ FIX: Cosine similarity PER SAMPLE
+        cos_map = F.cosine_similarity(student_norm, teacher_norm, dim=1)  # (B, H, W)
+        cos_sim_per_image = cos_map.flatten(1).mean(dim=1)  # Media su (H,W) → (B,)
+        cos_sim = cos_sim_per_image.mean()  # Media su batch → scalare
+        
         cos_loss = 1.0 - cos_sim
-
+        
         # Combined loss
         total_loss = self.mse_weight * mse_loss + self.cosine_weight * cos_loss
         
