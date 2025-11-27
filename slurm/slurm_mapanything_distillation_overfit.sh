@@ -84,7 +84,7 @@ python distillation_overfit.py \
   --save_visualizations \
   --amp \
   --use_wandb \
-  --wandb_name "overfit_single_image_test_6_wd0" \
+  --wandb_name "overfit_single_image_test_6_lrx10" \
   --disable_scheduler \
   --debug_max_train_images 100 \
   --weight_decay 0
