@@ -582,6 +582,58 @@ def forward_pass_multiview_distillation(
     # Concatena tutte le feature: (B*N, C, H, W)
     return torch.cat(all_student_feats, dim=0)
 
+def forward_pass_distillation_batch_safe(
+    model: torch.nn.Module,
+    image_paths: List[str],
+    device: torch.device,
+    use_amp: bool = False,
+    amp_dtype: str = "bf16",
+) -> torch.Tensor:
+    """
+    Forward pass sicuro per batch di immagini INDIPENDENTI.
+    Processa ogni immagine come SINGOLA VIEW per evitare cross-attention.
+    
+    Args:
+        model: MapAnything model
+        image_paths: Lista di B percorsi immagini
+        device: Device CUDA
+        use_amp: Se usare mixed precision
+        amp_dtype: Tipo AMP ("bf16" o "fp16")
+    
+    Returns:
+        torch.Tensor: Student features concatenate (B, C, H, W)
+    """
+    from mapanything.utils.image import load_images
+    
+    all_student_features = []
+    amp_dtype_torch = torch.bfloat16 if amp_dtype == "bf16" else torch.float16
+    
+    for img_path in image_paths:
+        # Carica singola immagine
+        views = load_images(
+            folder_or_list=[img_path],
+            size=518,
+        )
+        
+        # Forward senza cross-attention (singola view)
+        with torch.autocast("cuda", enabled=use_amp, dtype=amp_dtype_torch):
+            outputs = model(views)
+        
+        # Estrai feature (usa dpt_feature_head_2 se disponibile)
+        if hasattr(model, "_last_feat2_8x"):
+            student_features_single = model._last_feat2_8x  # (1, 256, 64, 64)
+        else:
+            # Fallback: usa pts3d e converti
+            pts3d = outputs[0]["pts3d"]  # (1, H, W, 3)
+            student_features_single = pts3d.permute(0, 3, 1, 2)  # (1, 3, H, W)
+        
+        all_student_features.append(student_features_single)
+    
+    # Concatena tutte le feature
+    student_features_batch = torch.cat(all_student_features, dim=0)  # (B, C, H, W)
+    
+    return student_features_batch
+
 def train_one_epoch_distillation(
     model: torch.nn.Module,
     criterion: torch.nn.Module,
@@ -663,7 +715,15 @@ def train_one_epoch_distillation(
                 amp_dtype=args.amp_dtype,
             )
         else:
-            student_features = forward_pass_distillation(
+            # student_features = forward_pass_distillation(
+            #     model=model,
+            #     image_paths=image_paths,
+            #     device=device,
+            #     use_amp=args.amp,
+            #     amp_dtype=args.amp_dtype,
+            # )
+            # ✅ FIX: Usa wrapper batch-safe
+            student_features = forward_pass_distillation_batch_safe(
                 model=model,
                 image_paths=image_paths,
                 device=device,
