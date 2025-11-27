@@ -615,13 +615,21 @@ def forward_pass_distillation_batch_safe(
             size=518,
         )
         
-        # Forward senza cross-attention (singola view)
+        # ✅ FIX: Converti input a device/dtype DENTRO autocast context
         with torch.autocast("cuda", enabled=use_amp, dtype=amp_dtype_torch):
+            # Sposta tensori su device (autocast converte automaticamente a amp_dtype)
+            for v in views:
+                img = v.get("img")
+                if isinstance(img, torch.Tensor):
+                    v["img"] = img.to(device, non_blocking=True)
+            
+            # Forward con dtype coerente
             outputs = model(views)
         
         # Estrai feature (usa dpt_feature_head_2 se disponibile)
-        if hasattr(model, "_last_feat2_8x"):
-            student_features_single = model._last_feat2_8x  # (1, 256, 64, 64)
+        base_model = model.module if hasattr(model, "module") else model
+        if hasattr(base_model, "_last_feat2_8x"):
+            student_features_single = base_model._last_feat2_8x  # (1, 256, 64, 64)
         else:
             # Fallback: usa pts3d e converti
             pts3d = outputs[0]["pts3d"]  # (1, H, W, 3)
