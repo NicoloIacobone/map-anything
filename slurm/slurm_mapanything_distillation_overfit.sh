@@ -77,7 +77,7 @@ python distillation_overfit.py \
   --epochs 2000 \
   --batch_size 1 \
   --accum_iter 2 \
-  --lr 1e-4 \
+  --lr 2e-4 \
   --num_workers 0 \
   --print_freq 500 \
   --eval_freq 1 \
