@@ -612,10 +612,10 @@ def forward_pass_distillation_batch_safe(
         # Carica singola immagine
         views = load_images(
             folder_or_list=[img_path],
-            size=518,
+            # size=518,
         )
         
-        # ✅ FIX: Converti input a device/dtype DENTRO autocast context
+        # FIX: Converti input a device/dtype DENTRO autocast context
         with torch.autocast("cuda", enabled=use_amp, dtype=amp_dtype_torch):
             # Sposta tensori su device (autocast converte automaticamente a amp_dtype)
             for v in views:
@@ -754,10 +754,27 @@ def train_one_epoch_distillation(
         
         # Compute loss
         loss, loss_details = criterion(student_features, teacher_features)
-        loss_value = loss.detach().cpu().item()
         mse_value = float(loss_details.get("mse_loss", 0.0))
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
+
+        # Compute additional metrics to mirror distillation.py
+        try:
+            md, sd, cs = mean_std_difference(student_features, teacher_features)
+            md = float(md)
+            sd = float(sd)
+            cs = float(cs)
+        except Exception:
+            md = sd = 0.0
+            cs = cos_sim_value
+
+        loss_value = loss.detach().cpu().item()
+
+        # Controllo stabilità numerica: interrompe il training in caso di NaN/Inf
+        if not math.isfinite(loss_value):
+            print(f"Loss is {loss_value}, stopping training", flush=True)
+            print(f"Loss Details: {loss_details}", flush=True)
+            sys.exit(1)
 
         # W&B batch-level logging every N batches (only on main process and if a run is active)
         is_main_process = (train_tools.get_rank() == 0)
@@ -779,25 +796,9 @@ def train_one_epoch_distillation(
                         "epoch_progress": epoch + data_iter_step / max(1, len(data_loader)),
                     }
                 )
-
-        # Compute additional metrics to mirror distillation.py
-        try:
-            md, sd, cs = mean_std_difference(student_features, teacher_features)
-            md = float(md)
-            sd = float(sd)
-            cs = float(cs)
-        except Exception:
-            md = sd = 0.0
-            cs = cos_sim_value
-        
-        # Controllo stabilità numerica: interrompe il training in caso di NaN/Inf
-        if not math.isfinite(loss_value):
-            print(f"Loss is {loss_value}, stopping training", flush=True)
-            print(f"Loss Details: {loss_details}", flush=True)
-            sys.exit(1)
         
         # Gradient Accumulation: scala la loss per accumulare su 'accum_iter' iterazioni
-        loss = loss / accum_iter
+        loss /= accum_iter
         
         # Backward pass
         loss.backward()
@@ -939,7 +940,7 @@ def validate_one_epoch_distillation(
                 amp_dtype=args.amp_dtype,
             )
         else:
-            # ✅ Usa lo stesso wrapper batch-safe della fase di training
+            # Usa lo stesso wrapper batch-safe della fase di training
             student_features = forward_pass_distillation_batch_safe(
                 model=model,
                 image_paths=image_paths,
