@@ -95,6 +95,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --amp_dtype bf16 \
   --seed 42 \
   --save_visualizations \
+  --precomputed_features
 #   --num_info_sharing_blocks_unfreeze 4
 #   --wandb_resume_id 80chpr84 \
 #   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_2 \

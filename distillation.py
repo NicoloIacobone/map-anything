@@ -82,7 +82,7 @@ if run_cluster:
     DATASET = "coco2017"
     BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset"
     # DATASET = "ETH3D"
-    SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
+    SAM2_PATH = "/cluster/scratch/niacobone/sam2/checkpoints/sam2.1_hiera_large.pt"
     
 else:
     OUT_DIR = "/scratch2/nico/distillation/output"
