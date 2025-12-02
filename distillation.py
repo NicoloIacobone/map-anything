@@ -344,123 +344,108 @@ def build_distillation_dataloader(
     return loader
 
 # ==================== Training Functions ====================
-def forward_pass_distillation(
-    model: torch.nn.Module,
-    image_paths: List[str],
-    device: torch.device,
-    use_amp: bool = True,
-    amp_dtype: str = "bf16",
-) -> torch.Tensor:
-    """
-    Esegue la forward di MapAnything per estrarre le feature dello studente
-    dalla testa dpt_feature_head_2 (key '_last_feat2_8x').
-    
-    Args:
-        model: MapAnything model
-        image_paths: List of image paths for this batch
-        device: Device to run on
-        use_amp: Whether to use automatic mixed precision
-        amp_dtype: AMP dtype ("bf16" or "fp16")
-    
-    Returns:
-        student_features: (B, C, H, W) tensor of student features from dpt_feature_head_2
-    """
-    # Carica le immagini usando l'utility del progetto (gestisce pre-processing coerente)
-    views = load_images(image_paths)
-
-    # Sposta i tensori immagine sul device per evitare mismatch CPU/GPU (come in distillation.py)
-    for v in views:
-        img = v.get("img")
-        if isinstance(img, torch.Tensor):
-            v["img"] = img.to(device, non_blocking=True)
-    
-    # Determine autocast dtype
-    if amp_dtype == "bf16" and torch.cuda.is_bf16_supported():
-        autocast_dtype = torch.bfloat16
-    else:
-        autocast_dtype = torch.float16
-
-    # Abilita autocast solo se siamo su CUDA
-    autocast_enabled = use_amp and (device.type == "cuda")
-    
-    with torch.autocast(device_type="cuda", enabled=autocast_enabled, dtype=autocast_dtype):
-        _ = model(
-            views,
-            memory_efficient_inference=False,
-        )
-    
-    # Usa sempre il modulo “base”: in DDP è model.module, altrimenti model
-    base_model = model.module if hasattr(model, "module") else model
-    student_features = getattr(base_model, "_last_feat2_8x", None)
-    if student_features is None:
-        # Debug helper: verifica che la seconda head esista
-        has_head2 = hasattr(base_model, "dpt_feature_head_2")
-        raise KeyError(
-            "Student features not found on model (_last_feat2_8x). "
-            f"Has dpt_feature_head_2: {has_head2}. "
-            "Ensure the forward populates this attr in MapAnything."
-        )
-    
-    return student_features
-
-def forward_pass_distillation_batch_safe(
+def forward_pass_distillation_unified(
     model: torch.nn.Module,
     image_paths: List[str],
     device: torch.device,
     use_amp: bool = False,
     amp_dtype: str = "bf16",
+    process_individually: bool = True,
 ) -> torch.Tensor:
     """
-    Forward pass sicuro per batch di immagini INDIPENDENTI.
-    Processa ogni immagine come SINGOLA VIEW per evitare cross-attention.
+    Forward pass unificato per MapAnything distillation.
+    Supporta sia single-view batch-safe che multi-view con cross-attention.
     
     Args:
         model: MapAnything model
-        image_paths: Lista di B percorsi immagini
+        image_paths: Lista di path immagini (flat list)
         device: Device CUDA
         use_amp: Se usare mixed precision
         amp_dtype: Tipo AMP ("bf16" o "fp16")
+        process_individually: Se True, ogni immagine è processata separatamente
+                             (NO cross-attention, single-view batch-safe).
+                             Se False, tutte le immagini sono caricate insieme
+                             (cross-attention applicato, multi-view).
     
     Returns:
-        torch.Tensor: Student features concatenate (B, C, H, W)
+        torch.Tensor: Student features (B, C, H, W) dove B = len(image_paths)
+    
+    Examples:
+        >>> # Single-view batch-safe (immagini indipendenti)
+        >>> features = forward_pass_distillation_unified(
+        ...     model, ["img1.jpg", "img2.jpg"], device,
+        ...     process_individually=True
+        ... )
+        >>> features.shape  # (2, 256, 64, 64) - NO cross-attention
+        
+        >>> # Multi-view (gruppo di views della stessa scena)
+        >>> features = forward_pass_distillation_unified(
+        ...     model, ["scene1_v0.jpg", "scene1_v1.jpg"], device,
+        ...     process_individually=False
+        ... )
+        >>> features.shape  # (2, 256, 64, 64) - CON cross-attention
     """
     from mapanything.utils.image import load_images
     
-    all_student_features = []
     amp_dtype_torch = torch.bfloat16 if amp_dtype == "bf16" else torch.float16
     
-    for img_path in image_paths:
-        # Carica singola immagine
-        views = load_images(
-            folder_or_list=[img_path],
-        )
+    if process_individually:
+        # ========== SINGLE-VIEW BATCH-SAFE ==========
+        # Processa ogni immagine separatamente per evitare cross-attention
+        all_features = []
         
-        # FIX: Converti input a device/dtype DENTRO autocast context
+        for img_path in image_paths:
+            # Carica singola immagine come lista di 1 view
+            views = load_images([img_path])
+            
+            # Forward con AMP
+            with torch.autocast("cuda", enabled=use_amp, dtype=amp_dtype_torch):
+                # Sposta su device DENTRO autocast per fix dtype mismatch
+                for v in views:
+                    img = v.get("img")
+                    if isinstance(img, torch.Tensor):
+                        v["img"] = img.to(device, non_blocking=True)
+                
+                # MapAnything vede SINGOLA VIEW → NO cross-attention
+                _ = model(views, memory_efficient_inference=False)
+            
+            # Estrai feature dalla view 0 (unica view)
+            base_model = model.module if hasattr(model, "module") else model
+            student_features_single = getattr(base_model, "_last_feat2_8x", None)
+            if student_features_single is None:
+                raise KeyError(
+                    "Student features not found on model (_last_feat2_8x). "
+                    "Ensure dpt_feature_head_2 is present and forward populates this attribute."
+                )
+            
+            all_features.append(student_features_single)
+        
+        # Concatena feature di tutte le immagini
+        return torch.cat(all_features, dim=0)  # (B, C, H, W)
+    
+    else:
+        # ========== MULTI-VIEW ==========
+        # Carica tutte le immagini insieme (cross-attention applicato)
+        views = load_images(image_paths)
+        
+        # Forward con AMP
         with torch.autocast("cuda", enabled=use_amp, dtype=amp_dtype_torch):
-            # Sposta tensori su device (autocast converte automaticamente a amp_dtype)
+            # Sposta su device DENTRO autocast
             for v in views:
                 img = v.get("img")
                 if isinstance(img, torch.Tensor):
                     v["img"] = img.to(device, non_blocking=True)
             
-            # Forward con dtype coerente
-            outputs = model(views)
+            # MapAnything vede N VIEWS → cross-attention tra tutte
+            _ = model(views, memory_efficient_inference=False)
         
-        # Estrai feature (usa dpt_feature_head_2 se disponibile)
+        # Estrai feature (già tutte in un batch)
         base_model = model.module if hasattr(model, "module") else model
-        if hasattr(base_model, "_last_feat2_8x"):
-            student_features_single = base_model._last_feat2_8x  # (1, 256, 64, 64)
-        else:
-            # Fallback: usa pts3d e converti
-            pts3d = outputs[0]["pts3d"]  # (1, H, W, 3)
-            student_features_single = pts3d.permute(0, 3, 1, 2)  # (1, 3, H, W)
+        student_features = getattr(base_model, "_last_feat2_8x", None)
+        if student_features is None:
+            raise KeyError("Student features not found (_last_feat2_8x)")
         
-        all_student_features.append(student_features_single)
-    
-    # Concatena tutte le feature
-    student_features_batch = torch.cat(all_student_features, dim=0)  # (B, C, H, W)
-    
-    return student_features_batch
+        return student_features  # (B, C, H, W) dove B = len(image_paths)
 
 def train_one_epoch_distillation(
     model: torch.nn.Module,
@@ -533,12 +518,13 @@ def train_one_epoch_distillation(
         teacher_features = batch["teacher_features"].to(device, non_blocking=True)
         
         # Forward pass to get student features
-        student_features = forward_pass_distillation_batch_safe(
+        student_features = forward_pass_distillation_unified(
             model=model,
             image_paths=image_paths,
             device=device,
             use_amp=args.amp,
             amp_dtype=args.amp_dtype,
+            process_individually=not args.multi_view_mode,  # ← Auto-detect
         )
 
         # print(f"[DEBUG] student_features shape: {student_features.shape}", flush=True)
@@ -701,12 +687,13 @@ def validate_one_epoch_distillation(
         teacher_features = batch["teacher_features"].to(device, non_blocking=True)
         
         # Forward pass
-        student_features = forward_pass_distillation_batch_safe(
+        student_features = forward_pass_distillation_unified(
             model=model,
             image_paths=image_paths,
             device=device,
             use_amp=args.amp,
             amp_dtype=args.amp_dtype,
+            process_individually=not args.multi_view_mode,
         )
         
         # Resize student to match teacher if needed
@@ -1384,6 +1371,7 @@ def get_args_parser():
     parser.add_argument("--accum_iter", type=int, default=1, help="Gradient accumulation iterations")
     parser.add_argument("--log_freq", type=int, default=100, help="Log to W&B every N batches")
     parser.add_argument("--disable_scheduler", action="store_true", help="Disable learning rate scheduler (keep lr constant)")
+    parser.add_argument("--multi_view_mode", action="store_true", help="Enable multi-view mode (cross-attention between views)")
     
     # Loss
     parser.add_argument("--mse_weight", type=float, default=0.5, help="Weight for MSE loss")
