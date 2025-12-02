@@ -82,12 +82,14 @@ if run_cluster:
     DATASET = "coco2017"
     BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset"
     # DATASET = "ETH3D"
+    SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
     
 else:
     OUT_DIR = "/scratch2/nico/distillation/output"
     DATASET = "coco2017"
     BASE_DIR = "/scratch2/nico/distillation/dataset"
     # DATASET = "ETH3D"
+    SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
 
 # Dataset directory structure (consistent with distillation.py)
 if DATASET == "coco2017":
@@ -119,7 +121,8 @@ class DistillationDataset(Dataset):
     Args:
         image_dir: cartella contenente le immagini.
         features_dir: cartella con le feature del teacher pre-computate (.pt per immagine),
-            salvate come <basename>.pt.
+            salvate come <basename>.pt. Se None, le feature saranno calcolate online.
+        teacher_extractor: funzione che estrae feature online (richiesto se features_dir=None).
         image_paths: lista opzionale di path da usare; se None, scansiona image_dir.
         transform: eventuale trasformazione (non usata direttamente; il caricamento
             vero per il modello avviene con load_images nella forward stage).
@@ -128,13 +131,22 @@ class DistillationDataset(Dataset):
     def __init__(
         self,
         image_dir: str,
-        features_dir: str,
+        features_dir: Optional[str] = None,
+        teacher_extractor: Optional[callable] = None,
         image_paths: Optional[List[str]] = None,
         transform=None,
     ):
         self.image_dir = Path(image_dir)
-        self.features_dir = Path(features_dir)
+        self.features_dir = Path(features_dir) if features_dir else None
+        self.teacher_extractor = teacher_extractor
         self.transform = transform
+        
+        # Validation: at least one method must be available
+        if self.features_dir is None and self.teacher_extractor is None:
+            raise ValueError("Either features_dir or teacher_extractor must be provided")
+        
+        # Mode detection
+        self.mode = "precomputed" if self.features_dir else "online"
         
         # Single-view mode: one image per sample
         if image_paths is None:
@@ -145,7 +157,13 @@ class DistillationDataset(Dataset):
             ])
         else:
             self.image_paths = image_paths
+        
+        print(f"[Dataset] Mode: {self.mode.upper()}")
         print(f"[Dataset] Loaded {len(self.image_paths)} images (single-view) from {image_dir}")
+        if self.mode == "precomputed":
+            print(f"[Dataset] Using pre-computed features from {self.features_dir}")
+        else:
+            print(f"[Dataset] Using online feature extraction with teacher model")
     
     @staticmethod
     def _is_image_file(name: str) -> bool:
@@ -160,57 +178,123 @@ class DistillationDataset(Dataset):
         Ritorna:
             Single-view mode:
                 - 'image_path': path all'immagine (str)
-                - 'teacher_features': Tensor (C,H,W)
+                - 'teacher_features': Tensor (C,H,W) se precomputed, None se online
+                - 'pil_image': PIL.Image se online, None se precomputed
         
         Gestisce file corrotti tentando di caricare il sample successivo.
         """
         max_attempts = 10
         
-        # Single-view mode: return single image
         for attempt in range(max_attempts):
             try:
                 actual_idx = (idx + attempt) % len(self.image_paths)
                 img_path = self.image_paths[actual_idx]
                 img_name = Path(img_path).stem
                 
-                feat_path = self.features_dir / f"{img_name}.pt"
-                if not feat_path.exists():
-                    raise FileNotFoundError(f"Teacher features not found: {feat_path}")
+                if self.mode == "precomputed":
+                    # Load pre-computed features
+                    feat_path = self.features_dir / f"{img_name}.pt"
+                    if not feat_path.exists():
+                        raise FileNotFoundError(f"Teacher features not found: {feat_path}")
+                    
+                    teacher_feat = torch.load(feat_path, map_location="cpu", weights_only=False)
+                    if teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
+                        teacher_feat = teacher_feat.squeeze(0)
+                    
+                    return {
+                        "image_path": img_path,
+                        "teacher_features": teacher_feat,
+                        "pil_image": None,
+                    }
                 
-                teacher_feat = torch.load(feat_path, map_location="cpu", weights_only=False)
-                if teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
-                    teacher_feat = teacher_feat.squeeze(0)
-                
-                return {
-                    "image_path": img_path,
-                    "teacher_features": teacher_feat,
-                }
+                else:  # online mode
+                    # Load PIL image for online extraction
+                    from PIL import Image
+                    pil_img = Image.open(img_path).convert("RGB")
+                    
+                    return {
+                        "image_path": img_path,
+                        "teacher_features": None,  # Will be computed in collate_fn
+                        "pil_image": pil_img,
+                    }
             
             except (RuntimeError, EOFError, zipfile.BadZipFile) as e:
                 if attempt == 0:
-                    print(f"[WARN] Corrupted feature file at idx {actual_idx} ({feat_path}): {e}. Trying next sample...", flush=True)
+                    print(f"[WARN] Corrupted file at idx {actual_idx} ({img_path}): {e}. Trying next sample...", flush=True)
                 if attempt == max_attempts - 1:
                     raise RuntimeError(
                         f"Failed to load valid sample after {max_attempts} attempts starting from idx {idx}. "
-                        f"Multiple corrupted files detected. Check your feature dataset."
+                        f"Multiple corrupted files detected."
                     )
                 continue
 
 def collate_fn_distillation(batch: List[Dict]) -> Dict:
     """
     Collate function personalizzata per il dataset di distillazione.
+    Supporta sia pre-computed che online feature extraction.
     
     Single-view returns:
         - 'image_paths': lista di path (B)
         - 'teacher_features': Tensor (B,C,H,W)
     """
     image_paths = [item["image_path"] for item in batch]
-    teacher_feats = torch.stack([item["teacher_features"] for item in batch], dim=0)
+    
+    # Check mode (precomputed vs online)
+    if batch[0]["teacher_features"] is not None:
+        # Precomputed mode
+        teacher_feats = torch.stack([item["teacher_features"] for item in batch], dim=0)
+    else:
+        # Online mode: features will be extracted in train loop
+        # Return dummy tensor to maintain batch structure
+        teacher_feats = None
+    
+    # Collect PIL images if in online mode
+    pil_images = [item["pil_image"] for item in batch] if batch[0]["pil_image"] is not None else None
     
     return {
         "image_paths": image_paths,
         "teacher_features": teacher_feats,
+        "pil_images": pil_images,
     }
+
+class TeacherFeatureExtractor:
+    """
+    Wrapper per estrazione feature SAM2 con gestione memoria efficiente.
+    """
+    def __init__(self, checkpoint_path: str, device: str = "cuda"):
+        from feature_extractor import load_sam2_feature_extractor
+        self.extractor = load_sam2_feature_extractor(checkpoint_path, device)
+        self.device = device
+        print(f"[Teacher] Loaded SAM2 feature extractor on {device}")
+    
+    @torch.no_grad()
+    def __call__(self, pil_images: List) -> torch.Tensor:
+        """
+        Estrae feature da lista di PIL images.
+        
+        Args:
+            pil_images: Lista di PIL.Image objects
+        
+        Returns:
+            torch.Tensor (B, 256, 64, 64)
+        """
+        features = []
+        for pil_img in pil_images:
+            feat = self.extractor(pil_img)  # (1, 256, 64, 64) o (256, 64, 64)
+            if isinstance(feat, np.ndarray):
+                feat = torch.from_numpy(feat)
+            if feat.ndim == 3:
+                feat = feat.unsqueeze(0)  # (1, 256, 64, 64)
+            features.append(feat)
+        
+        return torch.cat(features, dim=0)  # (B, 256, 64, 64)
+    
+    def to(self, device):
+        """Move extractor to device."""
+        self.device = device
+        if hasattr(self.extractor, "to"):
+            self.extractor.to(device)
+        return self
 
 # ==================== Loss Functions ====================
 class DistillationLoss(torch.nn.Module):
@@ -288,7 +372,8 @@ class DistillationLoss(torch.nn.Module):
 # ==================== Data Loaders ====================
 def build_distillation_dataloader(
     image_dir: str,
-    features_dir: str,
+    features_dir: Optional[str] = None,
+    teacher_extractor: Optional[TeacherFeatureExtractor] = None,
     batch_size: int = 1,
     num_workers: int = 4,
     shuffle: bool = True,
@@ -301,7 +386,8 @@ def build_distillation_dataloader(
     
     Args:
         image_dir: Directory containing images
-        features_dir: Directory containing teacher features
+        features_dir: Directory containing teacher features (None for online mode)
+        teacher_extractor: TeacherFeatureExtractor instance (required if features_dir=None)
         batch_size: Batch size per GPU
         num_workers: Number of worker processes
         shuffle: Whether to shuffle the dataset (ignored if distributed=True)
@@ -310,35 +396,33 @@ def build_distillation_dataloader(
         distributed: Whether to use DistributedSampler for multi-GPU training
     
     Returns:
-        DataLoader per distillazione con partizionamento dati per multi-GPU se distributed=True
+        DataLoader per distillazione con supporto pre-computed/online
     """
     dataset = DistillationDataset(
         image_dir=image_dir,
         features_dir=features_dir,
+        teacher_extractor=teacher_extractor,
         image_paths=image_paths,
     )
     
-    # DistributedSampler partiziona automaticamente il dataset tra le GPU
-    # evitando duplicati e garantendo che ogni GPU processi un subset esclusivo
     sampler = None
     if distributed:
         sampler = torch.utils.data.DistributedSampler(
             dataset,
             shuffle=shuffle,
-            drop_last=shuffle,  # Drop last incomplete batch only during training
+            drop_last=shuffle,
         )
-        # DistributedSampler gestisce lo shuffle internamente
         shuffle = False
     
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,  # False se c'è DistributedSampler
+        shuffle=shuffle,
         sampler=sampler,
         num_workers=num_workers,
         pin_memory=pin_memory,
         collate_fn=collate_fn_distillation,
-        drop_last=shuffle and sampler is None,  # Drop last solo se non c'è sampler
+        drop_last=shuffle and sampler is None,
     )
     
     return loader
@@ -455,6 +539,7 @@ def train_one_epoch_distillation(
     device: torch.device,
     epoch: int,
     args,
+    teacher_extractor: Optional[TeacherFeatureExtractor] = None,
 ) -> Dict:
     """
     Train the model for one epoch on distillation task.
@@ -467,6 +552,7 @@ def train_one_epoch_distillation(
         device: Device to run on
         epoch: Current epoch number
         args: Configuration namespace
+        teacher_extractor: TeacherFeatureExtractor for online mode (None if precomputed)
     
     Returns:
         Dictionary of averaged training metrics
@@ -479,17 +565,9 @@ def train_one_epoch_distillation(
     accum_iter = args.accum_iter
     optimizer.zero_grad()
 
-    # Memory monitoring at epoch start
-    if torch.cuda.is_available():
-        alloc = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-        res = torch.cuda.memory_reserved() if torch.cuda.is_available() else 0
-        print(f"[DEBUG][GPU] Epoch {epoch} | Step START | Allocated: {alloc/1e9:.2f} GB | Reserved: {res/1e9:.2f} GB", flush=True)
-    if PSUTIL_AVAILABLE:
-        vm = psutil.virtual_memory()
-        print(f"[DEBUG][CPU] Epoch {epoch} | Step START | Used: {vm.used/1e9:.2f} GB | Available: {vm.available/1e9:.2f} GB", flush=True)
-
-    # Accumulatori per medie pesate sull'intera epoca (coerenti con distillation.py):
-    # sommiamo loss/metriche pesate per batch_size e dividiamo a fine epoca.
+    # Detect mode from first batch
+    mode = None
+    
     total_samples = 0
     sum_loss = 0.0
     sum_mse = 0.0
@@ -501,21 +579,26 @@ def train_one_epoch_distillation(
     for data_iter_step, batch in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, header)
     ):
+        # Auto-detect mode from first batch
+        if mode is None:
+            mode = "precomputed" if batch["teacher_features"] is not None else "online"
+            print(f"[Train] Feature extraction mode: {mode.upper()}")
+        
         epoch_f = epoch + data_iter_step / max(1, len(data_loader))
         
-        # Print memory usage every 500 batches
-        if data_iter_step % getattr(args, "print_freq", 500) == 0:
-            if torch.cuda.is_available():
-                alloc = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-                res = torch.cuda.memory_reserved() if torch.cuda.is_available() else 0
-                print(f"[DEBUG][GPU] Epoch {epoch} | Step {data_iter_step} | Allocated: {alloc/1e9:.2f} GB | Reserved: {res/1e9:.2f} GB", flush=True)
-            if PSUTIL_AVAILABLE:
-                vm = psutil.virtual_memory()
-                print(f"[DEBUG][CPU] Epoch {epoch} | Step {data_iter_step} | Used: {vm.used/1e9:.2f} GB | Available: {vm.available/1e9:.2f} GB", flush=True)
-
         # Get data
         image_paths = batch["image_paths"]
-        teacher_features = batch["teacher_features"].to(device, non_blocking=True)
+        
+        # Extract or load teacher features
+        if mode == "precomputed":
+            teacher_features = batch["teacher_features"].to(device, non_blocking=True)
+        else:  # online
+            if teacher_extractor is None:
+                raise ValueError("teacher_extractor required for online mode but not provided")
+            
+            pil_images = batch["pil_images"]
+            with torch.no_grad():
+                teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
         
         # Forward pass to get student features
         student_features = forward_pass_distillation_unified(
@@ -524,14 +607,11 @@ def train_one_epoch_distillation(
             device=device,
             use_amp=args.amp,
             amp_dtype=args.amp_dtype,
-            process_individually=not args.multi_view_mode,  # ← Auto-detect
+            process_individually=not args.multi_view_mode,
         )
-
-        # print(f"[DEBUG] student_features shape: {student_features.shape}", flush=True)
         
         # Resize student features to match teacher resolution if needed
         if student_features.shape[-2:] != teacher_features.shape[-2:]:
-            print(f"[DEBUG] Resizing student features from {student_features.shape[-2:]} to {teacher_features.shape[-2:]} using bilinear interpolation", flush=True)
             H, W = teacher_features.shape[-2:]
             student_features = F.interpolate(
                 student_features,
@@ -546,7 +626,6 @@ def train_one_epoch_distillation(
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
 
-        # Compute additional metrics to mirror distillation.py
         try:
             md, sd, cs = mean_std_difference(student_features, teacher_features)
             md = float(md)
@@ -558,13 +637,11 @@ def train_one_epoch_distillation(
 
         loss_value = loss.detach().cpu().item()
 
-        # Controllo stabilità numerica: interrompe il training in caso di NaN/Inf
         if not math.isfinite(loss_value):
             print(f"Loss is {loss_value}, stopping training", flush=True)
-            print(f"Loss Details: {loss_details}", flush=True)
             sys.exit(1)
 
-        # W&B batch-level logging every N batches (only on main process and if a run is active)
+        # W&B batch-level logging
         is_main_process = (train_tools.get_rank() == 0)
         if (
             args.use_wandb
@@ -581,19 +658,15 @@ def train_one_epoch_distillation(
                         "train/cos_loss": float(cos_value),
                         "train/cos_sim": float(cos_sim_value),
                         "train/lr": float(optimizer.param_groups[0]["lr"]),
-                        "epoch_progress": epoch + data_iter_step / max(1, len(data_loader)),
+                        "epoch_progress": epoch_f,
                     }
                 )
         
-        # Gradient Accumulation: scala la loss per accumulare su 'accum_iter' iterazioni
+        # Gradient Accumulation
         loss /= accum_iter
-        
-        # Backward pass
         loss.backward()
 
-        # Step ottimizzatore ogni 'accum_iter' iterazioni (simula batch più grande)
         if (data_iter_step + 1) % accum_iter == 0:
-            # Gradient clipping
             if args.clip_grad > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
             optimizer.step()
@@ -616,17 +689,8 @@ def train_one_epoch_distillation(
         metric_logger.update(epoch=epoch_f)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(loss=loss_value, **loss_details)
-        
-    # Memory monitoring at epoch end
-    if torch.cuda.is_available():
-        alloc = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-        res = torch.cuda.memory_reserved() if torch.cuda.is_available() else 0
-        print(f"[DEBUG][GPU] Epoch {epoch} | Step END | Allocated: {alloc/1e9:.2f} GB | Reserved: {res/1e9:.2f} GB", flush=True)
-    if PSUTIL_AVAILABLE:
-        vm = psutil.virtual_memory()
-        print(f"[DEBUG][CPU] Epoch {epoch} | Step END | Used: {vm.used/1e9:.2f} GB | Available: {vm.available/1e9:.2f} GB", flush=True)
 
-    # Return averaged stats (weighted by batch size)
+    # Return averaged stats
     denom = max(1, total_samples)
     results = {
         "loss_mean": sum_loss / denom,
@@ -648,6 +712,7 @@ def validate_one_epoch_distillation(
     device: torch.device,
     epoch: int,
     args,
+    teacher_extractor: Optional[TeacherFeatureExtractor] = None,  # ← NEW
 ) -> Dict:
     """
     Validate the model for one epoch on distillation task.
@@ -659,18 +724,17 @@ def validate_one_epoch_distillation(
         device: Device to run on
         epoch: Current epoch number
         args: Configuration namespace
+        teacher_extractor: TeacherFeatureExtractor for online mode
     
     Returns:
-        Dictionary of validation metrics (avg and median)
+        Dictionary of validation metrics
     """
     model.eval()
     metric_logger = train_tools.MetricLogger(delimiter=" | ")
-
-    # Finestra molto grande per rendere la stampa simile a una media globale
     metric_logger.meters = defaultdict(lambda: train_tools.SmoothedValue(window_size=int(1e6)))
     header = f"Distillation Validation: [{epoch}]"
     
-    # Manual accumulators for weighted epoch averages
+    mode = None
     total_samples = 0
     sum_loss = 0.0
     sum_mse = 0.0
@@ -682,9 +746,19 @@ def validate_one_epoch_distillation(
     for batch_idx, batch in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, header)
     ):
-        # Get data
+        # Auto-detect mode
+        if mode is None:
+            mode = "precomputed" if batch["teacher_features"] is not None else "online"
+            print(f"[Val] Feature extraction mode: {mode.upper()}")
+        
         image_paths = batch["image_paths"]
-        teacher_features = batch["teacher_features"].to(device, non_blocking=True)
+        
+        # Extract or load teacher features
+        if mode == "precomputed":
+            teacher_features = batch["teacher_features"].to(device, non_blocking=True)
+        else:
+            pil_images = batch["pil_images"]
+            teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
         
         # Forward pass
         student_features = forward_pass_distillation_unified(
@@ -696,9 +770,8 @@ def validate_one_epoch_distillation(
             process_individually=not args.multi_view_mode,
         )
         
-        # Resize student to match teacher if needed
+        # Resize if needed
         if student_features.shape[-2:] != teacher_features.shape[-2:]:
-            print(f"[DEBUG] Resizing student features from {student_features.shape[-2:]} to {teacher_features.shape[-2:]} using bilinear interpolation", flush=True)
             H, W = teacher_features.shape[-2:]
             student_features = F.interpolate(
                 student_features,
@@ -714,7 +787,6 @@ def validate_one_epoch_distillation(
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
 
-        # Additional metrics
         try:
             md, sd, cs = mean_std_difference(student_features, teacher_features)
             md = float(md)
@@ -724,10 +796,9 @@ def validate_one_epoch_distillation(
             md = sd = 0.0
             cs = cos_sim_value
 
-        # Update metrics
         metric_logger.update(loss=loss_value, mse_loss=mse_value, cos_loss=cos_value, cos_sim=cos_sim_value)
         
-        # Salva visualizzazioni se richiesto (solo primo batch per epoca per limitare I/O)
+        # Salva visualizzazioni se richiesto
         if args.save_visualizations and batch_idx == 0:
             save_pca_visualizations(
                 student_features=student_features,
@@ -737,7 +808,7 @@ def validate_one_epoch_distillation(
                 output_dir=args.output_dir,
             )
         
-        # Accumulate weighted sums
+        # Accumulate
         batch_size = student_features.shape[0]
         total_samples += batch_size
         sum_loss += loss_value * batch_size
@@ -747,19 +818,8 @@ def validate_one_epoch_distillation(
         sum_mean_diff += md * batch_size
         sum_std_diff += sd * batch_size
 
-        # Clean up
         del student_features, teacher_features
-    
-    # Print memory usage after validation
-    if torch.cuda.is_available():
-        alloc = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
-        res = torch.cuda.memory_reserved() if torch.cuda.is_available() else 0
-        print(f"[DEBUG][GPU] Epoch {epoch} | VALIDATION END | Allocated: {alloc/1e9:.2f} GB | Reserved: {res/1e9:.2f} GB", flush=True)
-    if PSUTIL_AVAILABLE:
-        vm = psutil.virtual_memory()
-        print(f"[DEBUG][CPU] Epoch {epoch} | VALIDATION END | Used: {vm.used/1e9:.2f} GB | Available: {vm.available/1e9:.2f} GB", flush=True)
 
-    # Compute aggregates (weighted means)
     denom = max(1, total_samples)
     results = {
         "loss_mean": sum_loss / denom,
@@ -769,7 +829,6 @@ def validate_one_epoch_distillation(
         "mean_diff": sum_mean_diff / denom,
         "std_diff": sum_std_diff / denom,
         "samples": total_samples,
-        # Backward compatibility key used elsewhere
         "loss_avg": sum_loss / denom,
     }
     return results
@@ -848,27 +907,13 @@ def save_pca_visualizations(
 def distill(args):
     """
     Main distillation training function.
-    
-    This orchestrates:
-    - Dataset/DataLoader setup
-    - Model initialization and freezing
-    - Optimizer and scheduler setup
-    - Training/validation loop
-    - Checkpointing and logging
-    
-    Args:
-        args: Configuration namespace with all hyperparameters
     """
-    # Inizializza (eventualmente) il training distribuito e ricava il rank
     train_tools.init_distributed_mode(args.distributed)
     global_rank = train_tools.get_rank()
     
-    # Imposta la cartella di output: se non fornita, costruisce OUT_DIR/<wandb_name|timestamp>
     if not args.output_dir:
-        # Derive default output_dir from OUT_DIR and run name (prefer wandb_name)
         default_run_name = args.wandb_name or datetime.datetime.now().strftime("distill_%Y%m%d_%H%M%S")
         args.output_dir = os.path.join(OUT_DIR, default_run_name)
-    print(f"output_dir: {args.output_dir}")
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     
     print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
@@ -876,22 +921,29 @@ def distill(args):
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Seed e impostazioni cuDNN: per riproducibilità e performance
     seed = args.seed + global_rank
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
     cudnn.benchmark = not args.disable_cudnn_benchmark
     
-    # Su cluster riduci la verbosità delle stampe per contenere i log
     if run_cluster and getattr(args, "print_freq", 10) < 200:
         args.print_freq = 200
 
-    # Costruzione DataLoader: usa path derivati da COCO2017_ROOT (come distillation.py)
+    # ========== INITIALIZE TEACHER EXTRACTOR (if online mode) ==========
+    teacher_extractor = None
+    if not args.precomputed_features:
+        print(f"[INFO] Initializing online teacher feature extractor from {SAM2_PATH}")
+        teacher_extractor = TeacherFeatureExtractor(
+            checkpoint_path=SAM2_PATH,
+            device=str(device),
+        )
+        teacher_extractor.to(device)
+    
+    # ========== BUILD DATALOADERS ==========
     print(f"Building train dataloader from {TRAIN_IMAGES_DIR}")
     train_image_paths = None
     if args.debug_max_train_images:
-        # Sottoinsieme random di immagini per debug veloce
         all_imgs = sorted([
             os.path.join(TRAIN_IMAGES_DIR, f)
             for f in os.listdir(TRAIN_IMAGES_DIR)
@@ -901,7 +953,8 @@ def distill(args):
     
     data_loader_train = build_distillation_dataloader(
         image_dir=TRAIN_IMAGES_DIR,
-        features_dir=TRAIN_FEATURES_DIR,
+        features_dir=TRAIN_FEATURES_DIR if args.precomputed_features else None,
+        teacher_extractor=teacher_extractor,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         shuffle=True,
@@ -912,7 +965,6 @@ def distill(args):
     print(f"Building val dataloader from {VAL_IMAGES_DIR}")
     val_image_paths = None
     if args.debug_max_val_images:
-        # Primi N elementi per validazione rapida di debug
         all_val_imgs = sorted([
             os.path.join(VAL_IMAGES_DIR, f)
             for f in os.listdir(VAL_IMAGES_DIR)
@@ -922,7 +974,8 @@ def distill(args):
     
     data_loader_val = build_distillation_dataloader(
         image_dir=VAL_IMAGES_DIR,
-        features_dir=VAL_FEATURES_DIR,
+        features_dir=VAL_FEATURES_DIR if args.precomputed_features else None,
+        teacher_extractor=teacher_extractor,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         shuffle=False,
@@ -930,12 +983,12 @@ def distill(args):
         distributed=args.distributed.distributed,
     )
     
-    # Carica il modello pre-addestrato (strict=False per permettere head extra)
+    # ========== LOAD MODEL ==========
     print("Loading MapAnything model...")
     if global_rank == 0:
         model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
     if torch.distributed.is_initialized():
-        torch.distributed.barrier()  # sincronizzazione tra processi
+        torch.distributed.barrier()
     if global_rank != 0:
         model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
     
@@ -1148,18 +1201,17 @@ def distill(args):
             wandb_kwargs.update(id=args.wandb_resume_id, resume="allow")
         wandb.init(**wandb_kwargs)
     
-    # Ciclo di training principale: train → validazione (ogni eval_freq) → step scheduler → checkpoint → log
+    # ========== TRAINING LOOP ==========
     print(f"Start distillation training for {args.epochs} epochs from epoch {start_epoch}")
     start_time = time.time()
     
     for epoch in range(start_epoch, args.epochs):
-        # Set epoch per DistributedSampler per garantire shuffle diverso ad ogni epoca
         if args.distributed.distributed and hasattr(data_loader_train.sampler, 'set_epoch'):
             data_loader_train.sampler.set_epoch(epoch)
         
         epoch_start = time.time()
         
-        # Train one epoch
+        # Train one epoch (passa teacher_extractor)
         train_stats = train_one_epoch_distillation(
             model=model,
             criterion=criterion,
@@ -1168,6 +1220,7 @@ def distill(args):
             device=device,
             epoch=epoch,
             args=args,
+            teacher_extractor=teacher_extractor,
         )
         
         # Validation
@@ -1180,6 +1233,7 @@ def distill(args):
                 device=device,
                 epoch=epoch,
                 args=args,
+                teacher_extractor=teacher_extractor,
             )
             
             # Check for new best
@@ -1382,6 +1436,7 @@ def get_args_parser():
     parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
     parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging")
     parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
+    parser.add_argument("--precomputed_features", action="store_true", help="Use precomputed features from disk")
     
     # Mixed precision
     parser.add_argument("--amp", action="store_true", help="Use automatic mixed precision")
