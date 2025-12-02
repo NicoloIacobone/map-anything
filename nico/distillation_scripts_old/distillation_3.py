@@ -127,13 +127,11 @@ class DistillationDataset(Dataset):
         transform=None,
         scenes_file: Optional[str] = None,
         multi_view_mode: bool = False,
-        # overfit_single_image: bool = False,
     ):
         self.image_dir = Path(image_dir)
         self.features_dir = Path(features_dir)
         self.transform = transform
         self.multi_view_mode = multi_view_mode
-        # self.overfit_single_image = overfit_single_image
         
         if multi_view_mode:
             # Multi-view mode: load scenes from JSON
@@ -155,11 +153,6 @@ class DistillationDataset(Dataset):
                 ])
             else:
                 self.image_paths = image_paths
-
-            # if self.overfit_single_image and len(self.image_paths) > 0:
-            #     self.image_paths = [self.image_paths[0]]
-            #     print(f"[OVERFIT] Using single image: {self.image_paths[0]}")
-
             print(f"[Dataset] Loaded {len(self.image_paths)} images (single-view) from {image_dir}")
     
     @staticmethod
@@ -356,30 +349,11 @@ class DistillationLoss(torch.nn.Module):
             student_norm = student_features
             teacher_norm = teacher_features
         
-        # # MSE loss
-        # mse_loss = F.mse_loss(student_norm, teacher_norm)
+        # MSE loss
+        mse_loss = F.mse_loss(student_norm, teacher_norm)
         
-        # # Cosine similarity loss (1 - cosine_similarity)
-        # cos_sim = F.cosine_similarity(student_norm, teacher_norm, dim=1).mean()
-        # cos_loss = 1.0 - cos_sim
-        
-        # # Combined loss
-        # total_loss = self.mse_weight * mse_loss + self.cosine_weight * cos_loss
-
-        # ✅ FIX: MSE loss PER SAMPLE (media su C,H,W), poi media su batch
-        mse_per_sample = F.mse_loss(
-            student_norm, 
-            teacher_norm, 
-            reduction='none'  # (B, C, H, W)
-        ).mean(dim=(1, 2, 3))  # Media su (C,H,W) → (B,)
-        
-        mse_loss = mse_per_sample.mean()  # Media su batch → scalare
-        
-        # ✅ FIX: Cosine similarity PER SAMPLE
-        cos_map = F.cosine_similarity(student_norm, teacher_norm, dim=1)  # (B, H, W)
-        cos_sim_per_image = cos_map.flatten(1).mean(dim=1)  # Media su (H,W) → (B,)
-        cos_sim = cos_sim_per_image.mean()  # Media su batch → scalare
-        
+        # Cosine similarity loss (1 - cosine_similarity)
+        cos_sim = F.cosine_similarity(student_norm, teacher_norm, dim=1).mean()
         cos_loss = 1.0 - cos_sim
         
         # Combined loss
@@ -405,7 +379,6 @@ def build_distillation_dataloader(
     distributed: bool = False,
     scenes_file: Optional[str] = None,
     multi_view_mode: bool = False,
-    # overfit_single_image: bool = False,
 ) -> DataLoader:
     """
     Build a DataLoader for distillation training/validation.
@@ -431,11 +404,7 @@ def build_distillation_dataloader(
         image_paths=image_paths,
         scenes_file=scenes_file,
         multi_view_mode=multi_view_mode,
-        # overfit_single_image=overfit_single_image,
     )
-
-    # if overfit_single_image:
-    #     shuffle = False
     
     # DistributedSampler partiziona automaticamente il dataset tra le GPU
     # evitando duplicati e garantendo che ogni GPU processi un subset esclusivo
@@ -457,8 +426,7 @@ def build_distillation_dataloader(
         num_workers=num_workers,
         pin_memory=pin_memory,
         collate_fn=collate_fn_distillation,
-        # drop_last=shuffle and sampler is None,  # Drop last solo se non c'è sampler
-        drop_last=False,
+        drop_last=shuffle and sampler is None,  # Drop last solo se non c'è sampler
     )
     
     return loader
@@ -487,7 +455,6 @@ def forward_pass_distillation(
     """
     # Carica le immagini usando l'utility del progetto (gestisce pre-processing coerente)
     views = load_images(image_paths)
-    # views = load_images(image_paths, resize_mode="fixed_size", size=(518, 518))
 
     # Sposta i tensori immagine sul device per evitare mismatch CPU/GPU (come in distillation.py)
     for v in views:
@@ -582,66 +549,6 @@ def forward_pass_multiview_distillation(
     # Concatena tutte le feature: (B*N, C, H, W)
     return torch.cat(all_student_feats, dim=0)
 
-def forward_pass_distillation_batch_safe(
-    model: torch.nn.Module,
-    image_paths: List[str],
-    device: torch.device,
-    use_amp: bool = False,
-    amp_dtype: str = "bf16",
-) -> torch.Tensor:
-    """
-    Forward pass sicuro per batch di immagini INDIPENDENTI.
-    Processa ogni immagine come SINGOLA VIEW per evitare cross-attention.
-    
-    Args:
-        model: MapAnything model
-        image_paths: Lista di B percorsi immagini
-        device: Device CUDA
-        use_amp: Se usare mixed precision
-        amp_dtype: Tipo AMP ("bf16" o "fp16")
-    
-    Returns:
-        torch.Tensor: Student features concatenate (B, C, H, W)
-    """
-    from mapanything.utils.image import load_images
-    
-    all_student_features = []
-    amp_dtype_torch = torch.bfloat16 if amp_dtype == "bf16" else torch.float16
-    
-    for img_path in image_paths:
-        # Carica singola immagine
-        views = load_images(
-            folder_or_list=[img_path],
-            # size=518,
-        )
-        
-        # FIX: Converti input a device/dtype DENTRO autocast context
-        with torch.autocast("cuda", enabled=use_amp, dtype=amp_dtype_torch):
-            # Sposta tensori su device (autocast converte automaticamente a amp_dtype)
-            for v in views:
-                img = v.get("img")
-                if isinstance(img, torch.Tensor):
-                    v["img"] = img.to(device, non_blocking=True)
-            
-            # Forward con dtype coerente
-            outputs = model(views)
-        
-        # Estrai feature (usa dpt_feature_head_2 se disponibile)
-        base_model = model.module if hasattr(model, "module") else model
-        if hasattr(base_model, "_last_feat2_8x"):
-            student_features_single = base_model._last_feat2_8x  # (1, 256, 64, 64)
-        else:
-            # Fallback: usa pts3d e converti
-            pts3d = outputs[0]["pts3d"]  # (1, H, W, 3)
-            student_features_single = pts3d.permute(0, 3, 1, 2)  # (1, 3, H, W)
-        
-        all_student_features.append(student_features_single)
-    
-    # Concatena tutte le feature
-    student_features_batch = torch.cat(all_student_features, dim=0)  # (B, C, H, W)
-    
-    return student_features_batch
-
 def train_one_epoch_distillation(
     model: torch.nn.Module,
     criterion: torch.nn.Module,
@@ -723,15 +630,7 @@ def train_one_epoch_distillation(
                 amp_dtype=args.amp_dtype,
             )
         else:
-            # student_features = forward_pass_distillation(
-            #     model=model,
-            #     image_paths=image_paths,
-            #     device=device,
-            #     use_amp=args.amp,
-            #     amp_dtype=args.amp_dtype,
-            # )
-            # ✅ FIX: Usa wrapper batch-safe
-            student_features = forward_pass_distillation_batch_safe(
+            student_features = forward_pass_distillation(
                 model=model,
                 image_paths=image_paths,
                 device=device,
@@ -754,27 +653,10 @@ def train_one_epoch_distillation(
         
         # Compute loss
         loss, loss_details = criterion(student_features, teacher_features)
+        loss_value = loss.detach().cpu().item()
         mse_value = float(loss_details.get("mse_loss", 0.0))
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
-
-        # Compute additional metrics to mirror distillation.py
-        try:
-            md, sd, cs = mean_std_difference(student_features, teacher_features)
-            md = float(md)
-            sd = float(sd)
-            cs = float(cs)
-        except Exception:
-            md = sd = 0.0
-            cs = cos_sim_value
-
-        loss_value = loss.detach().cpu().item()
-
-        # Controllo stabilità numerica: interrompe il training in caso di NaN/Inf
-        if not math.isfinite(loss_value):
-            print(f"Loss is {loss_value}, stopping training", flush=True)
-            print(f"Loss Details: {loss_details}", flush=True)
-            sys.exit(1)
 
         # W&B batch-level logging every N batches (only on main process and if a run is active)
         is_main_process = (train_tools.get_rank() == 0)
@@ -796,36 +678,27 @@ def train_one_epoch_distillation(
                         "epoch_progress": epoch + data_iter_step / max(1, len(data_loader)),
                     }
                 )
+
+        try:
+            md, sd, cs = mean_std_difference(student_features, teacher_features)
+            md = float(md)
+            sd = float(sd)
+            cs = float(cs)
+        except Exception:
+            md = sd = 0.0
+            cs = cos_sim_value
+        
+        # Controllo stabilità numerica: interrompe il training in caso di NaN/Inf
+        if not math.isfinite(loss_value):
+            print(f"Loss is {loss_value}, stopping training", flush=True)
+            print(f"Loss Details: {loss_details}", flush=True)
+            sys.exit(1)
         
         # Gradient Accumulation: scala la loss per accumulare su 'accum_iter' iterazioni
-        loss /= accum_iter
+        loss = loss / accum_iter
         
         # Backward pass
         loss.backward()
-
-        ############ DEBUG ###########################################################################################
-        # # debug grads for info_sharing last blocks
-        # def log_grad_stats(model, prefix="DBG"):
-        #     for name, param in model.named_parameters():
-        #         if "info_sharing.self_attention_blocks" in name:
-        #             if param.requires_grad:
-        #                 grad = param.grad
-        #                 if grad is None:
-        #                     print(f"[{prefix}] {name} grad=None")
-        #                 else:
-        #                     gnorm = grad.norm().item()
-        #                     print(f"[{prefix}] {name} grad_norm={gnorm:.6e}")
-        # # call it
-        # log_grad_stats(model if not hasattr(model, "module") else model.module, prefix=f"epoch{epoch}_step{data_iter_step}")
-        ########################################################################################################
-
-
-        ############ DEBUG #######################################################################################
-        # # pick a param tensor to monitor
-        # pname = "info_sharing.self_attention_blocks.23.attn.qkv.weight"  # esempio: adattalo a quelli che hai
-        # param = dict(model.named_parameters())[pname] if not hasattr(model, "module") else dict(model.module.named_parameters())[pname]
-        # before = param.detach().cpu().clone()
-        ########################################################################################################
 
         # Step ottimizzatore ogni 'accum_iter' iterazioni (simula batch più grande)
         if (data_iter_step + 1) % accum_iter == 0:
@@ -834,13 +707,6 @@ def train_one_epoch_distillation(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
             optimizer.step()
             optimizer.zero_grad()
-        
-        ############# DEBUG ###########################################################################################
-        # # dopo backward e optimizer.step():
-        # after = param.detach().cpu().clone()
-        # delta = (after - before).norm().item()
-        # print(f"[PARAM_UPDATE] {pname} || delta norm = {delta:.6e}")
-        ########################################################################################################
 
         # Accumulate weighted sums
         batch_size = student_features.shape[0]
@@ -940,21 +806,13 @@ def validate_one_epoch_distillation(
                 amp_dtype=args.amp_dtype,
             )
         else:
-            # Usa lo stesso wrapper batch-safe della fase di training
-            student_features = forward_pass_distillation_batch_safe(
+            student_features = forward_pass_distillation(
                 model=model,
                 image_paths=image_paths,
                 device=device,
                 use_amp=args.amp,
                 amp_dtype=args.amp_dtype,
             )
-            # student_features = forward_pass_distillation(
-            #     model=model,
-            #     image_paths=image_paths,
-            #     device=device,
-            #     use_amp=args.amp,
-            #     amp_dtype=args.amp_dtype,
-            # )
         
         # Resize student to match teacher if needed
         if student_features.shape[-2:] != teacher_features.shape[-2:]:
@@ -1093,8 +951,11 @@ def save_pca_visualizations(
             print(f"Image path: {img_path}")
 
             # Ensure tensors are detached, cloned, and contiguous before saving
-            # student_single = student_single.detach().cpu().contiguous().clone()
-            # teacher_single = teacher_single.detach().cpu().contiguous().clone()
+            student_single = student_single.detach().cpu().contiguous().clone()
+            teacher_single = teacher_single.detach().cpu().contiguous().clone()
+            # torch.save(student_single.detach().cpu(), student_save_path / f"{epoch}.pt")
+            # torch.save(student_single, student_save_path / f"{epoch}.pt")
+            # torch.save(teacher_single, teacher_save_path / f"{epoch}.pt")
             img_basename = Path(img_path).stem  # Es: "000000544826"
             torch.save(student_single, student_save_path / f"{epoch}_{img_basename}.pt")
             torch.save(teacher_single, teacher_save_path / f"{epoch}_{img_basename}.pt")
@@ -1147,8 +1008,6 @@ def distill(args):
     if run_cluster and getattr(args, "print_freq", 10) < 200:
         args.print_freq = 200
 
-    # overfit_mode = getattr(args, "overfit_single_image", False)
-
     # Costruzione DataLoader: usa path derivati da COCO2017_ROOT (come distillation.py)
     print(f"Building train dataloader from {TRAIN_IMAGES_DIR}")
     train_image_paths = None
@@ -1171,38 +1030,30 @@ def distill(args):
         distributed=args.distributed.distributed,
         scenes_file=getattr(args, 'train_scenes_file', None),
         multi_view_mode=args.multi_view_mode,
-        # overfit_single_image=overfit_mode,
     )
-
+    
     print(f"Building val dataloader from {VAL_IMAGES_DIR}")
-    # ========== OVERFIT MODE: ALWAYS USE TRAIN IMAGES FOR VALIDATION ==========
-    # Questo script è dedicato all'overfit, quindi validation = train (stesse immagini)
-    if args.debug_max_train_images and args.debug_max_train_images <= 1000:
-        # Per overfit su subset piccolo (≤50), usa stesso subset per validation
-        print(f"[OVERFIT] Using TRAIN images for validation (same {args.debug_max_train_images} images)")
-        data_loader_val = build_distillation_dataloader(
-            image_dir=TRAIN_IMAGES_DIR,  # ← Usa TRAIN invece di VAL
-            features_dir=TRAIN_FEATURES_DIR,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            shuffle=False,  # No shuffle per validation
-            image_paths=train_image_paths,  # ← Stesse immagini del train
-            distributed=args.distributed.distributed,
-            # overfit_single_image=False,
-        )
-    else:
-        # Fallback: se non specifichi --debug_max_train_images, usa tutte le train per val
-        print("[OVERFIT] Using ALL train images for validation (no limit specified)")
-        data_loader_val = build_distillation_dataloader(
-            image_dir=TRAIN_IMAGES_DIR,
-            features_dir=TRAIN_FEATURES_DIR,
-            batch_size=args.batch_size,
-            num_workers=args.num_workers,
-            shuffle=False,
-            image_paths=None,  # Tutte le train
-            distributed=args.distributed.distributed,
-            # overfit_single_image=False,
-        )
+    val_image_paths = None
+    if args.debug_max_val_images:
+        # Primi N elementi per validazione rapida di debug
+        all_val_imgs = sorted([
+            os.path.join(VAL_IMAGES_DIR, f)
+            for f in os.listdir(VAL_IMAGES_DIR)
+            if DistillationDataset._is_image_file(f)
+        ])
+        val_image_paths = all_val_imgs[:args.debug_max_val_images]
+    
+    data_loader_val = build_distillation_dataloader(
+        image_dir=VAL_IMAGES_DIR,
+        features_dir=VAL_FEATURES_DIR,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        shuffle=False,
+        image_paths=val_image_paths,
+        distributed=args.distributed.distributed,
+        scenes_file=getattr(args, 'val_scenes_file', None),
+        multi_view_mode=args.multi_view_mode,
+    )
     
     # Carica il modello pre-addestrato (strict=False per permettere head extra)
     print("Loading MapAnything model...")
@@ -1428,15 +1279,9 @@ def distill(args):
     
     for epoch in range(start_epoch, args.epochs):
         # Set epoch per DistributedSampler per garantire shuffle diverso ad ogni epoca
-        # if args.distributed.distributed and hasattr(data_loader_train.sampler, 'set_epoch'):
-        #     data_loader_train.sampler.set_epoch(epoch)
-
-        # if args.distributed.distributed and hasattr(data_loader_train.sampler, 'set_epoch') and not args.overfit_single_image:
-        #     data_loader_train.sampler.set_epoch(epoch)
-
         if args.distributed.distributed and hasattr(data_loader_train.sampler, 'set_epoch'):
             data_loader_train.sampler.set_epoch(epoch)
-
+        
         epoch_start = time.time()
         
         # Train one epoch
@@ -1693,9 +1538,6 @@ def get_args_parser():
 
     # Unfreeze strategy
     parser.add_argument("--num_info_sharing_blocks_unfreeze", type=int, default=0, help="Number of last info_sharing transformer blocks to unfreeze")
-
-    # Overfit mode
-    # parser.add_argument("--overfit_single_image", action="store_true", help="Overfit on a single image (sanity check)")
     
     # comando debug pc lab
     # python distillation.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2

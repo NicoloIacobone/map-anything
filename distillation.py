@@ -348,12 +348,19 @@ class DistillationLoss(torch.nn.Module):
         else:
             student_norm = student_features
             teacher_norm = teacher_features
+
+        mse_per_sample = F.mse_loss(
+            student_norm, 
+            teacher_norm, 
+            reduction='none'  # (B, C, H, W)
+        ).mean(dim=(1, 2, 3))  # Media su (C,H,W) → (B,)
         
-        # MSE loss
-        mse_loss = F.mse_loss(student_norm, teacher_norm)
+        mse_loss = mse_per_sample.mean()  # Media su batch → scalare
         
-        # Cosine similarity loss (1 - cosine_similarity)
-        cos_sim = F.cosine_similarity(student_norm, teacher_norm, dim=1).mean()
+        cos_map = F.cosine_similarity(student_norm, teacher_norm, dim=1)  # (B, H, W)
+        cos_sim_per_image = cos_map.flatten(1).mean(dim=1)  # Media su (H,W) → (B,)
+        cos_sim = cos_sim_per_image.mean()  # Media su batch → scalare
+        
         cos_loss = 1.0 - cos_sim
         
         # Combined loss
@@ -549,6 +556,66 @@ def forward_pass_multiview_distillation(
     # Concatena tutte le feature: (B*N, C, H, W)
     return torch.cat(all_student_feats, dim=0)
 
+def forward_pass_distillation_batch_safe(
+    model: torch.nn.Module,
+    image_paths: List[str],
+    device: torch.device,
+    use_amp: bool = False,
+    amp_dtype: str = "bf16",
+) -> torch.Tensor:
+    """
+    Forward pass sicuro per batch di immagini INDIPENDENTI.
+    Processa ogni immagine come SINGOLA VIEW per evitare cross-attention.
+    
+    Args:
+        model: MapAnything model
+        image_paths: Lista di B percorsi immagini
+        device: Device CUDA
+        use_amp: Se usare mixed precision
+        amp_dtype: Tipo AMP ("bf16" o "fp16")
+    
+    Returns:
+        torch.Tensor: Student features concatenate (B, C, H, W)
+    """
+    from mapanything.utils.image import load_images
+    
+    all_student_features = []
+    amp_dtype_torch = torch.bfloat16 if amp_dtype == "bf16" else torch.float16
+    
+    for img_path in image_paths:
+        # Carica singola immagine
+        views = load_images(
+            folder_or_list=[img_path],
+            # size=518,
+        )
+        
+        # FIX: Converti input a device/dtype DENTRO autocast context
+        with torch.autocast("cuda", enabled=use_amp, dtype=amp_dtype_torch):
+            # Sposta tensori su device (autocast converte automaticamente a amp_dtype)
+            for v in views:
+                img = v.get("img")
+                if isinstance(img, torch.Tensor):
+                    v["img"] = img.to(device, non_blocking=True)
+            
+            # Forward con dtype coerente
+            outputs = model(views)
+        
+        # Estrai feature (usa dpt_feature_head_2 se disponibile)
+        base_model = model.module if hasattr(model, "module") else model
+        if hasattr(base_model, "_last_feat2_8x"):
+            student_features_single = base_model._last_feat2_8x  # (1, 256, 64, 64)
+        else:
+            # Fallback: usa pts3d e converti
+            pts3d = outputs[0]["pts3d"]  # (1, H, W, 3)
+            student_features_single = pts3d.permute(0, 3, 1, 2)  # (1, 3, H, W)
+        
+        all_student_features.append(student_features_single)
+    
+    # Concatena tutte le feature
+    student_features_batch = torch.cat(all_student_features, dim=0)  # (B, C, H, W)
+    
+    return student_features_batch
+
 def train_one_epoch_distillation(
     model: torch.nn.Module,
     criterion: torch.nn.Module,
@@ -630,7 +697,7 @@ def train_one_epoch_distillation(
                 amp_dtype=args.amp_dtype,
             )
         else:
-            student_features = forward_pass_distillation(
+            student_features = forward_pass_distillation_batch_safe(
                 model=model,
                 image_paths=image_paths,
                 device=device,
@@ -653,10 +720,27 @@ def train_one_epoch_distillation(
         
         # Compute loss
         loss, loss_details = criterion(student_features, teacher_features)
-        loss_value = loss.detach().cpu().item()
         mse_value = float(loss_details.get("mse_loss", 0.0))
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
+
+        # Compute additional metrics to mirror distillation.py
+        try:
+            md, sd, cs = mean_std_difference(student_features, teacher_features)
+            md = float(md)
+            sd = float(sd)
+            cs = float(cs)
+        except Exception:
+            md = sd = 0.0
+            cs = cos_sim_value
+
+        loss_value = loss.detach().cpu().item()
+
+        # Controllo stabilità numerica: interrompe il training in caso di NaN/Inf
+        if not math.isfinite(loss_value):
+            print(f"Loss is {loss_value}, stopping training", flush=True)
+            print(f"Loss Details: {loss_details}", flush=True)
+            sys.exit(1)
 
         # W&B batch-level logging every N batches (only on main process and if a run is active)
         is_main_process = (train_tools.get_rank() == 0)
@@ -678,24 +762,9 @@ def train_one_epoch_distillation(
                         "epoch_progress": epoch + data_iter_step / max(1, len(data_loader)),
                     }
                 )
-
-        try:
-            md, sd, cs = mean_std_difference(student_features, teacher_features)
-            md = float(md)
-            sd = float(sd)
-            cs = float(cs)
-        except Exception:
-            md = sd = 0.0
-            cs = cos_sim_value
-        
-        # Controllo stabilità numerica: interrompe il training in caso di NaN/Inf
-        if not math.isfinite(loss_value):
-            print(f"Loss is {loss_value}, stopping training", flush=True)
-            print(f"Loss Details: {loss_details}", flush=True)
-            sys.exit(1)
         
         # Gradient Accumulation: scala la loss per accumulare su 'accum_iter' iterazioni
-        loss = loss / accum_iter
+        loss /= accum_iter
         
         # Backward pass
         loss.backward()
@@ -806,7 +875,7 @@ def validate_one_epoch_distillation(
                 amp_dtype=args.amp_dtype,
             )
         else:
-            student_features = forward_pass_distillation(
+            student_features = forward_pass_distillation_batch_safe(
                 model=model,
                 image_paths=image_paths,
                 device=device,
@@ -951,11 +1020,8 @@ def save_pca_visualizations(
             print(f"Image path: {img_path}")
 
             # Ensure tensors are detached, cloned, and contiguous before saving
-            student_single = student_single.detach().cpu().contiguous().clone()
-            teacher_single = teacher_single.detach().cpu().contiguous().clone()
-            # torch.save(student_single.detach().cpu(), student_save_path / f"{epoch}.pt")
-            # torch.save(student_single, student_save_path / f"{epoch}.pt")
-            # torch.save(teacher_single, teacher_save_path / f"{epoch}.pt")
+            # student_single = student_single.detach().cpu().contiguous().clone()
+            # teacher_single = teacher_single.detach().cpu().contiguous().clone()
             img_basename = Path(img_path).stem  # Es: "000000544826"
             torch.save(student_single, student_save_path / f"{epoch}_{img_basename}.pt")
             torch.save(teacher_single, teacher_save_path / f"{epoch}_{img_basename}.pt")
@@ -1542,6 +1608,11 @@ def get_args_parser():
     # comando debug pc lab
     # python distillation.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2
     # python distillation.py --epochs 10 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 4 --resume_ckpt /scratch2/nico/distillation/output/distill_20251125_143157/checkpoints/checkpoint_best.pth
+
+    # Proporzioni
+    # batch_size 1, lr 1e-4, accum_iter 1
+    # batch_size 2, lr 2e-4, accum_iter 1
+    # batch_size 1, lr 1e-4, accum_iter 2
 
     return parser
 
