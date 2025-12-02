@@ -77,13 +77,13 @@ echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --distributed \
   --use_wandb \
-  --wandb_name "distillation_8" \
+  --wandb_name "distillation_8_bs24" \
   --epochs 20 \
-  --batch_size 12 \
+  --batch_size 24 \
   --num_workers 8 \
-  --lr 3.5e-4 \
+  --lr 5e-4 \
   --weight_decay 1e-4 \
-  --lr_min 3e-5 \
+  --lr_min 5e-5 \
   --clip_grad 1.0 \
   --accum_iter 1 \
   --mse_weight 0.5 \
