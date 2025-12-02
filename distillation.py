@@ -79,18 +79,28 @@ if run_cluster:
         pass
 
     OUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"
-    BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset/coco2017"
+    DATASET = "coco2017"
+    BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset"
+    # DATASET = "ETH3D"
     
 else:
     OUT_DIR = "/scratch2/nico/distillation/output"
-    BASE_DIR = "/scratch2/nico/distillation/dataset/coco2017"
+    DATASET = "coco2017"
+    BASE_DIR = "/scratch2/nico/distillation/dataset"
+    # DATASET = "ETH3D"
 
 # Dataset directory structure (consistent with distillation.py)
-TRAIN_SPLIT = "train2017"
-VAL_SPLIT = "val2017"
+if DATASET == "coco2017":
+    TRAIN_SPLIT = "train2017"
+    VAL_SPLIT = "val2017"
+elif DATASET == "ETH3D":
+    TRAIN_SPLIT = "train"
+    VAL_SPLIT = "val"
+
 IMAGES_DIRNAME = "images"
 FEATURES_DIRNAME = "features"
 
+BASE_DIR = BASE_DIR + f"/{DATASET}"
 TRAIN_IMAGES_DIR = os.path.join(BASE_DIR, IMAGES_DIRNAME, TRAIN_SPLIT)
 VAL_IMAGES_DIR = os.path.join(BASE_DIR, IMAGES_DIRNAME, VAL_SPLIT)
 TRAIN_FEATURES_DIR = os.path.join(BASE_DIR, FEATURES_DIRNAME, TRAIN_SPLIT)
@@ -105,7 +115,6 @@ print(f"[INFO] Using VAL_FEATURES_DIR: {VAL_FEATURES_DIR}")
 class DistillationDataset(Dataset):
     """
     Dataset per la distillazione: carica immagini e le corrispondenti feature del teacher.
-    Supporta sia single-view (un'immagine per sample) che multi-view (gruppi di view per scena).
     
     Args:
         image_dir: cartella contenente le immagini.
@@ -114,9 +123,6 @@ class DistillationDataset(Dataset):
         image_paths: lista opzionale di path da usare; se None, scansiona image_dir.
         transform: eventuale trasformazione (non usata direttamente; il caricamento
             vero per il modello avviene con load_images nella forward stage).
-        scenes_file: path opzionale a JSON con mapping scene->view paths per multi-view.
-            Formato: {"scene_id": ["path/to/view0.jpg", "path/to/view1.jpg", ...], ...}
-        multi_view_mode: se True, usa scenes_file per caricare gruppi di view per scena.
     """
     
     def __init__(
@@ -125,35 +131,21 @@ class DistillationDataset(Dataset):
         features_dir: str,
         image_paths: Optional[List[str]] = None,
         transform=None,
-        scenes_file: Optional[str] = None,
-        multi_view_mode: bool = False,
     ):
         self.image_dir = Path(image_dir)
         self.features_dir = Path(features_dir)
         self.transform = transform
-        self.multi_view_mode = multi_view_mode
         
-        if multi_view_mode:
-            # Multi-view mode: load scenes from JSON
-            if scenes_file is None:
-                raise ValueError("scenes_file must be provided when multi_view_mode=True")
-            import json
-            with open(scenes_file, 'r') as f:
-                scenes_dict = json.load(f)
-            # Convert to list of (scene_id, [view_paths])
-            self.scenes = [(scene_id, view_paths) for scene_id, view_paths in scenes_dict.items()]
-            print(f"[Dataset] Loaded {len(self.scenes)} scenes (multi-view) from {scenes_file}")
+        # Single-view mode: one image per sample
+        if image_paths is None:
+            self.image_paths = sorted([
+                str(self.image_dir / f)
+                for f in os.listdir(self.image_dir)
+                if self._is_image_file(f)
+            ])
         else:
-            # Single-view mode: one image per sample
-            if image_paths is None:
-                self.image_paths = sorted([
-                    str(self.image_dir / f)
-                    for f in os.listdir(self.image_dir)
-                    if self._is_image_file(f)
-                ])
-            else:
-                self.image_paths = image_paths
-            print(f"[Dataset] Loaded {len(self.image_paths)} images (single-view) from {image_dir}")
+            self.image_paths = image_paths
+        print(f"[Dataset] Loaded {len(self.image_paths)} images (single-view) from {image_dir}")
     
     @staticmethod
     def _is_image_file(name: str) -> bool:
@@ -161,10 +153,7 @@ class DistillationDataset(Dataset):
         return name.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"))
     
     def __len__(self) -> int:
-        if self.multi_view_mode:
-            return len(self.scenes)
-        else:
-            return len(self.image_paths)
+        return len(self.image_paths)
     
     def __getitem__(self, idx: int) -> Dict:
         """
@@ -172,134 +161,56 @@ class DistillationDataset(Dataset):
             Single-view mode:
                 - 'image_path': path all'immagine (str)
                 - 'teacher_features': Tensor (C,H,W)
-            Multi-view mode:
-                - 'scene_id': identificatore scena (str)
-                - 'image_paths': lista di path delle view (List[str])
-                - 'teacher_features': Tensor (N,C,H,W) con N view
         
         Gestisce file corrotti tentando di caricare il sample successivo.
         """
         max_attempts = 10
         
-        if self.multi_view_mode:
-            # Multi-view mode: return group of views for a scene
-            for attempt in range(max_attempts):
-                try:
-                    actual_idx = (idx + attempt) % len(self.scenes)
-                    scene_id, view_paths = self.scenes[actual_idx]
-                    
-                    # Load teacher features for all views
-                    teacher_feats = []
-                    for view_path in view_paths:
-                        img_name = Path(view_path).stem
-                        feat_path = self.features_dir / f"{img_name}.pt"
-                        if not feat_path.exists():
-                            raise FileNotFoundError(f"Teacher features not found: {feat_path}")
-                        
-                        teacher_feat = torch.load(feat_path, map_location="cpu", weights_only=False)
-                        if teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
-                            teacher_feat = teacher_feat.squeeze(0)
-                        teacher_feats.append(teacher_feat)
-                    
-                    return {
-                        "scene_id": scene_id,
-                        "image_paths": view_paths,
-                        "teacher_features": torch.stack(teacher_feats, dim=0),  # (N, C, H, W)
-                    }
+        # Single-view mode: return single image
+        for attempt in range(max_attempts):
+            try:
+                actual_idx = (idx + attempt) % len(self.image_paths)
+                img_path = self.image_paths[actual_idx]
+                img_name = Path(img_path).stem
                 
-                except (RuntimeError, EOFError, zipfile.BadZipFile) as e:
-                    if attempt == 0:
-                        print(f"[WARN] Corrupted feature file in scene {scene_id}: {e}. Trying next scene...", flush=True)
-                    if attempt == max_attempts - 1:
-                        raise RuntimeError(
-                            f"Failed to load valid scene after {max_attempts} attempts starting from idx {idx}. "
-                            f"Multiple corrupted files detected. Check your feature dataset."
-                        )
-                    continue
-        else:
-            # Single-view mode: return single image
-            for attempt in range(max_attempts):
-                try:
-                    actual_idx = (idx + attempt) % len(self.image_paths)
-                    img_path = self.image_paths[actual_idx]
-                    img_name = Path(img_path).stem
-                    
-                    feat_path = self.features_dir / f"{img_name}.pt"
-                    if not feat_path.exists():
-                        raise FileNotFoundError(f"Teacher features not found: {feat_path}")
-                    
-                    teacher_feat = torch.load(feat_path, map_location="cpu", weights_only=False)
-                    if teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
-                        teacher_feat = teacher_feat.squeeze(0)
-                    
-                    return {
-                        "image_path": img_path,
-                        "teacher_features": teacher_feat,
-                    }
+                feat_path = self.features_dir / f"{img_name}.pt"
+                if not feat_path.exists():
+                    raise FileNotFoundError(f"Teacher features not found: {feat_path}")
                 
-                except (RuntimeError, EOFError, zipfile.BadZipFile) as e:
-                    if attempt == 0:
-                        print(f"[WARN] Corrupted feature file at idx {actual_idx} ({feat_path}): {e}. Trying next sample...", flush=True)
-                    if attempt == max_attempts - 1:
-                        raise RuntimeError(
-                            f"Failed to load valid sample after {max_attempts} attempts starting from idx {idx}. "
-                            f"Multiple corrupted files detected. Check your feature dataset."
-                        )
-                    continue
+                teacher_feat = torch.load(feat_path, map_location="cpu", weights_only=False)
+                if teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
+                    teacher_feat = teacher_feat.squeeze(0)
+                
+                return {
+                    "image_path": img_path,
+                    "teacher_features": teacher_feat,
+                }
+            
+            except (RuntimeError, EOFError, zipfile.BadZipFile) as e:
+                if attempt == 0:
+                    print(f"[WARN] Corrupted feature file at idx {actual_idx} ({feat_path}): {e}. Trying next sample...", flush=True)
+                if attempt == max_attempts - 1:
+                    raise RuntimeError(
+                        f"Failed to load valid sample after {max_attempts} attempts starting from idx {idx}. "
+                        f"Multiple corrupted files detected. Check your feature dataset."
+                    )
+                continue
 
 def collate_fn_distillation(batch: List[Dict]) -> Dict:
     """
     Collate function personalizzata per il dataset di distillazione.
-    Supporta sia single-view che multi-view mode.
     
     Single-view returns:
         - 'image_paths': lista di path (B)
         - 'teacher_features': Tensor (B,C,H,W)
-        - 'multi_view': False
-    
-    Multi-view returns:
-        - 'image_paths': lista flat di tutti i path (B*N view totali)
-        - 'teacher_features': Tensor (B*N,C,H,W)
-        - 'num_views_per_scene': lista con numero view per scena [N1, N2, ...]
-        - 'scene_ids': lista di scene_id
-        - 'multi_view': True
     """
-    # Detect mode from first item
-    if "scene_id" in batch[0]:
-        # Multi-view mode
-        all_paths = []
-        all_feats = []
-        num_views_per_scene = []
-        scene_ids = []
-        
-        for item in batch:
-            scene_ids.append(item["scene_id"])
-            view_paths = item["image_paths"]
-            all_paths.extend(view_paths)
-            # item["teacher_features"] shape: (N, C, H, W)
-            all_feats.append(item["teacher_features"])
-            num_views_per_scene.append(len(view_paths))
-        
-        # Concatenate all features: (B*N, C, H, W)
-        teacher_feats = torch.cat(all_feats, dim=0)
-        
-        return {
-            "image_paths": all_paths,
-            "teacher_features": teacher_feats,
-            "num_views_per_scene": num_views_per_scene,
-            "scene_ids": scene_ids,
-            "multi_view": True,
-        }
-    else:
-        # Single-view mode
-        image_paths = [item["image_path"] for item in batch]
-        teacher_feats = torch.stack([item["teacher_features"] for item in batch], dim=0)
-        
-        return {
-            "image_paths": image_paths,
-            "teacher_features": teacher_feats,
-            "multi_view": False,
-        }
+    image_paths = [item["image_path"] for item in batch]
+    teacher_feats = torch.stack([item["teacher_features"] for item in batch], dim=0)
+    
+    return {
+        "image_paths": image_paths,
+        "teacher_features": teacher_feats,
+    }
 
 # ==================== Loss Functions ====================
 class DistillationLoss(torch.nn.Module):
@@ -384,8 +295,6 @@ def build_distillation_dataloader(
     image_paths: Optional[List[str]] = None,
     pin_memory: bool = True,
     distributed: bool = False,
-    scenes_file: Optional[str] = None,
-    multi_view_mode: bool = False,
 ) -> DataLoader:
     """
     Build a DataLoader for distillation training/validation.
@@ -393,14 +302,12 @@ def build_distillation_dataloader(
     Args:
         image_dir: Directory containing images
         features_dir: Directory containing teacher features
-        batch_size: Batch size per GPU (scenes in multi-view, images in single-view)
+        batch_size: Batch size per GPU
         num_workers: Number of worker processes
         shuffle: Whether to shuffle the dataset (ignored if distributed=True)
-        image_paths: Optional list of specific image paths to use (single-view only)
+        image_paths: Optional list of specific image paths to use
         pin_memory: Whether to use pinned memory
         distributed: Whether to use DistributedSampler for multi-GPU training
-        scenes_file: Path to JSON file with scene->views mapping (multi-view only)
-        multi_view_mode: Enable multi-view mode
     
     Returns:
         DataLoader per distillazione con partizionamento dati per multi-GPU se distributed=True
@@ -409,8 +316,6 @@ def build_distillation_dataloader(
         image_dir=image_dir,
         features_dir=features_dir,
         image_paths=image_paths,
-        scenes_file=scenes_file,
-        multi_view_mode=multi_view_mode,
     )
     
     # DistributedSampler partiziona automaticamente il dataset tra le GPU
@@ -498,64 +403,6 @@ def forward_pass_distillation(
     
     return student_features
 
-def forward_pass_multiview_distillation(
-    model: torch.nn.Module,
-    batch: Dict,
-    device: torch.device,
-    use_amp: bool = True,
-    amp_dtype: str = "bf16",
-) -> torch.Tensor:
-    """
-    Esegue la forward di MapAnything per estrarre le feature dello studente in multi-view mode.
-    Processa ogni scena (gruppo di view) separatamente, poi concatena i risultati.
-    
-    Args:
-        model: MapAnything model
-        batch: Dict with 'image_paths' (flat list), 'num_views_per_scene' (list of ints)
-        device: Device to run on
-        use_amp: Whether to use automatic mixed precision
-        amp_dtype: AMP dtype ("bf16" or "fp16")
-    
-    Returns:
-        student_features: (B*N, C, H, W) tensor where B=num_scenes, N=views_per_scene
-    """
-    image_paths = batch["image_paths"]
-    num_views_per_scene = batch["num_views_per_scene"]
-    
-    if amp_dtype == "bf16" and torch.cuda.is_bf16_supported():
-        autocast_dtype = torch.bfloat16
-    else:
-        autocast_dtype = torch.float16
-    autocast_enabled = use_amp and (device.type == "cuda")
-    
-    # Raggruppa i path per scena
-    all_student_feats = []
-    start_idx = 0
-    for n_views in num_views_per_scene:
-        scene_paths = image_paths[start_idx:start_idx + n_views]
-        scene_views = load_images(scene_paths)
-        
-        for v in scene_views:
-            img = v.get("img")
-            if isinstance(img, torch.Tensor):
-                v["img"] = img.to(device, non_blocking=True)
-        
-        # Forward per questa scena (multi-view transformer lavora internamente)
-        with torch.autocast(device_type="cuda", enabled=autocast_enabled, dtype=autocast_dtype):
-            _ = model(scene_views, memory_efficient_inference=False)
-        
-        base_model = model.module if hasattr(model, "module") else model
-        student_feats = getattr(base_model, "_last_feat2_8x", None)
-        if student_feats is None:
-            raise KeyError("Student features not found (_last_feat2_8x)")
-        
-        # student_feats shape: (n_views, C, H, W)
-        all_student_feats.append(student_feats)
-        start_idx += n_views
-    
-    # Concatena tutte le feature: (B*N, C, H, W)
-    return torch.cat(all_student_feats, dim=0)
-
 def forward_pass_distillation_batch_safe(
     model: torch.nn.Module,
     image_paths: List[str],
@@ -586,7 +433,6 @@ def forward_pass_distillation_batch_safe(
         # Carica singola immagine
         views = load_images(
             folder_or_list=[img_path],
-            # size=518,
         )
         
         # FIX: Converti input a device/dtype DENTRO autocast context
@@ -685,25 +531,15 @@ def train_one_epoch_distillation(
         # Get data
         image_paths = batch["image_paths"]
         teacher_features = batch["teacher_features"].to(device, non_blocking=True)
-        is_multi_view = batch.get("multi_view", False)
         
-        # Forward pass to get student features (single-view or multi-view)
-        if is_multi_view:
-            student_features = forward_pass_multiview_distillation(
-                model=model,
-                batch=batch,
-                device=device,
-                use_amp=args.amp,
-                amp_dtype=args.amp_dtype,
-            )
-        else:
-            student_features = forward_pass_distillation_batch_safe(
-                model=model,
-                image_paths=image_paths,
-                device=device,
-                use_amp=args.amp,
-                amp_dtype=args.amp_dtype,
-            )
+        # Forward pass to get student features
+        student_features = forward_pass_distillation_batch_safe(
+            model=model,
+            image_paths=image_paths,
+            device=device,
+            use_amp=args.amp,
+            amp_dtype=args.amp_dtype,
+        )
 
         # print(f"[DEBUG] student_features shape: {student_features.shape}", flush=True)
         
@@ -863,25 +699,15 @@ def validate_one_epoch_distillation(
         # Get data
         image_paths = batch["image_paths"]
         teacher_features = batch["teacher_features"].to(device, non_blocking=True)
-        is_multi_view = batch.get("multi_view", False)
         
-        # Forward pass (single-view or multi-view)
-        if is_multi_view:
-            student_features = forward_pass_multiview_distillation(
-                model=model,
-                batch=batch,
-                device=device,
-                use_amp=args.amp,
-                amp_dtype=args.amp_dtype,
-            )
-        else:
-            student_features = forward_pass_distillation_batch_safe(
-                model=model,
-                image_paths=image_paths,
-                device=device,
-                use_amp=args.amp,
-                amp_dtype=args.amp_dtype,
-            )
+        # Forward pass
+        student_features = forward_pass_distillation_batch_safe(
+            model=model,
+            image_paths=image_paths,
+            device=device,
+            use_amp=args.amp,
+            amp_dtype=args.amp_dtype,
+        )
         
         # Resize student to match teacher if needed
         if student_features.shape[-2:] != teacher_features.shape[-2:]:
@@ -1094,8 +920,6 @@ def distill(args):
         shuffle=True,
         image_paths=train_image_paths,
         distributed=args.distributed.distributed,
-        scenes_file=getattr(args, 'train_scenes_file', None),
-        multi_view_mode=args.multi_view_mode,
     )
     
     print(f"Building val dataloader from {VAL_IMAGES_DIR}")
@@ -1117,8 +941,6 @@ def distill(args):
         shuffle=False,
         image_paths=val_image_paths,
         distributed=args.distributed.distributed,
-        scenes_file=getattr(args, 'val_scenes_file', None),
-        multi_view_mode=args.multi_view_mode,
     )
     
     # Carica il modello pre-addestrato (strict=False per permettere head extra)
@@ -1496,7 +1318,7 @@ def save_checkpoint_distillation(
     # Save sam2_compat if present
     if hasattr(model_without_ddp, "sam2_compat"):
         state["sam2_compat"] = model_without_ddp.sam2_compat.state_dict()
-        print("[INFO] sam2_compat state added to checkpoint")
+        # print("[INFO] sam2_compat state added to checkpoint")
 
     # Save unfrozen info_sharing blocks if any
     if args is not None and hasattr(model_without_ddp, "info_sharing") and getattr(args, "info_sharing_unfrozen_indices", []):
@@ -1572,9 +1394,6 @@ def get_args_parser():
     parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
     parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging")
     parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
-    parser.add_argument("--multi_view_mode", action="store_true", help="Enable multi-view mode (requires scenes JSON files)")
-    parser.add_argument("--train_scenes_file", type=str, default=None, help="Path to JSON file with train scene->views mapping (multi-view only)")
-    parser.add_argument("--val_scenes_file", type=str, default=None, help="Path to JSON file with val scene->views mapping (multi-view only)")
     
     # Mixed precision
     parser.add_argument("--amp", action="store_true", help="Use automatic mixed precision")
