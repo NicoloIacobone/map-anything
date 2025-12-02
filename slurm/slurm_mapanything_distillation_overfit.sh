@@ -77,7 +77,7 @@ python distillation_overfit.py \
   --epochs 2000 \
   --batch_size 2 \
   --accum_iter 1 \
-  --lr 2e-4 \
+  --lr 1e-4 \
   --num_workers 0 \
   --print_freq 500 \
   --eval_freq 1 \
@@ -85,7 +85,7 @@ python distillation_overfit.py \
   --save_visualizations \
   --amp \
   --use_wandb \
-  --wandb_name "uguale_baseline" \
+  --wandb_name "diverso_baseline" \
   --disable_scheduler \
   --debug_max_train_images 2 \
   --weight_decay 0
