@@ -79,15 +79,15 @@ if run_cluster:
         pass
 
     OUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"
-    DATASET = "coco2017"
     BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset"
+    DATASET = "coco2017"
     # DATASET = "ETH3D"
     SAM2_PATH = "/cluster/scratch/niacobone/sam2/checkpoints/sam2.1_hiera_large.pt"
     
 else:
     OUT_DIR = "/scratch2/nico/distillation/output"
-    DATASET = "coco2017"
     BASE_DIR = "/scratch2/nico/distillation/dataset"
+    DATASET = "coco2017"
     # DATASET = "ETH3D"
     SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
 
@@ -167,8 +167,8 @@ class DistillationDataset(Dataset):
     
     @staticmethod
     def _is_image_file(name: str) -> bool:
-        """Check if file is an image based on extension."""
-        return name.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"))
+        """Check if file is an image or multi-view numpy array."""
+        return name.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".npy"))
     
     def __len__(self) -> int:
         return len(self.image_paths)
@@ -190,6 +190,9 @@ class DistillationDataset(Dataset):
                 actual_idx = (idx + attempt) % len(self.image_paths)
                 img_path = self.image_paths[actual_idx]
                 img_name = Path(img_path).stem
+
+                # 🆕 Detect if multi-view .npy file
+                is_multiview_npy = img_path.lower().endswith(".npy")
                 
                 if self.mode == "precomputed":
                     # Load pre-computed features
@@ -200,22 +203,35 @@ class DistillationDataset(Dataset):
                     teacher_feat = torch.load(feat_path, map_location="cpu", weights_only=False)
                     if teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
                         teacher_feat = teacher_feat.squeeze(0)
+
+                    # 🆕 Load multi-view images if .npy
+                    images = None
+                    if is_multiview_npy:
+                        images = np.load(img_path)  # (N, H, W, 3)
                     
                     return {
-                        "image_path": img_path,
+                        "image_path": [img_path],
                         "teacher_features": teacher_feat,
                         "pil_image": None,
+                        "multiview_images": images,  # 🆕 Numpy array (N, H, W, 3)
                     }
                 
                 else:  # online mode
                     # Load PIL image for online extraction
                     from PIL import Image
-                    pil_img = Image.open(img_path).convert("RGB")
-                    
+                    if is_multiview_npy:
+                        # 🆕 Load multi-view numpy array
+                        images = np.load(img_path)  # (N, H, W, 3)
+                        pil_images = [Image.fromarray(img) for img in images]
+                    else:
+                        # Single image
+                        pil_images = [Image.open(img_path).convert("RGB")]
+
                     return {
-                        "image_path": img_path,
+                        "image_path": [img_path],
                         "teacher_features": None,  # Will be computed in collate_fn
-                        "pil_image": pil_img,
+                        "pil_image": pil_images,
+                        "multiview_images": None,
                     }
             
             except (RuntimeError, EOFError, zipfile.BadZipFile) as e:
@@ -237,19 +253,34 @@ def collate_fn_distillation(batch: List[Dict]) -> Dict:
         - 'image_paths': lista di path (B)
         - 'teacher_features': Tensor (B,C,H,W)
     """
-    image_paths = [item["image_path"] for item in batch]
+    # Flatten multi-view samples
+    image_paths = []
+    teacher_feats_list = []
+    pil_images_list = []
     
-    # Check mode (precomputed vs online)
-    if batch[0]["teacher_features"] is not None:
-        # Precomputed mode
-        teacher_feats = torch.stack([item["teacher_features"] for item in batch], dim=0)
-    else:
-        # Online mode: features will be extracted in train loop
-        # Return dummy tensor to maintain batch structure
-        teacher_feats = None
+    for item in batch:
+        multiview_images = item.get("multiview_images")
+        
+        if multiview_images is not None:
+            # Multi-view case: expand batch
+            N = len(multiview_images) if isinstance(multiview_images, list) else multiview_images.shape[0]
+            image_paths.extend([item["image_paths"][0]] * N)
+            
+            if item["teacher_features"] is not None:
+                # Assume teacher features are (N, C, H, W)
+                teacher_feats_list.append(item["teacher_features"])
+        else:
+            # Single-view case
+            image_paths.extend(item["image_paths"])
+            if item["teacher_features"] is not None:
+                teacher_feats_list.append(item["teacher_features"])
+        
+        if item["pil_images"] is not None:
+            pil_images_list.extend(item["pil_images"])
     
-    # Collect PIL images if in online mode
-    pil_images = [item["pil_image"] for item in batch] if batch[0]["pil_image"] is not None else None
+    # Stack teacher features
+    teacher_feats = torch.cat(teacher_feats_list, dim=0) if teacher_feats_list else None
+    pil_images = pil_images_list if pil_images_list else None
     
     return {
         "image_paths": image_paths,
