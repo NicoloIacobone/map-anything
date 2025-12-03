@@ -1178,6 +1178,12 @@ def distill(args):
 
         optimizer.load_state_dict(ckpt["optimizer"])
 
+        if args.disable_scheduler or args.override_lr:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = args.lr
+            print(f"[INFO] Overriding optimizer LR to {args.lr}")
+
+
         # Scheduler resume logic with T_max override
         if not args.disable_scheduler and "scheduler" in ckpt:
             scheduler.load_state_dict(ckpt["scheduler"])
@@ -1417,6 +1423,7 @@ def get_args_parser():
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size per GPU")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--override_lr", action="store_true", help="Override LR from checkpoint with --lr value")
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
     parser.add_argument("--lr_min", type=float, default=1e-6, help="Minimum learning rate for scheduler")
     parser.add_argument("--lr_scheduler_t_max", type=int, default=None, help="T_max for CosineAnnealingLR")
