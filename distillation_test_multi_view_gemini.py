@@ -636,6 +636,14 @@ def train_one_epoch_distillation(
         
         # Get data
         image_paths = batch["image_paths"]
+
+        # [DEBUG] Stampa scene correnti (directory padre delle immagini) in multi-view
+        if args.multi_view_mode:
+            try:
+                scene_dirs = sorted({str(Path(p).parent) for p in image_paths})
+                print(f"[Train][Scene] Batch {data_iter_step}: {scene_dirs}")
+            except Exception as _e:
+                pass
         
         # Extract or load teacher features
         if mode == "precomputed":
@@ -800,6 +808,14 @@ def validate_one_epoch_distillation(
             print(f"[Val] Feature extraction mode: {mode.upper()}")
         
         image_paths = batch["image_paths"]
+
+        # [DEBUG] Stampa scene correnti (directory padre delle immagini) in multi-view
+        if args.multi_view_mode:
+            try:
+                scene_dirs = sorted({str(Path(p).parent) for p in image_paths})
+                print(f"[Val][Scene] Batch {batch_idx}: {scene_dirs}")
+            except Exception as _e:
+                pass
         
         # Extract or load teacher features
         if mode == "precomputed":
