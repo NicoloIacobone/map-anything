@@ -87,7 +87,7 @@ if run_cluster:
 else:
     OUT_DIR = "/scratch2/nico/distillation/output"
     BASE_DIR = "/scratch2/nico/distillation/dataset"
-    DATASET = "test"
+    DATASET = "coco2017"
     # DATASET = "ETH3D"
     SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
 
