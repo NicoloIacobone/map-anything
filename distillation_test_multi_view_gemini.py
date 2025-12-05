@@ -1572,7 +1572,7 @@ def get_args_parser():
     parser.add_argument("--save_visualizations", action="store_true", help="Save PCA visualizations during validation")
     
     # Other
-    parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--disable_cudnn_benchmark", action="store_true", help="Disable cudnn benchmark")
     
     # Distributed (opzionale): abilita DDP; dist_url di solito 'env://' con torchrun; local_rank impostato da torchrun
