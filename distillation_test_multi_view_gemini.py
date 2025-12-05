@@ -637,12 +637,19 @@ def train_one_epoch_distillation(
         # Get data
         image_paths = batch["image_paths"]
 
-        # [DEBUG] Stampa scene correnti (directory padre delle immagini) in multi-view
+        # [DEBUG] Stampa scene e views (raggruppate per cartella padre)
         if args.multi_view_mode:
             try:
-                scene_dirs = sorted({str(Path(p).parent) for p in image_paths})
-                print(f"[Train][Scene] Batch {data_iter_step}: {scene_dirs}")
-            except Exception as _e:
+                by_scene = {}
+                for p in image_paths:
+                    scene = str(Path(p).parent)
+                    by_scene.setdefault(scene, []).append(p)
+                print(f"[Train][SceneViews] Batch {data_iter_step}:")
+                for scene, views in sorted(by_scene.items()):
+                    print(f"  {scene}")
+                    for v in views:
+                        print(f"    - {v}")
+            except Exception:
                 pass
         
         # Extract or load teacher features
@@ -809,12 +816,19 @@ def validate_one_epoch_distillation(
         
         image_paths = batch["image_paths"]
 
-        # [DEBUG] Stampa scene correnti (directory padre delle immagini) in multi-view
+        # [DEBUG] Stampa scene e views (raggruppate per cartella padre)
         if args.multi_view_mode:
             try:
-                scene_dirs = sorted({str(Path(p).parent) for p in image_paths})
-                print(f"[Val][Scene] Batch {batch_idx}: {scene_dirs}")
-            except Exception as _e:
+                by_scene = {}
+                for p in image_paths:
+                    scene = str(Path(p).parent)
+                    by_scene.setdefault(scene, []).append(p)
+                print(f"[Val][SceneViews] Batch {batch_idx}:")
+                for scene, views in sorted(by_scene.items()):
+                    print(f"  {scene}")
+                    for v in views:
+                        print(f"    - {v}")
+            except Exception:
                 pass
         
         # Extract or load teacher features
