@@ -80,15 +80,15 @@ if run_cluster:
 
     OUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"
     BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset"
-    DATASET = "coco2017"
-    # DATASET = "ETH3D"
+    # DATASET = "coco2017"
+    DATASET = "ETH3D"
     SAM2_PATH = "/cluster/scratch/niacobone/sam2/checkpoints/sam2.1_hiera_large.pt"
     
 else:
     OUT_DIR = "/scratch2/nico/distillation/output"
     BASE_DIR = "/scratch2/nico/distillation/dataset"
-    DATASET = "coco2017"
-    # DATASET = "ETH3D"
+    # DATASET = "coco2017"
+    DATASET = "ETH3D"
     SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
 
 # Dataset directory structure (consistent with distillation.py)
@@ -167,8 +167,8 @@ class DistillationDataset(Dataset):
     
     @staticmethod
     def _is_image_file(name: str) -> bool:
-        """Check if file is an image based on extension."""
-        return name.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"))
+        """Check if file is an image or multi-view numpy array."""
+        return name.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".npy"))
     
     def __len__(self) -> int:
         return len(self.image_paths)
@@ -177,7 +177,7 @@ class DistillationDataset(Dataset):
         """
         Ritorna:
             Single-view mode:
-                - 'image_path': path all'immagine (str)
+                - 'image_paths': path all'immagine (str)
                 - 'teacher_features': Tensor (C,H,W) se precomputed, None se online
                 - 'pil_image': PIL.Image se online, None se precomputed
         
@@ -190,6 +190,9 @@ class DistillationDataset(Dataset):
                 actual_idx = (idx + attempt) % len(self.image_paths)
                 img_path = self.image_paths[actual_idx]
                 img_name = Path(img_path).stem
+
+                # 🆕 Detect if multi-view .npy file
+                is_multiview_npy = img_path.lower().endswith(".npy")
                 
                 if self.mode == "precomputed":
                     # Load pre-computed features
@@ -200,22 +203,56 @@ class DistillationDataset(Dataset):
                     teacher_feat = torch.load(feat_path, map_location="cpu", weights_only=False)
                     if teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
                         teacher_feat = teacher_feat.squeeze(0)
+
+                    # 🆕 Load multi-view images if .npy
+                    images = None
+                    if is_multiview_npy:
+                        images = np.load(img_path)  # (N, H, W, 3)
                     
                     return {
-                        "image_path": img_path,
+                        "image_paths": [img_path],
                         "teacher_features": teacher_feat,
-                        "pil_image": None,
+                        "pil_images": None,
+                        "multiview_images": images,  # 🆕 Numpy array (N, H, W, 3)
                     }
                 
                 else:  # online mode
                     # Load PIL image for online extraction
                     from PIL import Image
-                    pil_img = Image.open(img_path).convert("RGB")
-                    
+                    if is_multiview_npy:
+                        # 🆕 Load multi-view numpy array
+                        images = np.load(img_path)  # Shape varies: (N, C, H, W) or (N, H, W, C)
+                        print(f"[DEBUG] Loaded {img_path}: shape={images.shape}, dtype={images.dtype}")
+                        
+                        # Handle both (N, C, H, W) and (N, H, W, C) formats
+                        if images.ndim == 4:
+                            # Check if channels-first (N, 3, H, W) or channels-last (N, H, W, 3)
+                            if images.shape[1] == 3:
+                                # Channels-first: (N, 3, H, W) -> (N, H, W, 3)
+                                images = np.transpose(images, (0, 2, 3, 1))
+                                print(f"[DEBUG] Transposed to channels-last: {images.shape}")
+                            elif images.shape[-1] != 3:
+                                raise ValueError(
+                                    f"Multi-view .npy file has invalid shape {images.shape}. "
+                                    f"Expected (N, H, W, 3) or (N, 3, H, W), got {images.shape}"
+                                )
+                            # Now guaranteed to be (N, H, W, 3)
+                        else:
+                            raise ValueError(
+                                f"Multi-view .npy file must be 4D, got shape {images.shape}"
+                            )
+                        
+                        # Convert each view to PIL Image
+                        pil_images = [Image.fromarray(images[i]) for i in range(len(images))]
+                    else:
+                        # Single image
+                        pil_images = [Image.open(img_path).convert("RGB")]
+
                     return {
-                        "image_path": img_path,
+                        "image_paths": [img_path],
                         "teacher_features": None,  # Will be computed in collate_fn
-                        "pil_image": pil_img,
+                        "pil_images": pil_images,
+                        "multiview_images": None,
                     }
             
             except (RuntimeError, EOFError, zipfile.BadZipFile) as e:
@@ -237,19 +274,34 @@ def collate_fn_distillation(batch: List[Dict]) -> Dict:
         - 'image_paths': lista di path (B)
         - 'teacher_features': Tensor (B,C,H,W)
     """
-    image_paths = [item["image_path"] for item in batch]
+    # Flatten multi-view samples
+    image_paths = []
+    teacher_feats_list = []
+    pil_images_list = []
     
-    # Check mode (precomputed vs online)
-    if batch[0]["teacher_features"] is not None:
-        # Precomputed mode
-        teacher_feats = torch.stack([item["teacher_features"] for item in batch], dim=0)
-    else:
-        # Online mode: features will be extracted in train loop
-        # Return dummy tensor to maintain batch structure
-        teacher_feats = None
+    for item in batch:
+        multiview_images = item.get("multiview_images")
+        
+        if multiview_images is not None:
+            # Multi-view case: expand batch
+            N = len(multiview_images) if isinstance(multiview_images, list) else multiview_images.shape[0]
+            image_paths.extend([item["image_paths"][0]] * N)
+            
+            if item["teacher_features"] is not None:
+                # Assume teacher features are (N, C, H, W)
+                teacher_feats_list.append(item["teacher_features"])
+        else:
+            # Single-view case
+            image_paths.extend(item["image_paths"])
+            if item["teacher_features"] is not None:
+                teacher_feats_list.append(item["teacher_features"])
+        
+        if item.get("pil_images") is not None:
+            pil_images_list.extend(item["pil_images"])
     
-    # Collect PIL images if in online mode
-    pil_images = [item["pil_image"] for item in batch] if batch[0]["pil_image"] is not None else None
+    # Stack teacher features
+    teacher_feats = torch.cat(teacher_feats_list, dim=0) if teacher_feats_list else None
+    pil_images = pil_images_list if pil_images_list else None
     
     return {
         "image_paths": image_paths,
@@ -430,8 +482,9 @@ def build_distillation_dataloader(
 # ==================== Training Functions ====================
 def forward_pass_distillation_unified(
     model: torch.nn.Module,
-    image_paths: List[str],
-    device: torch.device,
+    image_paths: Optional[List[str]] = None,
+    pil_images: Optional[List] = None,
+    device: torch.device = None,
     use_amp: bool = False,
     amp_dtype: str = "bf16",
     process_individually: bool = True,
@@ -442,7 +495,8 @@ def forward_pass_distillation_unified(
     
     Args:
         model: MapAnything model
-        image_paths: Lista di path immagini (flat list)
+        image_paths: Lista di path immagini (per immagini standard)
+        pil_images: Lista di PIL.Image objects (per multi-view .npy già caricati)
         device: Device CUDA
         use_amp: Se usare mixed precision
         amp_dtype: Tipo AMP ("bf16" o "fp16")
@@ -452,84 +506,98 @@ def forward_pass_distillation_unified(
                              (cross-attention applicato, multi-view).
     
     Returns:
-        torch.Tensor: Student features (B, C, H, W) dove B = len(image_paths)
+        torch.Tensor: Student features (B, C, H, W) dove B = len(image_paths) o len(pil_images)
     
-    Examples:
-        >>> # Single-view batch-safe (immagini indipendenti)
-        >>> features = forward_pass_distillation_unified(
-        ...     model, ["img1.jpg", "img2.jpg"], device,
-        ...     process_individually=True
-        ... )
-        >>> features.shape  # (2, 256, 64, 64) - NO cross-attention
-        
-        >>> # Multi-view (gruppo di views della stessa scena)
-        >>> features = forward_pass_distillation_unified(
-        ...     model, ["scene1_v0.jpg", "scene1_v1.jpg"], device,
-        ...     process_individually=False
-        ... )
-        >>> features.shape  # (2, 256, 64, 64) - CON cross-attention
+    Note:
+        - Se pil_images è fornito, viene usato quello (ignora image_paths)
+        - Se solo image_paths è fornito, carica le immagini con load_images()
     """
-    from mapanything.utils.image import load_images
+    if pil_images is None and image_paths is None:
+        raise ValueError("Either pil_images or image_paths must be provided")
+    
+    from torchvision import transforms
     
     amp_dtype_torch = torch.bfloat16 if amp_dtype == "bf16" else torch.float16
     
     if process_individually:
         # ========== SINGLE-VIEW BATCH-SAFE ==========
-        # Processa ogni immagine separatamente per evitare cross-attention
         all_features = []
         
-        for img_path in image_paths:
-            # Carica singola immagine come lista di 1 view
-            views = load_images([img_path])
+        # Determine source
+        if pil_images is not None:
+            sources = pil_images
+            use_pil = True
+        else:
+            sources = image_paths
+            use_pil = False
+        
+        for source in sources:
+            if use_pil:
+                # Create views from PIL image
+                transform = transforms.ToTensor()
+                img_tensor = transform(source).unsqueeze(0)  # (1, 3, H, W)
+                views = [{
+                    "img": img_tensor,
+                    "img_hw": (source.height, source.width),
+                }]
+            else:
+                # Load from path
+                from mapanything.utils.image import load_images
+                views = load_images([source])
             
             # Forward con AMP
             with torch.autocast("cuda", enabled=use_amp, dtype=amp_dtype_torch):
-                # Sposta su device DENTRO autocast per fix dtype mismatch
                 for v in views:
                     img = v.get("img")
                     if isinstance(img, torch.Tensor):
                         v["img"] = img.to(device, non_blocking=True)
                 
-                # MapAnything vede SINGOLA VIEW → NO cross-attention
                 _ = model(views, memory_efficient_inference=False)
             
-            # Estrai feature dalla view 0 (unica view)
+            # Estrai feature
             base_model = model.module if hasattr(model, "module") else model
             student_features_single = getattr(base_model, "_last_feat2_8x", None)
             if student_features_single is None:
-                raise KeyError(
-                    "Student features not found on model (_last_feat2_8x). "
-                    "Ensure dpt_feature_head_2 is present and forward populates this attribute."
-                )
+                raise KeyError("Student features not found (_last_feat2_8x)")
             
             all_features.append(student_features_single)
         
-        # Concatena feature di tutte le immagini
-        return torch.cat(all_features, dim=0)  # (B, C, H, W)
+        return torch.cat(all_features, dim=0)
     
     else:
         # ========== MULTI-VIEW ==========
-        # Carica tutte le immagini insieme (cross-attention applicato)
-        views = load_images(image_paths)
+        if pil_images is not None:
+            # Create views from PIL images
+            transform = transforms.ToTensor()
+            views = []
+            for pil_img in pil_images:
+                img_tensor = transform(pil_img).unsqueeze(0)
+                views.append({
+                    "img": img_tensor,
+                    "img_hw": (pil_img.height, pil_img.width),
+                    "data_norm_type": ["dinov2"],
+                })
+        else:
+            # Load from paths
+            from mapanything.utils.image import load_images
+            views = load_images(image_paths)
         
         # Forward con AMP
         with torch.autocast("cuda", enabled=use_amp, dtype=amp_dtype_torch):
-            # Sposta su device DENTRO autocast
             for v in views:
                 img = v.get("img")
                 if isinstance(img, torch.Tensor):
                     v["img"] = img.to(device, non_blocking=True)
             
-            # MapAnything vede N VIEWS → cross-attention tra tutte
             _ = model(views, memory_efficient_inference=False)
         
-        # Estrai feature (già tutte in un batch)
+        # Estrai feature
         base_model = model.module if hasattr(model, "module") else model
         student_features = getattr(base_model, "_last_feat2_8x", None)
         if student_features is None:
             raise KeyError("Student features not found (_last_feat2_8x)")
         
-        return student_features  # (B, C, H, W) dove B = len(image_paths)
+        return student_features
 
 def train_one_epoch_distillation(
     model: torch.nn.Module,
@@ -588,6 +656,7 @@ def train_one_epoch_distillation(
         
         # Get data
         image_paths = batch["image_paths"]
+        pil_images = batch.get("pil_images")  # 🆕 Get PIL images from batch
         
         # Extract or load teacher features
         if mode == "precomputed":
@@ -600,10 +669,10 @@ def train_one_epoch_distillation(
             with torch.no_grad():
                 teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
         
-        # Forward pass to get student features
         student_features = forward_pass_distillation_unified(
             model=model,
-            image_paths=image_paths,
+            image_paths=image_paths if pil_images is None else None,
+            pil_images=pil_images,
             device=device,
             use_amp=args.amp,
             amp_dtype=args.amp_dtype,
@@ -619,7 +688,7 @@ def train_one_epoch_distillation(
                 mode="bilinear",
                 align_corners=False,
             )
-
+        
         # Compute loss
         loss, loss_details = criterion(student_features, teacher_features)
         mse_value = float(loss_details.get("mse_loss", 0.0))
@@ -757,13 +826,14 @@ def validate_one_epoch_distillation(
         if mode == "precomputed":
             teacher_features = batch["teacher_features"].to(device, non_blocking=True)
         else:
-            pil_images = batch["pil_images"]
+            pil_images = batch.get("pil_images")    
             teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
         
         # Forward pass
         student_features = forward_pass_distillation_unified(
             model=model,
-            image_paths=image_paths,
+            image_paths=image_paths if pil_images is None else None,
+            pil_images=pil_images,
             device=device,
             use_amp=args.amp,
             amp_dtype=args.amp_dtype,
@@ -1475,6 +1545,7 @@ def get_args_parser():
     parser.add_argument("--num_info_sharing_blocks_unfreeze", type=int, default=0, help="Number of last info_sharing transformer blocks to unfreeze")
     
     # comando debug pc lab
+    # python distillation.py --epochs 5 --log_freq 1 --save_freq 1 --save_visualizations --batch_size 1 --multi_view_mode 
     # python distillation.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2
     # python distillation.py --epochs 10 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 4 --resume_ckpt /scratch2/nico/distillation/output/distill_20251125_143157/checkpoints/checkpoint_best.pth
 
