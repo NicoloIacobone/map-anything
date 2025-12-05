@@ -638,19 +638,19 @@ def train_one_epoch_distillation(
         image_paths = batch["image_paths"]
 
         # [DEBUG] Stampa scene e views (raggruppate per cartella padre)
-        if args.multi_view_mode:
-            try:
-                by_scene = {}
-                for p in image_paths:
-                    scene = str(Path(p).parent)
-                    by_scene.setdefault(scene, []).append(p)
-                print(f"[Train][SceneViews] Batch {data_iter_step}:")
-                for scene, views in sorted(by_scene.items()):
-                    print(f"  {scene}")
-                    for v in views:
-                        print(f"    - {v}")
-            except Exception:
-                pass
+        # if args.multi_view_mode:
+        #     try:
+        #         by_scene = {}
+        #         for p in image_paths:
+        #             scene = str(Path(p).parent)
+        #             by_scene.setdefault(scene, []).append(p)
+        #         print(f"[Train][SceneViews] Batch {data_iter_step}:")
+        #         for scene, views in sorted(by_scene.items()):
+        #             print(f"  {scene}")
+        #             for v in views:
+        #                 print(f"    - {v}")
+        #     except Exception:
+        #         pass
         
         # Extract or load teacher features
         if mode == "precomputed":
@@ -817,19 +817,19 @@ def validate_one_epoch_distillation(
         image_paths = batch["image_paths"]
 
         # [DEBUG] Stampa scene e views (raggruppate per cartella padre)
-        if args.multi_view_mode:
-            try:
-                by_scene = {}
-                for p in image_paths:
-                    scene = str(Path(p).parent)
-                    by_scene.setdefault(scene, []).append(p)
-                print(f"[Val][SceneViews] Batch {batch_idx}:")
-                for scene, views in sorted(by_scene.items()):
-                    print(f"  {scene}")
-                    for v in views:
-                        print(f"    - {v}")
-            except Exception:
-                pass
+        # if args.multi_view_mode:
+        #     try:
+        #         by_scene = {}
+        #         for p in image_paths:
+        #             scene = str(Path(p).parent)
+        #             by_scene.setdefault(scene, []).append(p)
+        #         print(f"[Val][SceneViews] Batch {batch_idx}:")
+        #         for scene, views in sorted(by_scene.items()):
+        #             print(f"  {scene}")
+        #             for v in views:
+        #                 print(f"    - {v}")
+        #     except Exception:
+        #         pass
         
         # Extract or load teacher features
         if mode == "precomputed":
@@ -1019,15 +1019,20 @@ def distill(args):
         teacher_extractor.to(device)
     
     # ========== BUILD DATALOADERS ==========
+    
+    # --- 1. TRAIN DATALOADER ---
     print(f"Building train dataloader from {TRAIN_IMAGES_DIR}")
     train_image_paths = None
-    if args.debug_max_train_images:
+    
+    # Logica Debug per SINGLE-VIEW: filtriamo la lista delle immagini PRIMA di creare il loader
+    if args.debug_max_train_images and not args.multi_view_mode:
         all_imgs = sorted([
             os.path.join(TRAIN_IMAGES_DIR, f)
             for f in os.listdir(TRAIN_IMAGES_DIR)
             if DistillationDataset._is_image_file(f)
         ])
         train_image_paths = random.sample(all_imgs, min(args.debug_max_train_images, len(all_imgs)))
+        print(f"[DEBUG] Single-View: Limited train to {len(train_image_paths)} IMAGES")
     
     data_loader_train = build_distillation_dataloader(
         image_dir=TRAIN_IMAGES_DIR,
@@ -1036,22 +1041,34 @@ def distill(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         shuffle=True,
-        image_paths=train_image_paths,
+        image_paths=train_image_paths, # Sarà None in multi-view mode
         distributed=args.distributed.distributed,
         multi_view_mode=args.multi_view_mode,
-        split=TRAIN_SPLIT,             # "train2017" o "train" -> Attiva Random Sampling
+        split=TRAIN_SPLIT,             # "train": attiva Random Sampling delle view
         max_views_per_scene=args.max_views,
     )
+
+    # Logica Debug per MULTI-VIEW: tagliamo la lista delle scene DOPO aver creato il dataset
+    if args.multi_view_mode and args.debug_max_train_images:
+        original_len = len(data_loader_train.dataset.samples)
+        limit = min(args.debug_max_train_images, original_len)
+        data_loader_train.dataset.samples = data_loader_train.dataset.samples[:limit]
+        print(f"[DEBUG] Multi-View: Limited train to first {limit} SCENES (was {original_len})")
+
     
+    # --- 2. VAL DATALOADER ---
     print(f"Building val dataloader from {VAL_IMAGES_DIR}")
     val_image_paths = None
-    if args.debug_max_val_images:
+    
+    # Logica Debug per SINGLE-VIEW
+    if args.debug_max_val_images and not args.multi_view_mode:
         all_val_imgs = sorted([
             os.path.join(VAL_IMAGES_DIR, f)
             for f in os.listdir(VAL_IMAGES_DIR)
             if DistillationDataset._is_image_file(f)
         ])
         val_image_paths = all_val_imgs[:args.debug_max_val_images]
+        print(f"[DEBUG] Single-View: Limited val to {len(val_image_paths)} IMAGES")
     
     data_loader_val = build_distillation_dataloader(
         image_dir=VAL_IMAGES_DIR,
@@ -1060,12 +1077,19 @@ def distill(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         shuffle=False,
-        image_paths=val_image_paths,
+        image_paths=val_image_paths, # Sarà None in multi-view mode
         distributed=args.distributed.distributed,
         multi_view_mode=args.multi_view_mode,
-        split=VAL_SPLIT,               # "val2017" o "val" -> Attiva Deterministic Slicing
+        split=VAL_SPLIT,               # "val": attiva Deterministic Slicing (prime N views)
         max_views_per_scene=args.max_views,
     )
+
+    # Logica Debug per MULTI-VIEW
+    if args.multi_view_mode and args.debug_max_val_images:
+        original_len = len(data_loader_val.dataset.samples)
+        limit = min(args.debug_max_val_images, original_len)
+        data_loader_val.dataset.samples = data_loader_val.dataset.samples[:limit]
+        print(f"[DEBUG] Multi-View: Limited val to first {limit} SCENES (was {original_len})")
     
     # ========== LOAD MODEL ==========
     print("Loading MapAnything model...")
