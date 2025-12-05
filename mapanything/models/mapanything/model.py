@@ -1613,6 +1613,27 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         
         # Combine all images into view-centric representation
         # Output is a list containing the encoded features for all N views after information sharing.
+        # info_sharing_input = MultiViewTransformerInput(
+        #     features=all_encoder_features_across_views,
+        #     additional_input_tokens=input_scale_token,
+        # )
+        # if self.info_sharing_return_type == "no_intermediate_features":
+        #     final_info_sharing_multi_view_feat = self.info_sharing(info_sharing_input)
+        # elif self.info_sharing_return_type == "intermediate_features":
+        #     (
+        #         final_info_sharing_multi_view_feat,
+        #         intermediate_info_sharing_multi_view_feat,
+        #     ) = self.info_sharing(info_sharing_input)
+
+        num_views_debug = len(all_encoder_features_across_views)
+        feat_shapes_debug = [tuple(f.shape) for f in all_encoder_features_across_views]
+        self._last_num_views = num_views_debug  # per eventuali verifiche esterne
+        if num_views_debug <= 1:
+            print(f"[WARN][MV] Multi-view NON attivo: num_views={num_views_debug}, feat_shapes={feat_shapes_debug}")
+        else:
+            print(f"[OK][MV] Multi-view ATTIVO: num_views={num_views_debug}, feat_shapes={feat_shapes_debug}")
+        assert num_views_debug > 1, "Atteso >1 vista per attivare il multi-view transformer (cross-attention)"
+
         info_sharing_input = MultiViewTransformerInput(
             features=all_encoder_features_across_views,
             additional_input_tokens=input_scale_token,
