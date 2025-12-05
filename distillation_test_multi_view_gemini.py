@@ -20,7 +20,6 @@ import os
 import random
 import sys
 import time
-import zipfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -126,13 +125,17 @@ class DistillationDataset(Dataset):
         teacher_extractor: Optional[callable] = None,
         image_paths: Optional[List[str]] = None,
         transform=None,
-        multi_view_mode: bool = False,  # <--- NUOVO FLAG
+        multi_view_mode: bool = False,
+        max_views_per_scene: int = 6,
+        split: str = "train",
     ):
         self.image_dir = Path(image_dir)
         self.features_dir = Path(features_dir) if features_dir else None
         self.teacher_extractor = teacher_extractor
         self.transform = transform
         self.multi_view_mode = multi_view_mode
+        self.max_views_per_scene = max_views_per_scene
+        self.is_train = "train" in split.lower()
         
         # Validation
         if self.features_dir is None and self.teacher_extractor is None:
@@ -159,8 +162,7 @@ class DistillationDataset(Dataset):
                     ])
                     if len(views) > 0:
                         self.samples.append(views) # List[str]
-                print(f"[Dataset] Mode: MULTI-VIEW (Scenes)")
-                print(f"[Dataset] Found {len(self.samples)} scenes in {image_dir}")
+                print(f"[Dataset] Mode: MULTI-VIEW (Scenes) | Split: {split} | Max Views: {self.max_views_per_scene}")
             else:
                 # --- LOGICA SINGLE-VIEW ---
                 # Ogni "sample" è una stringa (path immagine)
@@ -212,6 +214,18 @@ class DistillationDataset(Dataset):
         
         # Normalizziamo tutto a liste per gestire single/multi uniformemente qui dentro
         img_paths = sample if isinstance(sample, list) else [sample]
+
+        # ----- LOGICA DI SUBSAMPLING -----
+        if self.multi_view_mode and len(img_paths) > self.max_views_per_scene:
+            if self.is_train:
+                # TRAINING: Random Sampling (Augmentation)
+                # sorted() dopo sample assicura che l'ordine temporale/numerico sia mantenuto
+                img_paths = sorted(random.sample(img_paths, self.max_views_per_scene))
+            else:
+                # VALIDATION: Deterministic Slicing (Consistency)
+                # Prende sempre le prime N view in ordine alfabetico/numerico
+                img_paths = sorted(img_paths)[:self.max_views_per_scene]
+        # -----------------------------------
         
         try:
             teacher_feats_list = []
@@ -409,6 +423,8 @@ def build_distillation_dataloader(
     pin_memory: bool = True,
     distributed: bool = False,
     multi_view_mode: bool = False,
+    split: str = "train",
+    max_views_per_scene: int = 6,
 ) -> DataLoader:
     """
     Build a DataLoader for distillation training/validation.
@@ -433,6 +449,8 @@ def build_distillation_dataloader(
         teacher_extractor=teacher_extractor,
         image_paths=image_paths,
         multi_view_mode=multi_view_mode,
+        split=split,
+        max_views_per_scene=max_views_per_scene,
     )
     
     sampler = None
@@ -990,7 +1008,9 @@ def distill(args):
         shuffle=True,
         image_paths=train_image_paths,
         distributed=args.distributed.distributed,
-        multi_view_mode=args.multi_view_mode, # <--- AGGIUNTA
+        multi_view_mode=args.multi_view_mode,
+        split=TRAIN_SPLIT,             # "train2017" o "train" -> Attiva Random Sampling
+        max_views_per_scene=args.max_views,
     )
     
     print(f"Building val dataloader from {VAL_IMAGES_DIR}")
@@ -1013,6 +1033,8 @@ def distill(args):
         image_paths=val_image_paths,
         distributed=args.distributed.distributed,
         multi_view_mode=args.multi_view_mode,
+        split=VAL_SPLIT,               # "val2017" o "val" -> Attiva Deterministic Slicing
+        max_views_per_scene=args.max_views,
     )
     
     # ========== LOAD MODEL ==========
@@ -1476,6 +1498,7 @@ def get_args_parser():
     parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging")
     parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
     parser.add_argument("--precomputed_features", action="store_true", help="Use precomputed features from disk")
+    parser.add_argument("--max_views", type=int, default=6, help="Max views per scene. Train: Random Sample. Val: First N.")
     
     # Mixed precision
     parser.add_argument("--amp", action="store_true", help="Use automatic mixed precision")
