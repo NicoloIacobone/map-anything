@@ -81,8 +81,8 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --wandb_name "distillation_10_MV" \
   --epochs 2000 \
   --lr 1e-3 \
-  --lr_scheduler step \
-  --lr_decay_steps 1000 \
+  --lr_scheduler plateau \
+  --plateau_patience 10 \
   --amp \
   --save_freq 5 \
   --print_freq 100 \
