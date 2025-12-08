@@ -1234,23 +1234,22 @@ def distill(args):
     
     # Scheduler LR: Cosine annealing per epoca, coerente con distillation.py
     scheduler = None
-    if not args.disable_scheduler:
-        if args.lr_scheduler == "cosine":
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer,
-                T_max=args.lr_scheduler_t_max,
-                eta_min=args.lr_min,
-            )
-            print(f"[INFO] Using CosineAnnealingLR with T_max={args.lr_scheduler_t_max}, eta_min={args.lr_min}")
-        elif args.lr_scheduler == "step":
-            scheduler = optim.lr_scheduler.StepLR(
-                optimizer,
-                step_size=args.lr_decay_steps,
-                gamma=0.1,
-            )
-            print(f"[INFO] Using StepLR with step_size={args.lr_decay_steps}, gamma=0.1")
-        else:
-            print(f"[INFO] Learning rate scheduler disabled. LR will remain constant at {args.lr}")
+    if args.lr_scheduler == "cosine":
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args.lr_scheduler_t_max,
+            eta_min=args.lr_min,
+        )
+        print(f"[INFO] Using CosineAnnealingLR with T_max={args.lr_scheduler_t_max}, eta_min={args.lr_min}")
+    elif args.lr_scheduler == "step":
+        scheduler = optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=args.lr_decay_steps,
+            gamma=0.1,
+        )
+        print(f"[INFO] Using StepLR with step_size={args.lr_decay_steps}, gamma=0.1")
+    else:
+        print(f"[INFO] Learning rate scheduler disabled. LR will remain constant at {args.lr}")
     
     # Resume: ricarica head 2 + optimizer + scheduler; riparte dall'epoca successiva
     start_epoch = 0
@@ -1600,7 +1599,7 @@ def get_args_parser():
     # comando debug pc lab
     # python distillation_test_multi_view_gemini.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2
     # python distillation_test_multi_view_gemini.py --epochs 10 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 4 --resume_ckpt /scratch2/nico/distillation/output/distill_20251125_143157/checkpoints/checkpoint_best.pth
-    # python distillation_test_multi_view_gemini.py --epochs 10 --log_freq 1 --save_freq 1 --save_visualizations --multi_view_mode --disable_scheduler
+    # python distillation_test_multi_view_gemini.py --epochs 10 --log_freq 1 --save_freq 1 --save_visualizations --multi_view_mode
 
     # Proporzioni
     # batch_size 1, lr 1e-4, accum_iter 1
