@@ -20,6 +20,7 @@ import os
 import random
 import sys
 import time
+import zipfile
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -86,15 +87,15 @@ if run_cluster:
 else:
     OUT_DIR = "/scratch2/nico/distillation/output"
     BASE_DIR = "/scratch2/nico/distillation/dataset"
-    # DATASET = "coco2017"
-    DATASET = "ETH3D"
+    DATASET = "coco2017"
+    # DATASET = "ETH3D"
     SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
 
 # Dataset directory structure (consistent with distillation.py)
 if DATASET == "coco2017":
     TRAIN_SPLIT = "train2017"
     VAL_SPLIT = "val2017"
-else:
+elif DATASET == "ETH3D":
     TRAIN_SPLIT = "train"
     VAL_SPLIT = "val"
 
@@ -115,7 +116,16 @@ print(f"[INFO] Using VAL_FEATURES_DIR: {VAL_FEATURES_DIR}")
 # ==================== Dataset Classes ====================
 class DistillationDataset(Dataset):
     """
-    Dataset per la distillazione: supporta Single-View (lista piatta) e Multi-View (scene folders).
+    Dataset per la distillazione: carica immagini e le corrispondenti feature del teacher.
+    
+    Args:
+        image_dir: cartella contenente le immagini.
+        features_dir: cartella con le feature del teacher pre-computate (.pt per immagine),
+            salvate come <basename>.pt. Se None, le feature saranno calcolate online.
+        teacher_extractor: funzione che estrae feature online (richiesto se features_dir=None).
+        image_paths: lista opzionale di path da usare; se None, scansiona image_dir.
+        transform: eventuale trasformazione (non usata direttamente; il caricamento
+            vero per il modello avviene con load_images nella forward stage).
     """
     
     def __init__(
@@ -125,55 +135,31 @@ class DistillationDataset(Dataset):
         teacher_extractor: Optional[callable] = None,
         image_paths: Optional[List[str]] = None,
         transform=None,
-        multi_view_mode: bool = False,
-        max_views_per_scene: int = 6,
-        split: str = "train",
     ):
         self.image_dir = Path(image_dir)
         self.features_dir = Path(features_dir) if features_dir else None
         self.teacher_extractor = teacher_extractor
         self.transform = transform
-        self.multi_view_mode = multi_view_mode
-        self.max_views_per_scene = max_views_per_scene
-        self.is_train = "train" in split.lower()
         
-        # Validation
+        # Validation: at least one method must be available
         if self.features_dir is None and self.teacher_extractor is None:
             raise ValueError("Either features_dir or teacher_extractor must be provided")
         
+        # Mode detection
         self.mode = "precomputed" if self.features_dir else "online"
         
-        # Discovery dei samples
-        self.samples = [] 
-        if image_paths is not None:
-            # Se paths forniti manualmente (es. debug), usiamo quelli.
-            # In multi_view, si assume che image_paths sia una lista di liste o gestita esternamente,
-            # ma per semplicità qui manteniamo la logica base o appiattita.
-            self.samples = image_paths
+        # Single-view mode: one image per sample
+        if image_paths is None:
+            self.image_paths = sorted([
+                str(self.image_dir / f)
+                for f in os.listdir(self.image_dir)
+                if self._is_image_file(f)
+            ])
         else:
-            if self.multi_view_mode:
-                # --- LOGICA MULTI-VIEW (SCENE) ---
-                # Ogni "sample" è una lista di path immagini appartenenti alla stessa scena
-                scene_dirs = sorted([d for d in self.image_dir.iterdir() if d.is_dir()])
-                for scene in scene_dirs:
-                    views = sorted([
-                        str(f) for f in scene.iterdir() 
-                        if self._is_image_file(f.name)
-                    ])
-                    if len(views) > 0:
-                        self.samples.append(views) # List[str]
-                print(f"[Dataset] Mode: MULTI-VIEW (Scenes) | Split: {split} | Max Views: {self.max_views_per_scene}")
-            else:
-                # --- LOGICA SINGLE-VIEW ---
-                # Ogni "sample" è una stringa (path immagine)
-                self.samples = sorted([
-                    str(self.image_dir / f)
-                    for f in os.listdir(self.image_dir)
-                    if self._is_image_file(f)
-                ])
-                print(f"[Dataset] Mode: SINGLE-VIEW (Images)")
-                print(f"[Dataset] Found {len(self.samples)} images in {image_dir}")
-
+            self.image_paths = image_paths
+        
+        print(f"[Dataset] Mode: {self.mode.upper()}")
+        print(f"[Dataset] Loaded {len(self.image_paths)} images (single-view) from {image_dir}")
         if self.mode == "precomputed":
             print(f"[Dataset] Using pre-computed features from {self.features_dir}")
         else:
@@ -181,122 +167,94 @@ class DistillationDataset(Dataset):
     
     @staticmethod
     def _is_image_file(name: str) -> bool:
+        """Check if file is an image based on extension."""
         return name.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"))
     
     def __len__(self) -> int:
-        return len(self.samples)
+        return len(self.image_paths)
     
-    def _load_single_feature(self, img_path: str) -> torch.Tensor:
-        """Helper per caricare la feature di una singola immagine"""
-        rel_path = Path(img_path).relative_to(self.image_dir)
-        # La feature ha la stessa struttura di cartelle dell'immagine ma estensione .pt
-        feat_path = self.features_dir / rel_path.with_suffix(".pt")
-        
-        if not feat_path.exists():
-             # Fallback: prova flat se non trova struttura ricorsiva
-            feat_path_flat = self.features_dir / Path(img_path).stem
-            feat_path_flat = feat_path_flat.with_suffix(".pt")
-            if not feat_path_flat.exists():
-                raise FileNotFoundError(f"Teacher features not found: {feat_path}")
-            feat_path = feat_path_flat
-
-        teacher_feat = torch.load(feat_path, map_location="cpu", weights_only=False)
-        if teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
-            teacher_feat = teacher_feat.squeeze(0)
-        return teacher_feat # (C, H, W)
-
     def __getitem__(self, idx: int) -> Dict:
         """
-        Ritorna un dizionario contenente paths, features e (opzionalmente) PIL images.
-        Se Multi-View: ritorna le liste per l'intera scena.
+        Ritorna:
+            Single-view mode:
+                - 'image_path': path all'immagine (str)
+                - 'teacher_features': Tensor (C,H,W) se precomputed, None se online
+                - 'pil_image': PIL.Image se online, None se precomputed
+        
+        Gestisce file corrotti tentando di caricare il sample successivo.
         """
-        sample = self.samples[idx] # Può essere str (single) o List[str] (multi)
+        max_attempts = 10
         
-        # Normalizziamo tutto a liste per gestire single/multi uniformemente qui dentro
-        img_paths = sample if isinstance(sample, list) else [sample]
-
-        # ----- LOGICA DI SUBSAMPLING -----
-        if self.multi_view_mode and len(img_paths) > self.max_views_per_scene:
-            if self.is_train:
-                # TRAINING: Random Sampling (Augmentation)
-                # sorted() dopo sample assicura che l'ordine temporale/numerico sia mantenuto
-                img_paths = sorted(random.sample(img_paths, self.max_views_per_scene))
-            else:
-                # VALIDATION: Deterministic Slicing (Consistency)
-                # Prende sempre le prime N view in ordine alfabetico/numerico
-                img_paths = sorted(img_paths)[:self.max_views_per_scene]
-        # -----------------------------------
-        
-        try:
-            teacher_feats_list = []
-            pil_images_list = []
+        for attempt in range(max_attempts):
+            try:
+                actual_idx = (idx + attempt) % len(self.image_paths)
+                img_path = self.image_paths[actual_idx]
+                img_name = Path(img_path).stem
+                
+                if self.mode == "precomputed":
+                    # Load pre-computed features
+                    feat_path = self.features_dir / f"{img_name}.pt"
+                    if not feat_path.exists():
+                        raise FileNotFoundError(f"Teacher features not found: {feat_path}")
+                    
+                    teacher_feat = torch.load(feat_path, map_location="cpu", weights_only=False)
+                    if teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
+                        teacher_feat = teacher_feat.squeeze(0)
+                    
+                    return {
+                        "image_path": img_path,
+                        "teacher_features": teacher_feat,
+                        "pil_image": None,
+                    }
+                
+                else:  # online mode
+                    # Load PIL image for online extraction
+                    from PIL import Image
+                    pil_img = Image.open(img_path).convert("RGB")
+                    
+                    return {
+                        "image_path": img_path,
+                        "teacher_features": None,  # Will be computed in collate_fn
+                        "pil_image": pil_img,
+                    }
             
-            if self.mode == "precomputed":
-                for p in img_paths:
-                    feat = self._load_single_feature(p)
-                    teacher_feats_list.append(feat)
-                # Stack features: (N_views, C, H, W)
-                teacher_features = torch.stack(teacher_feats_list, dim=0)
-                pil_images = None
-            else:
-                # Online mode: carica immagini PIL
-                from PIL import Image
-                for p in img_paths:
-                    pil_images_list.append(Image.open(p).convert("RGB"))
-                teacher_features = None
-                pil_images = pil_images_list
-
-            return {
-                "image_paths": img_paths,          # List[str] (1 o N)
-                "teacher_features": teacher_features, # Tensor (N,C,H,W) o None
-                "pil_images": pil_images,          # List[PIL] o None
-            }
-
-        except Exception as e:
-            print(f"[WARN] Error loading sample idx {idx}: {e}")
-            # Logica di retry semplificata: solleva errore per ora, 
-            # in produzione si può implementare il retry sul sample successivo
-            raise e
+            except (RuntimeError, EOFError, zipfile.BadZipFile) as e:
+                if attempt == 0:
+                    print(f"[WARN] Corrupted file at idx {actual_idx} ({img_path}): {e}. Trying next sample...", flush=True)
+                if attempt == max_attempts - 1:
+                    raise RuntimeError(
+                        f"Failed to load valid sample after {max_attempts} attempts starting from idx {idx}. "
+                        f"Multiple corrupted files detected."
+                    )
+                continue
 
 def collate_fn_distillation(batch: List[Dict]) -> Dict:
     """
-    Gestisce il batching.
-    Nota: Se batch_size=1 (1 scena), 'batch' è una lista di 1 elemento (il dizionario della scena).
+    Collate function personalizzata per il dataset di distillazione.
+    Supporta sia pre-computed che online feature extraction.
+    
+    Single-view returns:
+        - 'image_paths': lista di path (B)
+        - 'teacher_features': Tensor (B,C,H,W)
     """
-    # batch è una lista di dizionari ritornati da __getitem__
-    # Esempio batch_size=1, multi-view:
-    # batch = [ {"image_paths": [v1, v2], "teacher_features": Tensor(2,C,H,W), ...} ]
+    image_paths = [item["image_path"] for item in batch]
     
-    all_image_paths = []
-    all_teacher_feats = []
-    all_pil_images = []
-    
-    has_features = batch[0]["teacher_features"] is not None
-    has_pil = batch[0]["pil_images"] is not None
-    
-    for item in batch:
-        # Estendiamo le liste (flattening delle scene nel batch se batch_size > 1)
-        # Se batch_size=1, stiamo semplicemente prendendo la lista della singola scena.
-        all_image_paths.extend(item["image_paths"])
-        
-        if has_features:
-            all_teacher_feats.append(item["teacher_features"])
-        
-        if has_pil:
-            all_pil_images.extend(item["pil_images"])
-            
-    # Concateniamo i tensori feature
-    if has_features:
-        # Ogni item["teacher_features"] è (N_views, C, H, W).
-        # cat dim=0 -> (Total_Views_in_Batch, C, H, W)
-        teacher_feats_tensor = torch.cat(all_teacher_feats, dim=0)
+    # Check mode (precomputed vs online)
+    if batch[0]["teacher_features"] is not None:
+        # Precomputed mode
+        teacher_feats = torch.stack([item["teacher_features"] for item in batch], dim=0)
     else:
-        teacher_feats_tensor = None
-        
+        # Online mode: features will be extracted in train loop
+        # Return dummy tensor to maintain batch structure
+        teacher_feats = None
+    
+    # Collect PIL images if in online mode
+    pil_images = [item["pil_image"] for item in batch] if batch[0]["pil_image"] is not None else None
+    
     return {
-        "image_paths": all_image_paths,       # Lista piatta di tutte le view nel batch
-        "teacher_features": teacher_feats_tensor,
-        "pil_images": all_pil_images if has_pil else None,
+        "image_paths": image_paths,
+        "teacher_features": teacher_feats,
+        "pil_images": pil_images,
     }
 
 class TeacherFeatureExtractor:
@@ -422,9 +380,6 @@ def build_distillation_dataloader(
     image_paths: Optional[List[str]] = None,
     pin_memory: bool = True,
     distributed: bool = False,
-    multi_view_mode: bool = False,
-    split: str = "train",
-    max_views_per_scene: int = 6,
 ) -> DataLoader:
     """
     Build a DataLoader for distillation training/validation.
@@ -448,9 +403,6 @@ def build_distillation_dataloader(
         features_dir=features_dir,
         teacher_extractor=teacher_extractor,
         image_paths=image_paths,
-        multi_view_mode=multi_view_mode,
-        split=split,
-        max_views_per_scene=max_views_per_scene,
     )
     
     sampler = None
@@ -636,21 +588,6 @@ def train_one_epoch_distillation(
         
         # Get data
         image_paths = batch["image_paths"]
-
-        # [DEBUG] Stampa scene e views (raggruppate per cartella padre)
-        # if args.multi_view_mode:
-        #     try:
-        #         by_scene = {}
-        #         for p in image_paths:
-        #             scene = str(Path(p).parent)
-        #             by_scene.setdefault(scene, []).append(p)
-        #         print(f"[Train][SceneViews] Batch {data_iter_step}:")
-        #         for scene, views in sorted(by_scene.items()):
-        #             print(f"  {scene}")
-        #             for v in views:
-        #                 print(f"    - {v}")
-        #     except Exception:
-        #         pass
         
         # Extract or load teacher features
         if mode == "precomputed":
@@ -815,21 +752,6 @@ def validate_one_epoch_distillation(
             print(f"[Val] Feature extraction mode: {mode.upper()}")
         
         image_paths = batch["image_paths"]
-
-        # [DEBUG] Stampa scene e views (raggruppate per cartella padre)
-        # if args.multi_view_mode:
-        #     try:
-        #         by_scene = {}
-        #         for p in image_paths:
-        #             scene = str(Path(p).parent)
-        #             by_scene.setdefault(scene, []).append(p)
-        #         print(f"[Val][SceneViews] Batch {batch_idx}:")
-        #         for scene, views in sorted(by_scene.items()):
-        #             print(f"  {scene}")
-        #             for v in views:
-        #                 print(f"    - {v}")
-        #     except Exception:
-        #         pass
         
         # Extract or load teacher features
         if mode == "precomputed":
@@ -1019,20 +941,15 @@ def distill(args):
         teacher_extractor.to(device)
     
     # ========== BUILD DATALOADERS ==========
-    
-    # --- 1. TRAIN DATALOADER ---
     print(f"Building train dataloader from {TRAIN_IMAGES_DIR}")
     train_image_paths = None
-    
-    # Logica Debug per SINGLE-VIEW: filtriamo la lista delle immagini PRIMA di creare il loader
-    if args.debug_max_train_images and not args.multi_view_mode:
+    if args.debug_max_train_images:
         all_imgs = sorted([
             os.path.join(TRAIN_IMAGES_DIR, f)
             for f in os.listdir(TRAIN_IMAGES_DIR)
             if DistillationDataset._is_image_file(f)
         ])
         train_image_paths = random.sample(all_imgs, min(args.debug_max_train_images, len(all_imgs)))
-        print(f"[DEBUG] Single-View: Limited train to {len(train_image_paths)} IMAGES")
     
     data_loader_train = build_distillation_dataloader(
         image_dir=TRAIN_IMAGES_DIR,
@@ -1041,34 +958,19 @@ def distill(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         shuffle=True,
-        image_paths=train_image_paths, # Sarà None in multi-view mode
+        image_paths=train_image_paths,
         distributed=args.distributed.distributed,
-        multi_view_mode=args.multi_view_mode,
-        split=TRAIN_SPLIT,             # "train": attiva Random Sampling delle view
-        max_views_per_scene=args.max_views,
     )
-
-    # Logica Debug per MULTI-VIEW: tagliamo la lista delle scene DOPO aver creato il dataset
-    if args.multi_view_mode and args.debug_max_train_images:
-        original_len = len(data_loader_train.dataset.samples)
-        limit = min(args.debug_max_train_images, original_len)
-        data_loader_train.dataset.samples = data_loader_train.dataset.samples[:limit]
-        print(f"[DEBUG] Multi-View: Limited train to first {limit} SCENES (was {original_len})")
-
     
-    # --- 2. VAL DATALOADER ---
     print(f"Building val dataloader from {VAL_IMAGES_DIR}")
     val_image_paths = None
-    
-    # Logica Debug per SINGLE-VIEW
-    if args.debug_max_val_images and not args.multi_view_mode:
+    if args.debug_max_val_images:
         all_val_imgs = sorted([
             os.path.join(VAL_IMAGES_DIR, f)
             for f in os.listdir(VAL_IMAGES_DIR)
             if DistillationDataset._is_image_file(f)
         ])
         val_image_paths = all_val_imgs[:args.debug_max_val_images]
-        print(f"[DEBUG] Single-View: Limited val to {len(val_image_paths)} IMAGES")
     
     data_loader_val = build_distillation_dataloader(
         image_dir=VAL_IMAGES_DIR,
@@ -1077,19 +979,9 @@ def distill(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         shuffle=False,
-        image_paths=val_image_paths, # Sarà None in multi-view mode
+        image_paths=val_image_paths,
         distributed=args.distributed.distributed,
-        multi_view_mode=args.multi_view_mode,
-        split=VAL_SPLIT,               # "val": attiva Deterministic Slicing (prime N views)
-        max_views_per_scene=args.max_views,
     )
-
-    # Logica Debug per MULTI-VIEW
-    if args.multi_view_mode and args.debug_max_val_images:
-        original_len = len(data_loader_val.dataset.samples)
-        limit = min(args.debug_max_val_images, original_len)
-        data_loader_val.dataset.samples = data_loader_val.dataset.samples[:limit]
-        print(f"[DEBUG] Multi-View: Limited val to first {limit} SCENES (was {original_len})")
     
     # ========== LOAD MODEL ==========
     print("Loading MapAnything model...")
@@ -1233,24 +1125,15 @@ def distill(args):
             pass
     
     # Scheduler LR: Cosine annealing per epoca, coerente con distillation.py
-    scheduler = None
     if not args.disable_scheduler:
-        if args.lr_scheduler == "cosine":
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer,
-                T_max=args.lr_scheduler_t_max,
-                eta_min=args.lr_min,
-            )
-            print(f"[INFO] Using CosineAnnealingLR with T_max={args.lr_scheduler_t_max}, eta_min={args.lr_min}")
-        elif args.lr_scheduler == "step":
-            scheduler = optim.lr_scheduler.StepLR(
-                optimizer,
-                step_size=args.lr_decay_steps,
-                gamma=0.1,
-            )
-            print(f"[INFO] Using StepLR with step_size={args.lr_decay_steps}, gamma=0.1")
-        else:
-            print(f"[INFO] Learning rate scheduler disabled. LR will remain constant at {args.lr}")
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args.lr_scheduler_t_max,
+            eta_min=args.lr_min,
+        )
+    else:
+        scheduler = None
+        print(f"[INFO] Learning rate scheduler disabled. LR will remain constant at {args.lr}")
     
     # Resume: ricarica head 2 + optimizer + scheduler; riparte dall'epoca successiva
     start_epoch = 0
@@ -1295,14 +1178,14 @@ def distill(args):
 
         optimizer.load_state_dict(ckpt["optimizer"])
 
-        if args.lr_scheduler == "none" or args.override_lr:
+        if args.disable_scheduler or args.override_lr:
             for param_group in optimizer.param_groups:
                 param_group['lr'] = args.lr
             print(f"[INFO] Overriding optimizer LR to {args.lr}")
 
 
         # Scheduler resume logic with T_max override
-        if args.lr_scheduler != "none" and "scheduler" in ckpt:
+        if not args.disable_scheduler and "scheduler" in ckpt:
             scheduler.load_state_dict(ckpt["scheduler"])
             # If user provided a new T_max, overwrite it in the scheduler
             if hasattr(scheduler, "T_max") and getattr(args, "overwrite_scheduler", False):
@@ -1378,7 +1261,7 @@ def distill(args):
                     )
         
         # Step scheduler
-        if scheduler is not None:
+        if not args.disable_scheduler and scheduler is not None:
             scheduler.step()
         
         # Save checkpoint periodically
@@ -1539,27 +1422,18 @@ def get_args_parser():
     # Training hyperparameters
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size per GPU")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--override_lr", action="store_true", help="Override LR from checkpoint with --lr value")
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
+    parser.add_argument("--lr_min", type=float, default=1e-6, help="Minimum learning rate for scheduler")
+    parser.add_argument("--lr_scheduler_t_max", type=int, default=None, help="T_max for CosineAnnealingLR")
+    parser.add_argument("--overwrite_scheduler", action="store_true", help="Overwrite scheduler T_max when resuming")
     parser.add_argument("--clip_grad", type=float, default=1.0, help="Gradient clipping max norm (0 to disable)")
     parser.add_argument("--accum_iter", type=int, default=1, help="Gradient accumulation iterations")
+    parser.add_argument("--log_freq", type=int, default=100, help="Log to W&B every N batches")
+    parser.add_argument("--disable_scheduler", action="store_true", help="Disable learning rate scheduler (keep lr constant)")
+    parser.add_argument("--multi_view_mode", action="store_true", help="Enable multi-view mode (cross-attention between views)")
     
-    # Learning rate and scheduler
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--lr_min", type=float, default=1e-6, help="Minimum learning rate for scheduler")
-    parser.add_argument("--lr_scheduler", type=str, default="cosine", choices=["cosine","step","none"])
-    parser.add_argument("--lr_decay_steps", type=int, default=1000, help="Steps per decay x0.1 (StepLR)")
-    parser.add_argument("--lr_scheduler_t_max", type=int, default=None, help="T_max for CosineAnnealingLR")
-    parser.add_argument("--override_lr", action="store_true", help="Override LR from checkpoint with --lr value")
-    parser.add_argument("--overwrite_scheduler", action="store_true", help="Overwrite scheduler T_max when resuming")
-    
-    # Mixed precision
-    parser.add_argument("--amp", action="store_true", help="Use automatic mixed precision")
-    parser.add_argument("--amp_dtype", type=str, default="bf16", choices=["bf16", "fp16"], help="AMP dtype")
-    
-    # Other
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--disable_cudnn_benchmark", action="store_true", help="Disable cudnn benchmark")
-
     # Loss
     parser.add_argument("--mse_weight", type=float, default=0.5, help="Weight for MSE loss")
     parser.add_argument("--cosine_weight", type=float, default=0.5, help="Weight for cosine loss")
@@ -1571,9 +1445,9 @@ def get_args_parser():
     parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
     parser.add_argument("--precomputed_features", action="store_true", help="Use precomputed features from disk")
     
-    # Multi-view
-    parser.add_argument("--multi_view_mode", action="store_true", help="Enable multi-view mode (cross-attention between views)")
-    parser.add_argument("--max_views", type=int, default=6, help="Max views per scene. Train: Random Sample. Val: First N.")
+    # Mixed precision
+    parser.add_argument("--amp", action="store_true", help="Use automatic mixed precision")
+    parser.add_argument("--amp_dtype", type=str, default="bf16", choices=["bf16", "fp16"], help="AMP dtype")
     
     # Checkpointing
     parser.add_argument("--resume_ckpt", type=str, default=None, help="Path to checkpoint to resume from")
@@ -1587,7 +1461,10 @@ def get_args_parser():
     parser.add_argument("--wandb_name", type=str, default=None, help="W&B run name")
     parser.add_argument("--wandb_resume_id", type=str, default=None, help="W&B run ID to resume")
     parser.add_argument("--save_visualizations", action="store_true", help="Save PCA visualizations during validation")
-    parser.add_argument("--log_freq", type=int, default=100, help="Log to W&B every N batches")
+    
+    # Other
+    parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--disable_cudnn_benchmark", action="store_true", help="Disable cudnn benchmark")
     
     # Distributed (opzionale): abilita DDP; dist_url di solito 'env://' con torchrun; local_rank impostato da torchrun
     parser.add_argument("--distributed", action="store_true", help="Enable distributed training")
@@ -1598,9 +1475,8 @@ def get_args_parser():
     parser.add_argument("--num_info_sharing_blocks_unfreeze", type=int, default=0, help="Number of last info_sharing transformer blocks to unfreeze")
     
     # comando debug pc lab
-    # python distillation_test_multi_view_gemini.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2
-    # python distillation_test_multi_view_gemini.py --epochs 10 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 4 --resume_ckpt /scratch2/nico/distillation/output/distill_20251125_143157/checkpoints/checkpoint_best.pth
-    # python distillation_test_multi_view_gemini.py --epochs 10 --log_freq 1 --save_freq 1 --save_visualizations --multi_view_mode --disable_scheduler
+    # python distillation.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2
+    # python distillation.py --epochs 10 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 4 --resume_ckpt /scratch2/nico/distillation/output/distill_20251125_143157/checkpoints/checkpoint_best.pth
 
     # Proporzioni
     # batch_size 1, lr 1e-4, accum_iter 1
@@ -1616,7 +1492,7 @@ def main():
     """
     parser = get_args_parser()
     args = parser.parse_args()
-    if args.lr_scheduler_t_max is None and args.lr_scheduler == "cosine":
+    if args.lr_scheduler_t_max is None:
         args.lr_scheduler_t_max = args.epochs  # Default T_max to epochs if not set
     
     # Crea un oggetto Namespace compatibile con train_tools
