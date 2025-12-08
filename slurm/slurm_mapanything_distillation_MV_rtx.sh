@@ -74,19 +74,21 @@ fi
 echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 
 # Usa automaticamente tutte le GPU disponibili
-torchrun --nproc_per_node=$NUM_GPUS distillation_test_multi_view_gemini.py \
+torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --distributed \
   --num_workers 8 \
   --use_wandb \
-  --wandb_name "distillation_9_MV" \
-  --epochs 500 \
-  --lr 5e-4 \
+  --wandb_name "distillation_10_MV" \
+  --epochs 2000 \
+  --lr 1e-3 \
+  --lr_scheduler step \
+  --lr_decay_steps 1000 \
   --amp \
   --save_freq 5 \
   --print_freq 100 \
   --save_visualizations \
   --disable_scheduler \
-  --max_views 8 \
+  --max_views 16 \
   --multi_view_mode
 #   --num_info_sharing_blocks_unfreeze 4 \
 #   --precomputed_features \
