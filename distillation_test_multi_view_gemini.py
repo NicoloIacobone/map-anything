@@ -1616,7 +1616,7 @@ def main():
     """
     parser = get_args_parser()
     args = parser.parse_args()
-    if args.lr_scheduler_t_max is None:
+    if args.lr_scheduler_t_max is None and args.lr_scheduler == "cosine":
         args.lr_scheduler_t_max = args.epochs  # Default T_max to epochs if not set
     
     # Crea un oggetto Namespace compatibile con train_tools

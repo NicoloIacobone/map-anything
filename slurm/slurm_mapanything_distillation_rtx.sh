@@ -4,10 +4,10 @@
 #SBATCH --job-name=2_rtx_4090
 #
 # Specify output file.
-#SBATCH --output=deeper_dpt_%j.log
+#SBATCH --output=distillation_%j.log
 #
 # Specify error file.
-#SBATCH --error=deeper_dpt_%j.err
+#SBATCH --error=distillation_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
