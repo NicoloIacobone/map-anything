@@ -1258,7 +1258,6 @@ def distill(args):
             threshold_mode='abs',
             cooldown=1,
             min_lr=args.lr_min,
-            verbose=True,
         )
         print(f"[INFO] Using ReduceLROnPlateau (factor=0.5, patience={args.plateau_patience}, threshold=1e-3 abs, cooldown=1)")
     else:
