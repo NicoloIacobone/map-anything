@@ -45,13 +45,6 @@ echo "Loaded modules: $(module list 2>&1)"
 source /cluster/scratch/niacobone/map-anything/myenv/bin/activate
 echo "Activated Python venv: $(which python)"
 
-# # check if the dataset is available in /cluster/scratch/niacobone/distillation/coco2017
-# if [ ! -d "/cluster/scratch/niacobone/distillation/coco2017" ]; then
-#     echo "Dataset not found in /cluster/scratch/niacobone/distillation/coco2017 - copyting from /cluster/work/igp_psr/niacobone/coco2017"
-#     cp -r /cluster/work/igp_psr/niacobone/coco2017 /cluster/scratch/niacobone/distillation/
-#     echo "Dataset copied."
-# fi
-
 # Execute
 cd /cluster/scratch/niacobone/map-anything
 echo "Starting MapAnything distillation..."
@@ -77,31 +70,23 @@ echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --distributed \
   --use_wandb \
-  --wandb_name "distillation_8" \
-  --epochs 20 \
-  --batch_size 12 \
   --num_workers 8 \
-  --lr 2.4e-5 \
-  --weight_decay 1e-4 \
-  --clip_grad 1.0 \
-  --accum_iter 1 \
-  --mse_weight 0.5 \
-  --cosine_weight 0.5 \
+  --wandb_name "distillation_9" \
+  --epochs 20 \
+  --batch_size 16 \
+  --num_workers 8 \
+  --lr 1e-3 \
+  --lr_scheduler step \
+  --lr_decay_steps 100 \
   --eval_freq 1 \
   --save_freq 1 \
   --print_freq 50 \
   --amp \
-  --amp_dtype bf16 \
-  --seed 42 \
   --save_visualizations \
   --precomputed_features \
-  --disable_scheduler \
-  --override_lr \
-  --wandb_resume_id cxzb1lo6 \
-  --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_8 \
-  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_8/checkpoints/checkpoint_epoch8.pth
-#   --lr_min 5e-6 \
-#   --num_info_sharing_blocks_unfreeze 4
+#   --wandb_resume_id cxzb1lo6 \
+#   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_8 \
+#   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_8/checkpoints/checkpoint_epoch8.pth
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}

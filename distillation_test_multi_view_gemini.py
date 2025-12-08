@@ -79,8 +79,8 @@ if run_cluster:
 
     OUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"
     BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset"
-    # DATASET = "coco2017"
-    DATASET = "ETH3D"
+    DATASET = "coco2017"
+    # DATASET = "ETH3D"
     SAM2_PATH = "/cluster/scratch/niacobone/sam2/checkpoints/sam2.1_hiera_large.pt"
     
 else:
@@ -1233,15 +1233,24 @@ def distill(args):
             pass
     
     # Scheduler LR: Cosine annealing per epoca, coerente con distillation.py
+    scheduler = None
     if not args.disable_scheduler:
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=args.lr_scheduler_t_max,
-            eta_min=args.lr_min,
-        )
-    else:
-        scheduler = None
-        print(f"[INFO] Learning rate scheduler disabled. LR will remain constant at {args.lr}")
+        if args.lr_scheduler == "cosine":
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=args.lr_scheduler_t_max,
+                eta_min=args.lr_min,
+            )
+            print(f"[INFO] Using CosineAnnealingLR with T_max={args.lr_scheduler_t_max}, eta_min={args.lr_min}")
+        elif args.lr_scheduler == "step":
+            scheduler = optim.lr_scheduler.StepLR(
+                optimizer,
+                step_size=args.lr_decay_steps,
+                gamma=0.1,
+            )
+            print(f"[INFO] Using StepLR with step_size={args.lr_decay_steps}, gamma=0.1")
+        else:
+            print(f"[INFO] Learning rate scheduler disabled. LR will remain constant at {args.lr}")
     
     # Resume: ricarica head 2 + optimizer + scheduler; riparte dall'epoca successiva
     start_epoch = 0
@@ -1286,14 +1295,14 @@ def distill(args):
 
         optimizer.load_state_dict(ckpt["optimizer"])
 
-        if args.disable_scheduler or args.override_lr:
+        if args.lr_scheduler == "none" or args.override_lr:
             for param_group in optimizer.param_groups:
                 param_group['lr'] = args.lr
             print(f"[INFO] Overriding optimizer LR to {args.lr}")
 
 
         # Scheduler resume logic with T_max override
-        if not args.disable_scheduler and "scheduler" in ckpt:
+        if args.lr_scheduler != "none" and "scheduler" in ckpt:
             scheduler.load_state_dict(ckpt["scheduler"])
             # If user provided a new T_max, overwrite it in the scheduler
             if hasattr(scheduler, "T_max") and getattr(args, "overwrite_scheduler", False):
@@ -1369,7 +1378,7 @@ def distill(args):
                     )
         
         # Step scheduler
-        if not args.disable_scheduler and scheduler is not None:
+        if scheduler is not None:
             scheduler.step()
         
         # Save checkpoint periodically
@@ -1530,18 +1539,27 @@ def get_args_parser():
     # Training hyperparameters
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size per GPU")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--override_lr", action="store_true", help="Override LR from checkpoint with --lr value")
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
-    parser.add_argument("--lr_min", type=float, default=1e-6, help="Minimum learning rate for scheduler")
-    parser.add_argument("--lr_scheduler_t_max", type=int, default=None, help="T_max for CosineAnnealingLR")
-    parser.add_argument("--overwrite_scheduler", action="store_true", help="Overwrite scheduler T_max when resuming")
     parser.add_argument("--clip_grad", type=float, default=1.0, help="Gradient clipping max norm (0 to disable)")
     parser.add_argument("--accum_iter", type=int, default=1, help="Gradient accumulation iterations")
-    parser.add_argument("--log_freq", type=int, default=100, help="Log to W&B every N batches")
-    parser.add_argument("--disable_scheduler", action="store_true", help="Disable learning rate scheduler (keep lr constant)")
-    parser.add_argument("--multi_view_mode", action="store_true", help="Enable multi-view mode (cross-attention between views)")
     
+    # Learning rate and scheduler
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--lr_min", type=float, default=1e-6, help="Minimum learning rate for scheduler")
+    parser.add_argument("--lr_scheduler", type=str, default="cosine", choices=["cosine","step","none"])
+    parser.add_argument("--lr_decay_steps", type=int, default=1000, help="Steps per decay x0.1 (StepLR)")
+    parser.add_argument("--lr_scheduler_t_max", type=int, default=None, help="T_max for CosineAnnealingLR")
+    parser.add_argument("--override_lr", action="store_true", help="Override LR from checkpoint with --lr value")
+    parser.add_argument("--overwrite_scheduler", action="store_true", help="Overwrite scheduler T_max when resuming")
+    
+    # Mixed precision
+    parser.add_argument("--amp", action="store_true", help="Use automatic mixed precision")
+    parser.add_argument("--amp_dtype", type=str, default="bf16", choices=["bf16", "fp16"], help="AMP dtype")
+    
+    # Other
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--disable_cudnn_benchmark", action="store_true", help="Disable cudnn benchmark")
+
     # Loss
     parser.add_argument("--mse_weight", type=float, default=0.5, help="Weight for MSE loss")
     parser.add_argument("--cosine_weight", type=float, default=0.5, help="Weight for cosine loss")
@@ -1552,11 +1570,10 @@ def get_args_parser():
     parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging")
     parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
     parser.add_argument("--precomputed_features", action="store_true", help="Use precomputed features from disk")
-    parser.add_argument("--max_views", type=int, default=6, help="Max views per scene. Train: Random Sample. Val: First N.")
     
-    # Mixed precision
-    parser.add_argument("--amp", action="store_true", help="Use automatic mixed precision")
-    parser.add_argument("--amp_dtype", type=str, default="bf16", choices=["bf16", "fp16"], help="AMP dtype")
+    # Multi-view
+    parser.add_argument("--multi_view_mode", action="store_true", help="Enable multi-view mode (cross-attention between views)")
+    parser.add_argument("--max_views", type=int, default=6, help="Max views per scene. Train: Random Sample. Val: First N.")
     
     # Checkpointing
     parser.add_argument("--resume_ckpt", type=str, default=None, help="Path to checkpoint to resume from")
@@ -1570,10 +1587,7 @@ def get_args_parser():
     parser.add_argument("--wandb_name", type=str, default=None, help="W&B run name")
     parser.add_argument("--wandb_resume_id", type=str, default=None, help="W&B run ID to resume")
     parser.add_argument("--save_visualizations", action="store_true", help="Save PCA visualizations during validation")
-    
-    # Other
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--disable_cudnn_benchmark", action="store_true", help="Disable cudnn benchmark")
+    parser.add_argument("--log_freq", type=int, default=100, help="Log to W&B every N batches")
     
     # Distributed (opzionale): abilita DDP; dist_url di solito 'env://' con torchrun; local_rank impostato da torchrun
     parser.add_argument("--distributed", action="store_true", help="Enable distributed training")
