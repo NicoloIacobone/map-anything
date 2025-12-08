@@ -79,8 +79,8 @@ if run_cluster:
 
     OUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"
     BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset"
-    # DATASET = "coco2017"
-    DATASET = "ETH3D"
+    DATASET = "coco2017"
+    # DATASET = "ETH3D"
     SAM2_PATH = "/cluster/scratch/niacobone/sam2/checkpoints/sam2.1_hiera_large.pt"
     
 else:
@@ -1248,6 +1248,19 @@ def distill(args):
             gamma=0.1,
         )
         print(f"[INFO] Using StepLR with step_size={args.lr_decay_steps}, gamma=0.1")
+    elif args.lr_scheduler == "plateau":
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=0.5,
+            patience=args.plateau_patience,
+            threshold=1e-3,
+            threshold_mode='abs',
+            cooldown=1,
+            min_lr=args.lr_min,
+            verbose=True,
+        )
+        print(f"[INFO] Using ReduceLROnPlateau (factor=0.5, patience={args.plateau_patience}, threshold=1e-3 abs, cooldown=1)")
     else:
         print(f"[INFO] Learning rate scheduler disabled. LR will remain constant at {args.lr}")
     
@@ -1378,7 +1391,12 @@ def distill(args):
         
         # Step scheduler
         if scheduler is not None:
-            scheduler.step()
+            if args.lr_scheduler == "plateau":
+                # usa la loss di validazione come metrica
+                if val_stats:  # step una volta per epoca, dopo la val
+                    scheduler.step(val_stats.get("loss_avg", float("inf")))
+            else:
+                scheduler.step()
         
         # Save checkpoint periodically
         if (epoch + 1) % args.save_freq == 0 or (epoch + 1) == args.epochs:
@@ -1545,7 +1563,8 @@ def get_args_parser():
     # Learning rate and scheduler
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
     parser.add_argument("--lr_min", type=float, default=1e-6, help="Minimum learning rate for scheduler")
-    parser.add_argument("--lr_scheduler", type=str, default="cosine", choices=["cosine","step","none"])
+    parser.add_argument("--lr_scheduler", type=str, default="cosine", choices=["cosine","step", "plateau", "none"])
+    parser.add_argument("--plateau_patience", type=int, default=10, help="Patience for ReduceLROnPlateau scheduler")
     parser.add_argument("--lr_decay_steps", type=int, default=1000, help="Steps per decay x0.1 (StepLR)")
     parser.add_argument("--lr_scheduler_t_max", type=int, default=None, help="T_max for CosineAnnealingLR")
     parser.add_argument("--override_lr", action="store_true", help="Override LR from checkpoint with --lr value")

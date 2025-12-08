@@ -71,13 +71,13 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --distributed \
   --use_wandb \
   --num_workers 8 \
-  --wandb_name "distillation_9" \
+  --wandb_name "SV_e20_bs16_plateau2" \
   --epochs 20 \
   --batch_size 16 \
   --num_workers 8 \
   --lr 1e-3 \
-  --lr_scheduler step \
-  --lr_decay_steps 100 \
+  --lr_scheduler plateau \
+  --plateau_patience 2 \
   --eval_freq 1 \
   --save_freq 1 \
   --print_freq 50 \
