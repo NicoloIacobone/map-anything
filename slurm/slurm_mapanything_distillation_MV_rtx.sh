@@ -87,7 +87,6 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --save_freq 5 \
   --print_freq 100 \
   --save_visualizations \
-  --disable_scheduler \
   --max_views 16 \
   --multi_view_mode
 #   --num_info_sharing_blocks_unfreeze 4 \
