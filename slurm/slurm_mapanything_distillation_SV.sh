@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=SV_06
+#SBATCH --job-name=SV_ETH3D
 #
 # Specify output file.
-#SBATCH --output=SV_06_%j.log
+#SBATCH --output=SV_ETH3D_%j.log
 #
 # Specify error file.
-#SBATCH --error=SV_06_%j.err
+#SBATCH --error=SV_ETH3D_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -71,18 +71,18 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --distributed \
   --use_wandb \
   --num_workers 8 \
-  --dataset coco2017 \
-  --wandb_name "SV_06" \
+  --dataset ETH3D_single \
+  --wandb_name "SV_ETH3D" \
   --epochs 100 \
   --lr 1e-3 \
-  --batch_size 32 \
+  --batch_size 16 \
   --lr_scheduler none \
   --eval_freq 1 \
   --save_freq 10 \
   --print_freq 100 \
   --amp \
-  --save_visualizations \
-  --precomputed_features
+  --save_visualizations
+#   --precomputed_features
 #   --wandb_resume_id oqqmwibs \
 #   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV \
 #   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV/checkpoints/checkpoint_epoch604.pth
