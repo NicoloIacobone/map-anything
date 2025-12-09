@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=SV_04
+#SBATCH --job-name=SV_05
 #
 # Specify output file.
-#SBATCH --output=SV_04_%j.log
+#SBATCH --output=SV_05_%j.log
 #
 # Specify error file.
-#SBATCH --error=SV_04_%j.err
+#SBATCH --error=SV_05_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -71,10 +71,10 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --distributed \
   --use_wandb \
   --num_workers 8 \
-  --wandb_name "SV_04" \
+  --wandb_name "SV_05" \
   --epochs 100 \
-  --lr 2.5e-4 \
-  --batch_size 4 \
+  --lr 5e-4 \
+  --batch_size 8 \
   --lr_scheduler none \
   --eval_freq 1 \
   --save_freq 10 \
