@@ -1,19 +1,19 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=2_rtx_4090
+#SBATCH --job-name=SV_01
 #
 # Specify output file.
-#SBATCH --output=distillation_%j.log
+#SBATCH --output=SV_01_%j.log
 #
 # Specify error file.
-#SBATCH --error=distillation_%j.err
+#SBATCH --error=SV_01_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=05:00:00
+#SBATCH --time=12:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -71,22 +71,19 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --distributed \
   --use_wandb \
   --num_workers 8 \
-  --wandb_name "distillation_9_MV" \
-  --epochs 700 \
-  --multi_view_mode \
-  --max_views 8 \
-  --num_workers 8 \
-  --lr 0.0005 \
+  --wandb_name "SV_01" \
+  --epochs 100 \
+  --lr 1e-3 \
   --lr_scheduler none \
-  --override_lr \
   --eval_freq 1 \
-  --save_freq 1 \
-  --print_freq 50 \
+  --save_freq 10 \
+  --print_freq 100 \
   --amp \
   --save_visualizations \
-  --wandb_resume_id oqqmwibs \
-  --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV \
-  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV/checkpoints/checkpoint_epoch604.pth
+  --precomputed_features
+#   --wandb_resume_id oqqmwibs \
+#   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV \
+#   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV/checkpoints/checkpoint_epoch604.pth
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
