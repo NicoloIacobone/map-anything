@@ -1559,7 +1559,7 @@ def get_args_parser():
     parser.add_argument("--accum_iter", type=int, default=1, help="Gradient accumulation iterations")
     
     # Learning rate and scheduler
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate") # Usa 5e-4 per BS_eff = 16 --> 1e-3 per BS_eff = 32, 2.5e-4 per BS_eff = 8
     parser.add_argument("--lr_min", type=float, default=1e-6, help="Minimum learning rate for scheduler")
     parser.add_argument("--lr_scheduler", type=str, default="cosine", choices=["cosine","step", "plateau", "none"])
     parser.add_argument("--plateau_patience", type=int, default=10, help="Patience for ReduceLROnPlateau scheduler")

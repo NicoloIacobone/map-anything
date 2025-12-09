@@ -73,8 +73,8 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --num_workers 8 \
   --wandb_name "SV_04" \
   --epochs 100 \
-  --lr 1e-3 \
-  --batch_size 32 \
+  --lr 2.5e-4 \
+  --batch_size 4 \
   --lr_scheduler none \
   --eval_freq 1 \
   --save_freq 10 \
