@@ -1625,7 +1625,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 intermediate_info_sharing_multi_view_feat,
             ) = self.info_sharing(info_sharing_input)
 
-        ##### DEBUG - Verifica attivazione multi-view transformer #######
+        ##################### DEBUG - Verifica attivazione multi-view transformer #######################
         # num_views_debug = len(all_encoder_features_across_views)
         # feat_shapes_debug = [tuple(f.shape) for f in all_encoder_features_across_views]
         # self._last_num_views = num_views_debug  # per eventuali verifiche esterne
@@ -1634,19 +1634,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         # else:
         #     print(f"[OK][MV] Multi-view ATTIVO: num_views={num_views_debug}, feat_shapes={feat_shapes_debug}")
         # assert num_views_debug > 1, "Atteso >1 vista per attivare il multi-view transformer (cross-attention)"
-
-        # info_sharing_input = MultiViewTransformerInput(
-        #     features=all_encoder_features_across_views,
-        #     additional_input_tokens=input_scale_token,
-        # )
-        # if self.info_sharing_return_type == "no_intermediate_features":
-        #     final_info_sharing_multi_view_feat = self.info_sharing(info_sharing_input)
-        # elif self.info_sharing_return_type == "intermediate_features":
-        #     (
-        #         final_info_sharing_multi_view_feat,
-        #         intermediate_info_sharing_multi_view_feat,
-        #     ) = self.info_sharing(info_sharing_input)
-        ##################################################################
+        ##################################################################################################
 
         # print("[SHAPE] final_info_sharing_multi_view_feat.features shapes:",
         #       [x.shape for x in final_info_sharing_multi_view_feat.features])
