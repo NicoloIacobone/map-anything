@@ -72,7 +72,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --num_workers 8 \
   --wandb_name "distillation_9_MV" \
-  --epochs 600 \
+  --epochs 700 \
   --multi_view_mode \
   --max_views 8 \
   --num_workers 8 \
@@ -86,7 +86,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --save_visualizations \
   --wandb_resume_id oqqmwibs \
   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV \
-  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV/checkpoints/checkpoint_epoch500.pth
+  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV/checkpoints/checkpoint_epoch604.pth
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
