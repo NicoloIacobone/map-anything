@@ -1311,12 +1311,11 @@ def distill(args):
                 param_group['lr'] = args.lr
             print(f"[INFO] Overriding optimizer LR to {args.lr}")
 
-
         # Scheduler resume logic with T_max override
         if args.lr_scheduler != "none" and "scheduler" in ckpt:
             scheduler.load_state_dict(ckpt["scheduler"])
             # If user provided a new T_max, overwrite it in the scheduler
-            if hasattr(scheduler, "T_max") and getattr(args, "overwrite_scheduler", False):
+            if hasattr(scheduler, "T_max") and getattr(args, "overwrite_scheduler_t_max", False):
                 old_tmax = getattr(scheduler, "T_max", None)
                 scheduler.T_max = args.lr_scheduler_t_max
                 print(f"[INFO] Overriding scheduler T_max: {old_tmax} -> {scheduler.T_max}")
@@ -1567,7 +1566,7 @@ def get_args_parser():
     parser.add_argument("--lr_decay_steps", type=int, default=1000, help="Steps per decay x0.1 (StepLR)")
     parser.add_argument("--lr_scheduler_t_max", type=int, default=None, help="T_max for CosineAnnealingLR")
     parser.add_argument("--override_lr", action="store_true", help="Override LR from checkpoint with --lr value")
-    parser.add_argument("--overwrite_scheduler", action="store_true", help="Overwrite scheduler T_max when resuming")
+    parser.add_argument("--overwrite_scheduler_t_max", action="store_true", help="Overwrite scheduler T_max when resuming")
     
     # Mixed precision
     parser.add_argument("--amp", action="store_true", help="Use automatic mixed precision")
