@@ -66,6 +66,7 @@ def setup_runtime_paths(args):
     global TRAIN_SPLIT, VAL_SPLIT
     global IMAGES_DIRNAME, FEATURES_DIRNAME
     global TRAIN_IMAGES_DIR, VAL_IMAGES_DIR, TRAIN_FEATURES_DIR, VAL_FEATURES_DIR
+    global run_cluster
 
     run_cluster = not sys.stdout.isatty()
     if run_cluster:
