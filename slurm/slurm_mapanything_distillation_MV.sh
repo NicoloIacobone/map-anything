@@ -72,6 +72,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --num_workers 8 \
   --multi_view_mode \
+  --dataset ETH3D \
   --wandb_name "MV_04" \
   --epochs 100 \
   --lr 1e-3 \

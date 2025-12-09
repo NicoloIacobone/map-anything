@@ -71,6 +71,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --distributed \
   --use_wandb \
   --num_workers 8 \
+  --dataset coco2017 \
   --wandb_name "SV_06" \
   --epochs 100 \
   --lr 1e-3 \

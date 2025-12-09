@@ -59,58 +59,53 @@ if hasattr(torch.backends.cuda, "matmul") and hasattr(
 ):
     torch.backends.cuda.matmul.allow_tf32 = True
 
-# ==================== Runtime/Environment Settings ====================
-# Rilevazione ambiente ed impostazione percorsi:
-# - se non c'è un TTY (tipico dei job su cluster), run_cluster=True;
-# - si impostano cache/percorsi di input, output e dataset COCO2017 coerenti;
-# - i DataLoader useranno i path derivati dalle costanti sottostanti.
-# Questo evita di dover passare i path da CLI e mantiene coerenza con distillation.py.
-# Determine if we're running on the cluster (no TTY) and set paths accordingly
-run_cluster = not sys.stdout.isatty()
-if run_cluster:
-    # Optional: set torch hub cache to a persistent location on cluster
-    os.environ["TORCH_HOME"] = "/cluster/home/niacobone/torch_cache"
-    try:
-        import torch.hub as _torch_hub
-        _torch_hub.set_dir(os.environ["TORCH_HOME"])
-        print(f"[INFO] Torch hub cache dir set to {_torch_hub.get_dir()}")
-    except Exception:
-        pass
+def setup_runtime_paths(args):
+    """Inizializza OUT_DIR, BASE_DIR, DATASET, SAM2_PATH e le directory immagini/feature usando args."""
+    import torch.hub as _torch_hub
+    global OUT_DIR, BASE_DIR, DATASET, SAM2_PATH
+    global TRAIN_SPLIT, VAL_SPLIT
+    global IMAGES_DIRNAME, FEATURES_DIRNAME
+    global TRAIN_IMAGES_DIR, VAL_IMAGES_DIR, TRAIN_FEATURES_DIR, VAL_FEATURES_DIR
 
-    OUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"
-    BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset"
-    DATASET = "coco2017"
-    # DATASET = "ETH3D"
-    SAM2_PATH = "/cluster/scratch/niacobone/sam2/checkpoints/sam2.1_hiera_large.pt"
-    
-else:
-    OUT_DIR = "/scratch2/nico/distillation/output"
-    BASE_DIR = "/scratch2/nico/distillation/dataset"
-    DATASET = "coco2017"
-    # DATASET = "ETH3D"
-    SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
+    run_cluster = not sys.stdout.isatty()
+    if run_cluster:
+        os.environ["TORCH_HOME"] = "/cluster/home/niacobone/torch_cache"
+        try:
+            _torch_hub.set_dir(os.environ["TORCH_HOME"])
+            print(f"[INFO] Torch hub cache dir set to {_torch_hub.get_dir()}")
+        except Exception:
+            pass
+        OUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"
+        BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset"
+        SAM2_PATH = "/cluster/scratch/niacobone/sam2/checkpoints/sam2.1_hiera_large.pt"
+    else:
+        OUT_DIR = "/scratch2/nico/distillation/output"
+        BASE_DIR = "/scratch2/nico/distillation/dataset"
+        SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
 
-# Dataset directory structure (consistent with distillation.py)
-if DATASET == "coco2017":
-    TRAIN_SPLIT = "train2017"
-    VAL_SPLIT = "val2017"
-else:
-    TRAIN_SPLIT = "train"
-    VAL_SPLIT = "val"
+    # Usa args.dataset
+    DATASET = args.dataset  # "coco2017" o "ETH3D"
 
-IMAGES_DIRNAME = "images"
-FEATURES_DIRNAME = "features"
+    if DATASET == "coco2017":
+        TRAIN_SPLIT = "train2017"
+        VAL_SPLIT = "val2017"
+    else:
+        TRAIN_SPLIT = "train"
+        VAL_SPLIT = "val"
 
-BASE_DIR = BASE_DIR + f"/{DATASET}"
-TRAIN_IMAGES_DIR = os.path.join(BASE_DIR, IMAGES_DIRNAME, TRAIN_SPLIT)
-VAL_IMAGES_DIR = os.path.join(BASE_DIR, IMAGES_DIRNAME, VAL_SPLIT)
-TRAIN_FEATURES_DIR = os.path.join(BASE_DIR, FEATURES_DIRNAME, TRAIN_SPLIT)
-VAL_FEATURES_DIR = os.path.join(BASE_DIR, FEATURES_DIRNAME, VAL_SPLIT)
+    IMAGES_DIRNAME = "images"
+    FEATURES_DIRNAME = "features"
 
-print(f"[INFO] Using TRAIN_IMAGES_DIR: {TRAIN_IMAGES_DIR}")
-print(f"[INFO] Using VAL_IMAGES_DIR: {VAL_IMAGES_DIR}")
-print(f"[INFO] Using TRAIN_FEATURES_DIR: {TRAIN_FEATURES_DIR}")
-print(f"[INFO] Using VAL_FEATURES_DIR: {VAL_FEATURES_DIR}")
+    BASE_DIR = BASE_DIR + f"/{DATASET}"
+    TRAIN_IMAGES_DIR = os.path.join(BASE_DIR, IMAGES_DIRNAME, TRAIN_SPLIT)
+    VAL_IMAGES_DIR = os.path.join(BASE_DIR, IMAGES_DIRNAME, VAL_SPLIT)
+    TRAIN_FEATURES_DIR = os.path.join(BASE_DIR, FEATURES_DIRNAME, TRAIN_SPLIT)
+    VAL_FEATURES_DIR = os.path.join(BASE_DIR, FEATURES_DIRNAME, VAL_SPLIT)
+
+    print(f"[INFO] Using TRAIN_IMAGES_DIR: {TRAIN_IMAGES_DIR}")
+    print(f"[INFO] Using VAL_IMAGES_DIR: {VAL_IMAGES_DIR}")
+    print(f"[INFO] Using TRAIN_FEATURES_DIR: {TRAIN_FEATURES_DIR}")
+    print(f"[INFO] Using VAL_FEATURES_DIR: {VAL_FEATURES_DIR}")
 
 # ==================== Dataset Classes ====================
 class DistillationDataset(Dataset):
@@ -986,6 +981,7 @@ def distill(args):
     """
     Main distillation training function.
     """
+    setup_runtime_paths(args)
     train_tools.init_distributed_mode(args.distributed)
     global_rank = train_tools.get_rank()
     
@@ -1582,6 +1578,7 @@ def get_args_parser():
     parser.add_argument("--normalize_features", action="store_true", help="Normalize features before loss")
     
     # Data
+    parser.add_argument("--dataset", type=str, default="coco2017", choices=["coco2017", "ETH3D"], help="Seleziona il dataset")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
     parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging")
     parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
