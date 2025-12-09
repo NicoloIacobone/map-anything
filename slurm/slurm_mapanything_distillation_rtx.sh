@@ -13,7 +13,7 @@
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=48:00:00
+#SBATCH --time=05:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -72,13 +72,12 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --num_workers 8 \
   --wandb_name "distillation_9_MV" \
-  --epochs 1000 \
+  --epochs 600 \
   --multi_view_mode \
   --max_views 8 \
   --num_workers 8 \
   --lr 0.0005 \
-  --lr_scheduler plateau \
-  --plateau_patience 15 \
+  --lr_scheduler none \
   --override_lr \
   --eval_freq 1 \
   --save_freq 1 \
