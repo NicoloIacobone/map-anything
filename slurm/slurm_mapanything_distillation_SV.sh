@@ -74,8 +74,8 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --dataset ETH3D_single \
   --wandb_name "SV_09_unfrozen" \
   --epochs 250 \
-  --lr 1e-3 \
-  --batch_size 16 \
+  --lr 5e-3 \
+  --batch_size 8 \
   --lr_scheduler none \
   --eval_freq 1 \
   --save_freq 10 \
