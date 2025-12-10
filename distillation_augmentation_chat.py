@@ -23,6 +23,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from torchvision import transforms
 
 import numpy as np
 import os
@@ -299,25 +300,100 @@ class TeacherFeatureExtractor:
     """
     Wrapper per estrazione feature SAM2 con gestione memoria efficiente.
     """
-    def __init__(self, checkpoint_path: str, device: str = "cuda"):
+    def __init__(self, checkpoint_path: str, device: str = "cuda", augment_cfg: Optional[dict] = None):
         from feature_extractor import load_sam2_feature_extractor
         self.extractor = load_sam2_feature_extractor(checkpoint_path, device)
         self.device = device
+        self.augment_cfg = augment_cfg or {}
+        self._build_augment_pipelines()
         print(f"[Teacher] Loaded SAM2 feature extractor on {device}")
     
+    def _build_augment_pipelines(self):
+        """Costruisce le pipeline di augmentation se configurate."""
+        if not self.augment_cfg.get("enabled", False):
+            self.augment_single = None
+            self.augment_shared = None
+            return
+        
+        # Parametri di default (poco invasivi)
+        p_color = self.augment_cfg.get("p_color_jitter", 0.8)
+        p_blur = self.augment_cfg.get("p_blur", 0.5)
+        p_gray = self.augment_cfg.get("p_grayscale", 0.2)
+        # Nota: l’aspect ratio è applicato via RandomResizedCrop
+        crop_scale = self.augment_cfg.get("crop_scale", (0.8, 1.0))
+        crop_ratio = self.augment_cfg.get("crop_ratio", (0.33, 1.0))
+        target_size = self.augment_cfg.get("target_size", None)  # es. (512, 512) se vuoi fissare output
+        
+        # Componenti atomicamente riutilizzabili
+        def _color_jitter():
+            return transforms.ColorJitter(
+                brightness=0.4, contrast=0.4, saturation=0.2, hue=0.1
+            )
+        
+        def _gaussian_blur():
+            return transforms.GaussianBlur(kernel_size=23, sigma=(0.1, 2.0))
+        
+        # La pipeline "shared" genera una sequenza deterministica che poi viene applicata a tutte le views
+        # per garantire coerenza intra-scena in multi-view.
+        def _make_shared_pipeline():
+            ops = []
+            # RandomResizedCrop con ratio tra 0.33 e 1
+            if target_size is not None:
+                ops.append(transforms.RandomResizedCrop(size=target_size, scale=crop_scale, ratio=crop_ratio))
+            else:
+                # se non fissiamo la size, usiamo un crop che mantiene dimensione originale via .size inferita più avanti
+                ops.append(transforms.RandomResizedCrop(size=None, scale=crop_scale, ratio=crop_ratio))
+            ops.append(transforms.RandomApply([_color_jitter()], p=p_color))
+            ops.append(transforms.RandomApply([_gaussian_blur()], p=p_blur))
+            ops.append(transforms.RandomGrayscale(p=p_gray))
+            return transforms.Compose(ops)
+        
+        # La pipeline "single" è uguale, ma ogni immagine genera i propri parametri random
+        def _make_single_pipeline():
+            return _make_shared_pipeline()
+        
+        self.augment_shared = _make_shared_pipeline()
+        self.augment_single = _make_single_pipeline()
+    
     @torch.no_grad()
-    def __call__(self, pil_images: List) -> torch.Tensor:
+    def __call__(self, pil_images: List, multi_view: bool = False) -> torch.Tensor:
         """
-        Estrae feature da lista di PIL images.
+        Estrae feature da lista di PIL images, con eventuale augmentation.
         
         Args:
             pil_images: Lista di PIL.Image objects
+            multi_view: se True, applica la stessa augmentation a tutte le views (coerenza intra-scena)
         
         Returns:
             torch.Tensor (B, 256, 64, 64)
         """
         features = []
-        for pil_img in pil_images:
+        # Decidi pipeline
+        use_aug = self.augment_cfg.get("enabled", False)
+        shared_aug_img = None
+        
+        if use_aug and multi_view and self.augment_shared is not None:
+            # Genera una trasformazione condivisa: per far sì che sia identica, applichiamo la
+            # pipeline una volta per ogni immagine, ma con stato deterministico fissato
+            # ottenuto via seed temporaneo.
+            # In pratica: campioniamo parametri una volta usando la prima immagine e riapplichiamo
+            # gli stessi parametri alle altre immagini clonando il risultato. Per semplicità,
+            # usiamo un approccio: fissiamo il generatore random.
+            g = torch.Generator()
+            g.manual_seed(random.randint(0, 2**31-1))
+            # Applica con generatore fissato
+            augmented_imgs = []
+            for idx, pil_img in enumerate(pil_images):
+                augmented_imgs.append(transforms.functional._apply_random_transform(pil_img, self.augment_shared, g))
+        else:
+            augmented_imgs = []
+            for pil_img in pil_images:
+                if use_aug and self.augment_single is not None:
+                    augmented_imgs.append(self.augment_single(pil_img))
+                else:
+                    augmented_imgs.append(pil_img)
+        
+        for pil_img in augmented_imgs:
             feat = self.extractor(pil_img)  # (1, 256, 64, 64) o (256, 64, 64)
             if isinstance(feat, np.ndarray):
                 feat = torch.from_numpy(feat)
@@ -657,7 +733,8 @@ def train_one_epoch_distillation(
             
             pil_images = batch["pil_images"]
             with torch.no_grad():
-                teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
+                # PASSA multi_view per coerenza intra-scena
+                teacher_features = teacher_extractor(pil_images, multi_view=args.multi_view_mode).to(device, non_blocking=True)
         
         # Forward pass to get student features
         student_features = forward_pass_distillation_unified(
@@ -771,7 +848,7 @@ def validate_one_epoch_distillation(
     device: torch.device,
     epoch: int,
     args,
-    teacher_extractor: Optional[TeacherFeatureExtractor] = None,  # ← NEW
+    teacher_extractor: Optional[TeacherFeatureExtractor] = None,
 ) -> Dict:
     """
     Validate the model for one epoch on distillation task.
@@ -832,7 +909,7 @@ def validate_one_epoch_distillation(
             teacher_features = batch["teacher_features"].to(device, non_blocking=True)
         else:
             pil_images = batch["pil_images"]
-            teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
+            teacher_features = teacher_extractor(pil_images, multi_view=args.multi_view_mode).to(device, non_blocking=True)
         
         # Forward pass
         student_features = forward_pass_distillation_unified(
@@ -966,8 +1043,8 @@ def save_pca_visualizations(
             print(f"Image path: {img_path}")
 
             # Ensure tensors are detached, cloned, and contiguous before saving
-            # student_single = student_single.detach().cpu().contiguous().clone()
-            # teacher_single = teacher_single.detach().cpu().contiguous().clone()
+            student_single = student_single.detach().cpu().contiguous().clone()
+            teacher_single = teacher_single.detach().cpu().contiguous().clone()
             img_basename = Path(img_path).stem  # Es: "000000544826"
             torch.save(student_single, student_save_path / f"{epoch}_{img_basename}.pt")
             torch.save(teacher_single, teacher_save_path / f"{epoch}_{img_basename}.pt")
@@ -1009,9 +1086,19 @@ def distill(args):
     teacher_extractor = None
     if not args.precomputed_features:
         print(f"[INFO] Initializing online teacher feature extractor from {SAM2_PATH}")
+        augment_cfg = {
+            "enabled": not getattr(args, "no_augmentation", False),
+            "p_color_jitter": 0.8,
+            "p_blur": 0.5,
+            "p_grayscale": 0.2,
+            "crop_scale": (0.8, 1.0),
+            "crop_ratio": (0.33, 1.0),
+            # "target_size": (512, 512),  # opzionale: imposta se vuoi output a size fissa
+        }
         teacher_extractor = TeacherFeatureExtractor(
             checkpoint_path=SAM2_PATH,
             device=str(device),
+            augment_cfg=augment_cfg,
         )
         teacher_extractor.to(device)
     
@@ -1190,17 +1277,6 @@ def distill(args):
         normalize=args.normalize_features,
     ).to(device)
 
-    # # ========== OPTIMIZER ==========
-    # trainable_params = [p for p in model.parameters() if p.requires_grad]
-
-    # optimizer = optim.AdamW(
-    #     trainable_params,
-    #     lr=args.lr,
-    #     weight_decay=args.weight_decay,
-    #     betas=(0.9, 0.95),
-    # )
-    # print(optimizer)
-
     # ========== OPTIMIZER con LR differenziati ==========
     head_params = []
     encoder_params = []
@@ -1235,6 +1311,17 @@ def distill(args):
     )
     print(f"[OPT] Groups: head={sum(p.numel() for p in head_params):,} params @ LR {lr_head}, "
           f"encoder={sum(p.numel() for p in encoder_params):,} params @ LR {lr_encoder}")
+
+    # # ========== OPTIMIZER ==========
+    # trainable_params = [p for p in model.parameters() if p.requires_grad]
+
+    # optimizer = optim.AdamW(
+    #     trainable_params,
+    #     lr=args.lr,
+    #     weight_decay=args.weight_decay,
+    #     betas=(0.9, 0.95),
+    # )
+    # print(optimizer)
 
     #################### DEBUG ########################
     # # subito DOPO aver creato optimizer (una sola volta)
@@ -1619,6 +1706,7 @@ def get_args_parser():
     parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging")
     parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
     parser.add_argument("--precomputed_features", action="store_true", help="Use precomputed features from disk")
+    parser.add_argument("--no_augmentation", action="store_true", help="Disable data augmentation in online mode")
     
     # Multi-view
     parser.add_argument("--multi_view_mode", action="store_true", help="Enable multi-view mode (cross-attention between views)")
