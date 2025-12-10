@@ -73,7 +73,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --num_workers 8 \
   --dataset ETH3D_single \
   --wandb_name "SV_ETH3D" \
-  --epochs 100 \
+  --epochs 250 \
   --lr 1e-3 \
   --batch_size 16 \
   --lr_scheduler none \
@@ -81,11 +81,11 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --save_freq 10 \
   --print_freq 100 \
   --amp \
-  --save_visualizations
+  --save_visualizations \
+  --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D \
+  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D/checkpoints/checkpoint_epoch100.pth \
+  --wandb_resume_id n0h9ug8q
 #   --precomputed_features
-#   --wandb_resume_id oqqmwibs \
-#   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV \
-#   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV/checkpoints/checkpoint_epoch604.pth
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
