@@ -966,8 +966,8 @@ def save_pca_visualizations(
             print(f"Image path: {img_path}")
 
             # Ensure tensors are detached, cloned, and contiguous before saving
-            # student_single = student_single.detach().cpu().contiguous().clone()
-            # teacher_single = teacher_single.detach().cpu().contiguous().clone()
+            student_single = student_single.detach().cpu().contiguous().clone()
+            teacher_single = teacher_single.detach().cpu().contiguous().clone()
             img_basename = Path(img_path).stem  # Es: "000000544826"
             torch.save(student_single, student_save_path / f"{epoch}_{img_basename}.pt")
             torch.save(teacher_single, teacher_save_path / f"{epoch}_{img_basename}.pt")
@@ -1190,16 +1190,51 @@ def distill(args):
         normalize=args.normalize_features,
     ).to(device)
 
-    # ========== OPTIMIZER ==========
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    # ========== OPTIMIZER con LR differenziati ==========
+    head_params = []
+    encoder_params = []
+    other_params = []
+
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if name.startswith("dpt_feature_head_2"):
+            head_params.append(p)
+        elif name.startswith("info_sharing") or name.startswith("sam2_compat"):
+            encoder_params.append(p)
+        else:
+            other_params.append(p)
+
+    # Fallback: se alcuni parametri trainabili non rientrano nelle categorie, mettili nel gruppo head
+    if other_params:
+        print(f"[WARN] {sum(op.numel() for op in other_params):,} trainable params not matched; assigning to HEAD LR group.")
+        head_params.extend(other_params)
+
+    lr_head = args.lr
+    lr_encoder = args.lr * args.lr_encoder_scale
 
     optimizer = optim.AdamW(
-        trainable_params,
-        lr=args.lr,
+        [
+            {"params": head_params, "lr": lr_head},
+            {"params": encoder_params, "lr": lr_encoder},
+        ],
+        lr=args.lr,  # non usato per i gruppi espliciti, rimane come default
         weight_decay=args.weight_decay,
         betas=(0.9, 0.95),
     )
-    print(optimizer)
+    print(f"[OPT] Groups: head={sum(p.numel() for p in head_params):,} params @ LR {lr_head}, "
+          f"encoder={sum(p.numel() for p in encoder_params):,} params @ LR {lr_encoder}")
+
+    # # ========== OPTIMIZER ==========
+    # trainable_params = [p for p in model.parameters() if p.requires_grad]
+
+    # optimizer = optim.AdamW(
+    #     trainable_params,
+    #     lr=args.lr,
+    #     weight_decay=args.weight_decay,
+    #     betas=(0.9, 0.95),
+    # )
+    # print(optimizer)
 
     #################### DEBUG ########################
     # # subito DOPO aver creato optimizer (una sola volta)
@@ -1610,6 +1645,7 @@ def get_args_parser():
 
     # Unfreeze strategy
     parser.add_argument("--num_info_sharing_blocks_unfreeze", type=int, default=0, help="Number of last info_sharing transformer blocks to unfreeze")
+    parser.add_argument("--lr_encoder_scale", type=float, default=0.1, help="Scale factor for encoder LR relative to --lr")
     
     # comando debug pc lab
     # python distillation_test_multi_view_gemini.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2

@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=MV_07
+#SBATCH --job-name=MV_08_unfrozen
 #
 # Specify output file.
-#SBATCH --output=MV_07_%j.log
+#SBATCH --output=MV_08_unfrozen_%j.log
 #
 # Specify error file.
-#SBATCH --error=MV_07_%j.err
+#SBATCH --error=MV_08_unfrozen_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -73,16 +73,17 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --num_workers 8 \
   --multi_view_mode \
   --dataset ETH3D \
-  --wandb_name "MV_07" \
-  --epochs 500 \
-  --lr 1.25e-4 \
-  --max_views 1 \
+  --wandb_name "MV_08_unfrozen" \
+  --epochs 100 \
+  --lr 5e-4 \
+  --max_views 8 \
   --lr_scheduler none \
   --eval_freq 1 \
-  --save_freq 10 \
+  --save_freq 25 \
   --print_freq 100 \
   --amp \
-  --save_visualizations
+  --save_visualizations \
+  --num_info_sharing_blocks_unfreeze 24
 #   --wandb_resume_id oqqmwibs \
 #   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV \
 #   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV/checkpoints/checkpoint_epoch604.pth
