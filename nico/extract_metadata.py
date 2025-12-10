@@ -5,10 +5,17 @@ from tqdm import tqdm
 
 # ================= CONFIGURAZIONE =================
 # Percorso del file HDF5 sorgente
+<<<<<<< HEAD
 H5_PATH = "/Users/nicoloiacobone/Desktop/nico/UNIVERSITA/MAGISTRALE/Tesi/Tommasi/Zurigo/git_clones/distillation/dataset/DL3DV.hdf5"
 
 # Dove estrarre i dati (crea questa cartella se non esiste)
 EXTRACT_ROOT = "/Users/nicoloiacobone/Desktop/nico/UNIVERSITA/MAGISTRALE/Tesi/Tommasi/Zurigo/git_clones/distillation/dataset/DL3DV_Extracted"
+=======
+H5_PATH = "/scratch2/nico/distillation/dataset/DL3DV.hdf5"
+
+# Dove estrarre i dati (crea questa cartella se non esiste)
+EXTRACT_ROOT = "/scratch2/nico/distillation/dataset/DL3DV_Extracted"
+>>>>>>> 353dfdd (debug - added some utils code)
 # ==================================================
 
 def save_data(name, dataset, output_root):
