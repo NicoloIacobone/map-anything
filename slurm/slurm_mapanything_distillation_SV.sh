@@ -72,20 +72,20 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --num_workers 8 \
   --dataset ETH3D_single \
-  --wandb_name "SV_09_unfrozen" \
-  --epochs 250 \
-  --lr 2.5e-3 \
-  --batch_size 4 \
+  --wandb_name "SV_ETH3D" \
+  --epochs 500 \
+  --lr 1e-3 \
+  --batch_size 16 \
   --lr_scheduler none \
   --eval_freq 1 \
   --save_freq 10 \
   --print_freq 100 \
   --amp \
   --save_visualizations \
-  --num_info_sharing_blocks_unfreeze 24
-#   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D \
-#   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D/checkpoints/checkpoint_epoch100.pth \
-#   --wandb_resume_id n0h9ug8q
+  --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D \
+  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D/checkpoints/checkpoint_epoch250.pth \
+  --wandb_resume_id n0h9ug8q
+#   --num_info_sharing_blocks_unfreeze 24
 #   --precomputed_features
 
 echo "=== Job finished at $(date) ==="
