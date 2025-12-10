@@ -76,7 +76,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --wandb_name "MV_09_unfrozen" \
   --epochs 100 \
   --lr 5e-3 \
-  --max_views 8 \
+  --max_views 4 \
   --lr_scheduler none \
   --eval_freq 1 \
   --save_freq 25 \
