@@ -67,7 +67,7 @@ fi
 echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 
 # Usa automaticamente tutte le GPU disponibili
-torchrun --nproc_per_node=$NUM_GPUS distillation.py \
+torchrun --nproc_per_node=$NUM_GPUS distillation_old.py \
   --distributed \
   --use_wandb \
   --num_workers 8 \
