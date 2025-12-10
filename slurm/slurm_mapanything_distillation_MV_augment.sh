@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=SV_09_unfrozen
+#SBATCH --job-name=MV_03_augment
 #
 # Specify output file.
-#SBATCH --output=SV_09_unfrozen_%j.log
+#SBATCH --output=MV_03_augment_%j.log
 #
 # Specify error file.
-#SBATCH --error=SV_09_unfrozen_%j.err
+#SBATCH --error=MV_03_augment_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -67,26 +67,26 @@ fi
 echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 
 # Usa automaticamente tutte le GPU disponibili
-torchrun --nproc_per_node=$NUM_GPUS distillation.py \
+torchrun --nproc_per_node=$NUM_GPUS distillation_augmentation_chat.py \
   --distributed \
   --use_wandb \
   --num_workers 8 \
-  --dataset ETH3D_single \
-  --wandb_name "SV_ETH3D" \
-  --epochs 500 \
+  --multi_view_mode \
+  --dataset ETH3D \
+  --wandb_name "MV_03_augment" \
+  --epochs 100 \
   --lr 1e-3 \
-  --batch_size 16 \
+  --max_views 16 \
   --lr_scheduler none \
   --eval_freq 1 \
-  --save_freq 10 \
+  --save_freq 25 \
   --print_freq 100 \
   --amp \
-  --save_visualizations \
-  --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D \
-  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D/checkpoints/checkpoint_epoch250.pth \
-  --wandb_resume_id n0h9ug8q
+  --save_visualizations
 #   --num_info_sharing_blocks_unfreeze 24
-#   --precomputed_features
+#   --wandb_resume_id oqqmwibs \
+#   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV \
+#   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distillation_9_MV/checkpoints/checkpoint_epoch604.pth
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
