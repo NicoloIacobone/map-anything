@@ -23,6 +23,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from torchvision import transforms
 
 import numpy as np
 import os
@@ -299,33 +300,118 @@ class TeacherFeatureExtractor:
     """
     Wrapper per estrazione feature SAM2 con gestione memoria efficiente.
     """
-    def __init__(self, checkpoint_path: str, device: str = "cuda"):
+    def __init__(self, checkpoint_path: str, device: str = "cuda", augment_cfg: Optional[dict] = None):
         from feature_extractor import load_sam2_feature_extractor
         self.extractor = load_sam2_feature_extractor(checkpoint_path, device)
         self.device = device
+        self.augment_cfg = augment_cfg or {}
+        self._build_augment_pipelines()
         print(f"[Teacher] Loaded SAM2 feature extractor on {device}")
-    
+
+    def _build_augment_pipelines(self):
+        """Costruisce le pipeline di augmentation IDENTICHE a MapAnything ufficiale."""
+        if not self.augment_cfg.get("enabled", False):
+            self.augment_single = None
+            self.augment_shared = None
+            return
+        
+        # Parametri UFFICIALI MapAnything (transform="colorjitter+grayscale+gaublur")
+        p_color = 0.75   # ColorJitter al 75%
+        p_blur = 0.05    # GaussianBlur al 5%
+        p_gray = 0.05    # Grayscale al 5%
+        
+        def _color_jitter():
+            return transforms.ColorJitter(
+                brightness=0.3,
+                contrast=0.4,
+                saturation=0.2,
+                hue=0.1
+            )
+        
+        def _gaussian_blur():
+            return transforms.GaussianBlur(
+                kernel_size=5,
+                sigma=(0.1, 1.0)
+            )
+        
+        def _make_pipeline():
+            ops = []
+            ops.append(transforms.RandomApply([_color_jitter()], p=p_color))
+            ops.append(transforms.RandomGrayscale(p=p_gray))
+            ops.append(transforms.RandomApply([_gaussian_blur()], p=p_blur))
+            return transforms.Compose(ops)
+        
+        self.augment_shared = _make_pipeline()
+        self.augment_single = _make_pipeline()
+
     @torch.no_grad()
-    def __call__(self, pil_images: List) -> torch.Tensor:
-        """
-        Estrae feature da lista di PIL images.
+    def __call__(self, pil_images: List, multi_view: bool = False, debug_visualize: bool = False) -> torch.Tensor:
+        """Estrae feature con augmentation e opzionale debug visualizzazione."""
+        import matplotlib.pyplot as plt
+        from datetime import datetime
         
-        Args:
-            pil_images: Lista di PIL.Image objects
-        
-        Returns:
-            torch.Tensor (B, 256, 64, 64)
-        """
         features = []
-        for pil_img in pil_images:
-            feat = self.extractor(pil_img)  # (1, 256, 64, 64) o (256, 64, 64)
+        use_aug = self.augment_cfg.get("enabled", False)
+        
+        # DEBUG: Salva PRIMA augmentation
+        if debug_visualize and use_aug:
+            debug_dir = Path("debug_augmentation")
+            debug_dir.mkdir(exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            
+            for idx, pil_img in enumerate(pil_images):
+                pil_img.save(debug_dir / f"{timestamp}_before_{idx:02d}.png")
+        
+        # Applica augmentation
+        if use_aug and multi_view and self.augment_shared is not None:
+            scene_seed = random.randint(0, 2**31-1)
+            augmented_imgs = []
+            for pil_img in pil_images:
+                torch.manual_seed(scene_seed)
+                random.seed(scene_seed)
+                augmented_imgs.append(self.augment_shared(pil_img))
+        else:
+            augmented_imgs = []
+            for pil_img in pil_images:
+                if use_aug and self.augment_single is not None:
+                    augmented_imgs.append(self.augment_single(pil_img))
+                else:
+                    augmented_imgs.append(pil_img)
+        
+        # DEBUG: Salva DOPO augmentation + comparison
+        if debug_visualize and use_aug:
+            for idx, aug_img in enumerate(augmented_imgs):
+                aug_img.save(debug_dir / f"{timestamp}_after_{idx:02d}.png")
+            
+            n = len(pil_images)
+            fig, axes = plt.subplots(2, n, figsize=(4*n, 8))
+            if n == 1:
+                axes = axes.reshape(2, 1)
+            
+            for idx in range(n):
+                axes[0, idx].imshow(pil_images[idx])
+                axes[0, idx].set_title(f"Before #{idx}")
+                axes[0, idx].axis('off')
+                
+                axes[1, idx].imshow(augmented_imgs[idx])
+                axes[1, idx].set_title(f"After #{idx}")
+                axes[1, idx].axis('off')
+            
+            plt.tight_layout()
+            plt.savefig(debug_dir / f"{timestamp}_comparison.png", dpi=150)
+            plt.close()
+            print(f"[DEBUG] Salvate immagini in {debug_dir}/")
+        
+        # Estrai features
+        for pil_img in augmented_imgs:
+            feat = self.extractor(pil_img)
             if isinstance(feat, np.ndarray):
                 feat = torch.from_numpy(feat)
             if feat.ndim == 3:
-                feat = feat.unsqueeze(0)  # (1, 256, 64, 64)
+                feat = feat.unsqueeze(0)
             features.append(feat)
         
-        return torch.cat(features, dim=0)  # (B, 256, 64, 64)
+        return torch.cat(features, dim=0)
     
     def to(self, device):
         """Move extractor to device."""
@@ -632,21 +718,6 @@ def train_one_epoch_distillation(
         
         # Get data
         image_paths = batch["image_paths"]
-
-        # [DEBUG] Stampa scene e views (raggruppate per cartella padre)
-        # if args.multi_view_mode:
-        #     try:
-        #         by_scene = {}
-        #         for p in image_paths:
-        #             scene = str(Path(p).parent)
-        #             by_scene.setdefault(scene, []).append(p)
-        #         print(f"[Train][SceneViews] Batch {data_iter_step}:")
-        #         for scene, views in sorted(by_scene.items()):
-        #             print(f"  {scene}")
-        #             for v in views:
-        #                 print(f"    - {v}")
-        #     except Exception:
-        #         pass
         
         # Extract or load teacher features
         if mode == "precomputed":
@@ -657,7 +728,13 @@ def train_one_epoch_distillation(
             
             pil_images = batch["pil_images"]
             with torch.no_grad():
-                teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
+                # PASSA multi_view per coerenza intra-scena
+                # teacher_features = teacher_extractor(pil_images, multi_view=args.multi_view_mode).to(device, non_blocking=True)
+                teacher_features = teacher_extractor(
+                    pil_images, 
+                    multi_view=args.multi_view_mode,
+                    # debug_visualize=(data_iter_step < 3 and epoch == 0)  # ← Primi 3 batch
+                ).to(device, non_blocking=True)
         
         # Forward pass to get student features
         student_features = forward_pass_distillation_unified(
@@ -771,7 +848,7 @@ def validate_one_epoch_distillation(
     device: torch.device,
     epoch: int,
     args,
-    teacher_extractor: Optional[TeacherFeatureExtractor] = None,  # ← NEW
+    teacher_extractor: Optional[TeacherFeatureExtractor] = None,
 ) -> Dict:
     """
     Validate the model for one epoch on distillation task.
@@ -811,28 +888,13 @@ def validate_one_epoch_distillation(
             print(f"[Val] Feature extraction mode: {mode.upper()}")
         
         image_paths = batch["image_paths"]
-
-        # [DEBUG] Stampa scene e views (raggruppate per cartella padre)
-        # if args.multi_view_mode:
-        #     try:
-        #         by_scene = {}
-        #         for p in image_paths:
-        #             scene = str(Path(p).parent)
-        #             by_scene.setdefault(scene, []).append(p)
-        #         print(f"[Val][SceneViews] Batch {batch_idx}:")
-        #         for scene, views in sorted(by_scene.items()):
-        #             print(f"  {scene}")
-        #             for v in views:
-        #                 print(f"    - {v}")
-        #     except Exception:
-        #         pass
         
         # Extract or load teacher features
         if mode == "precomputed":
             teacher_features = batch["teacher_features"].to(device, non_blocking=True)
         else:
             pil_images = batch["pil_images"]
-            teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
+            teacher_features = teacher_extractor(pil_images, multi_view=args.multi_view_mode).to(device, non_blocking=True)
         
         # Forward pass
         student_features = forward_pass_distillation_unified(
@@ -1009,9 +1071,17 @@ def distill(args):
     teacher_extractor = None
     if not args.precomputed_features:
         print(f"[INFO] Initializing online teacher feature extractor from {SAM2_PATH}")
+        augment_cfg = {
+            "enabled": not getattr(args, "no_augmentation", False),
+            "p_color_jitter": 0.75,     # 75% probabilità (UFFICIALE MapAnything)
+            "p_blur": 0.05,              # 5% probabilità (UFFICIALE, era 0.5!)
+            "p_grayscale": 0.05,         # 5% probabilità (UFFICIALE, era 0.2!)
+            # NOTA: MapAnything NON usa RandomResizedCrop, rimosso da pipeline
+        }
         teacher_extractor = TeacherFeatureExtractor(
             checkpoint_path=SAM2_PATH,
             device=str(device),
+            augment_cfg=augment_cfg,
         )
         teacher_extractor.to(device)
     
@@ -1224,28 +1294,6 @@ def distill(args):
     )
     print(f"[OPT] Groups: head={sum(p.numel() for p in head_params):,} params @ LR {lr_head}, "
           f"encoder={sum(p.numel() for p in encoder_params):,} params @ LR {lr_encoder}")
-
-    # # ========== OPTIMIZER ==========
-    # trainable_params = [p for p in model.parameters() if p.requires_grad]
-
-    # optimizer = optim.AdamW(
-    #     trainable_params,
-    #     lr=args.lr,
-    #     weight_decay=args.weight_decay,
-    #     betas=(0.9, 0.95),
-    # )
-    # print(optimizer)
-
-    #################### DEBUG ########################
-    # # subito DOPO aver creato optimizer (una sola volta)
-    # print("OPTIMIZER param groups summary:")
-    # for i, pg in enumerate(optimizer.param_groups):
-    #     n_params = sum(p.numel() for p in pg['params'])
-    #     print(f" pg {i}: lr={pg.get('lr')}, params={n_params:,}")
-    # # totale trainable come prima stampata
-    # trainable_opt_params = sum(p.numel() for p in optimizer.param_groups[0]['params'])
-    # print("Total params in first group (approx):", trainable_opt_params)
-    ###################################################
     
     # ========== WRAPPING IN DDP ==========
     if args.distributed.distributed:
@@ -1619,6 +1667,7 @@ def get_args_parser():
     parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging")
     parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
     parser.add_argument("--precomputed_features", action="store_true", help="Use precomputed features from disk")
+    parser.add_argument("--no_augmentation", action="store_true", help="Disable data augmentation in online mode")
     
     # Multi-view
     parser.add_argument("--multi_view_mode", action="store_true", help="Enable multi-view mode (cross-attention between views)")

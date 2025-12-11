@@ -1,769 +1,1526 @@
-# Optional config for better memory efficiency
 """
-Simple single-GPU distillation script:
-Per ogni cartella:
-  - carica tutte le immagini come un batch multi-view
-  - carica le teacher features (una per immagine) già salvate su disco
-  - esegue un forward del modello (in modalità training) per ottenere gli embeddings della head aggiuntiva
-  - calcola una loss MSE tra embeddings student e teacher (dopo eventuale pooling / normalizzazione)
+Distillation Training Script for MapAnything - SAM2 Encoder Knowledge Transfer
 
-Assunzioni:
-  - La head aggiuntiva (dpt_feature_head_2) è stata integrata in MapAnything e salva le sue uscite in
-    res[i]["_last_feat2_8x"] durante il forward (NON infer, perché infer è in no_grad).
-  - Le teacher features sono salvate con nome: <nome_immagine>_features.pt nella stessa cartella (o modificare pattern).
-  - Ogni file teacher contiene un tensore shape (C, Ht, Wt) o (1, C, Ht, Wt).
+This script implements knowledge distillation from SAM2's encoder features into
+an additional DPT head (dpt_feature_head_2) in the MapAnything model.
+
+Architecture:
+- Teacher: SAM2 encoder features (pre-computed and saved as .pt files)
+- Student: dpt_feature_head_2 in MapAnything (feature_upsampled_8x output)
+- Loss: Combination of MSE and Cosine Similarity on per-pixel features
+
+References:
+- MapAnything training: mapanything/train/training.py
+- Original distillation script: distillation.py
 """
-
+import argparse
+import datetime
+import math
 import os
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-from pathlib import Path
+import random
+import sys
 import time
+import zipfile
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
+import os
 import torch
-import torch.nn as nn
+import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 import torch.optim as optim
-import csv
-import wandb
+from torch.utils.data import DataLoader, Dataset
+
+# Optional: psutil for CPU memory monitoring
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+
+# Optional: wandb for experiment tracking
+try:
+    import wandb  # type: ignore[import-not-found]
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+    wandb = None  # type: ignore
+    print("[WARN] wandb not installed. Logging to wandb disabled.")
 
 from mapanything.models import MapAnything
 from mapanything.utils.image import load_images
-from nico.utils import mean_std_difference, heatmap_sanity_check_single_channel, heatmap_sanity_check_avg_all_channels, create_student_original_teacher_side_by_side, resize_to_64x64
-import random
-from tqdm import tqdm
-import sys
-from PIL import Image
+from mapanything.utils import train_tools
+from nico.utils import mean_std_difference, create_student_original_teacher_side_by_side
 
-disable_tqdm = not sys.stdout.isatty() # flag used to understand if I'm working on cluster or locally (lab)
+# Enable TF32 precision if supported
+if hasattr(torch.backends.cuda, "matmul") and hasattr(
+    torch.backends.cuda.matmul, "allow_tf32"
+):
+    torch.backends.cuda.matmul.allow_tf32 = True
 
-if disable_tqdm:
+# ==================== Runtime/Environment Settings ====================
+# Rilevazione ambiente ed impostazione percorsi:
+# - se non c'è un TTY (tipico dei job su cluster), run_cluster=True;
+# - si impostano cache/percorsi di input, output e dataset COCO2017 coerenti;
+# - i DataLoader useranno i path derivati dalle costanti sottostanti.
+# Questo evita di dover passare i path da CLI e mantiene coerenza con distillation.py.
+# Determine if we're running on the cluster (no TTY) and set paths accordingly
+run_cluster = not sys.stdout.isatty()
+if run_cluster:
+    # Optional: set torch hub cache to a persistent location on cluster
     os.environ["TORCH_HOME"] = "/cluster/home/niacobone/torch_cache"
-    torch.hub.set_dir(os.environ["TORCH_HOME"])
-    print(f"[INFO] Torch hub cache dir set to {torch.hub.get_dir()}")
+    try:
+        import torch.hub as _torch_hub
+        _torch_hub.set_dir(os.environ["TORCH_HOME"])
+        print(f"[INFO] Torch hub cache dir set to {_torch_hub.get_dir()}")
+    except Exception:
+        pass
 
-# ==================== CONFIGURAZIONE MANUALE ====================
-# Modifica qui i parametri invece di passare argomenti da CLI
-USE_WANDB = True                       # Abilita logging su wandb
-WANDB_NOTES = "run_1"
-if disable_tqdm:
-    INPUT_DIR = "/cluster/scratch/niacobone/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
-    BASE_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"         # Directory per log / checkpoint
-    COCO2017_ROOT = "/cluster/scratch/niacobone/distillation/coco2017"  # root che contiene 'train' e 'val'
+    OUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"
+    BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset"
+    DATASET = "coco2017"
+    # DATASET = "ETH3D"
+    SAM2_PATH = "/cluster/scratch/niacobone/sam2/checkpoints/sam2.1_hiera_large.pt"
+    
 else:
-    INPUT_DIR = "/scratch2/nico/distillation/training_samples"           # Directory che contiene sottocartelle di immagini
-    BASE_DIR = "/scratch2/nico/distillation/output"         # Directory per log / checkpoint
-    COCO2017_ROOT = "/scratch2/nico/distillation/coco2017"  # root che contiene 'train' e 'val'
-OUTPUT_DIR = os.path.join(BASE_DIR, WANDB_NOTES)
-CHECKPOINT_DIR = os.path.join(OUTPUT_DIR, "checkpoints")
-IMAGES_DIRNAME = "val2017"              # sottocartella immagini dentro ogni split
-FEATURES_DIRNAME = "teacher_features"   # sottocartella features dentro ogni split
-TRAIN_SPLIT = "train"
-VAL_SPLIT = "val"
-TRAIN_IMAGES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, IMAGES_DIRNAME)
-VAL_IMAGES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, IMAGES_DIRNAME)
-TRAIN_FEATURES_DIR = os.path.join(COCO2017_ROOT, TRAIN_SPLIT, FEATURES_DIRNAME)
-VAL_FEATURES_DIR = os.path.join(COCO2017_ROOT, VAL_SPLIT, FEATURES_DIRNAME)
-EPOCHS = 200                                 # Numero di epoche - insensatamente alto ma tanto c'è early stopping
-LR = 1e-4                                   # Learning rate
-WEIGHT_DECAY = 0.0                          # Weight decay AdamW
-EMB_POOL_SIZE = 64                          # (Non usato direttamente ora, placeholder se estendi pooling custom)
-SEED = 0                                    # Seed random
-AMP = True                                  # Abilita autocast mixed precision
-NORM = False                                # Normalizza embeddings prima della loss
-SINGLE_IMAGE = True                         # Carica e processa una immagine per volta (batch size 1)
-BATCH_SIZE_IMAGES = 1                       # Numero di immagini per batch (per sfruttare meglio la GPU)
-DEBUG_MAX_TRAIN_IMAGES = None               # <= usa solo immagini campionate a caso in train (None o 0 per disabilitare)
-DEBUG_MAX_VAL_IMAGES = 50                   # opzionale: limita anche la val (None o 0 per disabilitare)
-NUM_HEATMAPS = 10                          # Numero di heatmaps da salvare dopo il training
-VALIDATION = True                          # Esegui validazione ad ogni epoca
-# ===============================================================
-# Riprendi da checkpoint (se non None)
-# LOAD_CHECKPOINT = "checkpoint_final.pth"  # es: "checkpoint_final.pth" oppure None
-LOAD_CHECKPOINT = None
-# ===============================================================
-# Early stopping e ReduceLROnPlateau (impostare a True/False per abilitare/disabilitare)
-USE_EARLY_STOPPING = True
-EARLY_STOPPING_PATIENCE = 5  # epoche senza miglioramento prima di fermare
-USE_LR_ON_PLATEAU = True
-LR_ON_PLATEAU_PATIENCE = 3   # epoche senza miglioramento prima di ridurre LR
-LR_ON_PLATEAU_FACTOR = 0.5   # fattore di riduzione LR
-MIN_LR = 1e-7                # learning rate minimo consentito
-# =================================================================
+    OUT_DIR = "/scratch2/nico/distillation/output"
+    BASE_DIR = "/scratch2/nico/distillation/dataset"
+    DATASET = "coco2017"
+    # DATASET = "ETH3D"
+    SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
 
-def save_checkpoint(model, optimizer, epoch, loss, output_dir, tag="last"):
-    # Salva solo la dpt_feature_head_2 e l'optimizer
+# Dataset directory structure (consistent with distillation.py)
+if DATASET == "coco2017":
+    TRAIN_SPLIT = "train2017"
+    VAL_SPLIT = "val2017"
+elif DATASET == "ETH3D":
+    TRAIN_SPLIT = "train"
+    VAL_SPLIT = "val"
+
+IMAGES_DIRNAME = "images"
+FEATURES_DIRNAME = "features"
+
+BASE_DIR = BASE_DIR + f"/{DATASET}"
+TRAIN_IMAGES_DIR = os.path.join(BASE_DIR, IMAGES_DIRNAME, TRAIN_SPLIT)
+VAL_IMAGES_DIR = os.path.join(BASE_DIR, IMAGES_DIRNAME, VAL_SPLIT)
+TRAIN_FEATURES_DIR = os.path.join(BASE_DIR, FEATURES_DIRNAME, TRAIN_SPLIT)
+VAL_FEATURES_DIR = os.path.join(BASE_DIR, FEATURES_DIRNAME, VAL_SPLIT)
+
+print(f"[INFO] Using TRAIN_IMAGES_DIR: {TRAIN_IMAGES_DIR}")
+print(f"[INFO] Using VAL_IMAGES_DIR: {VAL_IMAGES_DIR}")
+print(f"[INFO] Using TRAIN_FEATURES_DIR: {TRAIN_FEATURES_DIR}")
+print(f"[INFO] Using VAL_FEATURES_DIR: {VAL_FEATURES_DIR}")
+
+# ==================== Dataset Classes ====================
+class DistillationDataset(Dataset):
+    """
+    Dataset per la distillazione: carica immagini e le corrispondenti feature del teacher.
+    
+    Args:
+        image_dir: cartella contenente le immagini.
+        features_dir: cartella con le feature del teacher pre-computate (.pt per immagine),
+            salvate come <basename>.pt. Se None, le feature saranno calcolate online.
+        teacher_extractor: funzione che estrae feature online (richiesto se features_dir=None).
+        image_paths: lista opzionale di path da usare; se None, scansiona image_dir.
+        transform: eventuale trasformazione (non usata direttamente; il caricamento
+            vero per il modello avviene con load_images nella forward stage).
+    """
+    
+    def __init__(
+        self,
+        image_dir: str,
+        features_dir: Optional[str] = None,
+        teacher_extractor: Optional[callable] = None,
+        image_paths: Optional[List[str]] = None,
+        transform=None,
+    ):
+        self.image_dir = Path(image_dir)
+        self.features_dir = Path(features_dir) if features_dir else None
+        self.teacher_extractor = teacher_extractor
+        self.transform = transform
+        
+        # Validation: at least one method must be available
+        if self.features_dir is None and self.teacher_extractor is None:
+            raise ValueError("Either features_dir or teacher_extractor must be provided")
+        
+        # Mode detection
+        self.mode = "precomputed" if self.features_dir else "online"
+        
+        # Single-view mode: one image per sample
+        if image_paths is None:
+            self.image_paths = sorted([
+                str(self.image_dir / f)
+                for f in os.listdir(self.image_dir)
+                if self._is_image_file(f)
+            ])
+        else:
+            self.image_paths = image_paths
+        
+        print(f"[Dataset] Mode: {self.mode.upper()}")
+        print(f"[Dataset] Loaded {len(self.image_paths)} images (single-view) from {image_dir}")
+        if self.mode == "precomputed":
+            print(f"[Dataset] Using pre-computed features from {self.features_dir}")
+        else:
+            print(f"[Dataset] Using online feature extraction with teacher model")
+    
+    @staticmethod
+    def _is_image_file(name: str) -> bool:
+        """Check if file is an image based on extension."""
+        return name.lower().endswith((".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"))
+    
+    def __len__(self) -> int:
+        return len(self.image_paths)
+    
+    def __getitem__(self, idx: int) -> Dict:
+        """
+        Ritorna:
+            Single-view mode:
+                - 'image_path': path all'immagine (str)
+                - 'teacher_features': Tensor (C,H,W) se precomputed, None se online
+                - 'pil_image': PIL.Image se online, None se precomputed
+        
+        Gestisce file corrotti tentando di caricare il sample successivo.
+        """
+        max_attempts = 10
+        
+        for attempt in range(max_attempts):
+            try:
+                actual_idx = (idx + attempt) % len(self.image_paths)
+                img_path = self.image_paths[actual_idx]
+                img_name = Path(img_path).stem
+                
+                if self.mode == "precomputed":
+                    # Load pre-computed features
+                    feat_path = self.features_dir / f"{img_name}.pt"
+                    if not feat_path.exists():
+                        raise FileNotFoundError(f"Teacher features not found: {feat_path}")
+                    
+                    teacher_feat = torch.load(feat_path, map_location="cpu", weights_only=False)
+                    if teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
+                        teacher_feat = teacher_feat.squeeze(0)
+                    
+                    return {
+                        "image_path": img_path,
+                        "teacher_features": teacher_feat,
+                        "pil_image": None,
+                    }
+                
+                else:  # online mode
+                    # Load PIL image for online extraction
+                    from PIL import Image
+                    pil_img = Image.open(img_path).convert("RGB")
+                    
+                    return {
+                        "image_path": img_path,
+                        "teacher_features": None,  # Will be computed in collate_fn
+                        "pil_image": pil_img,
+                    }
+            
+            except (RuntimeError, EOFError, zipfile.BadZipFile) as e:
+                if attempt == 0:
+                    print(f"[WARN] Corrupted file at idx {actual_idx} ({img_path}): {e}. Trying next sample...", flush=True)
+                if attempt == max_attempts - 1:
+                    raise RuntimeError(
+                        f"Failed to load valid sample after {max_attempts} attempts starting from idx {idx}. "
+                        f"Multiple corrupted files detected."
+                    )
+                continue
+
+def collate_fn_distillation(batch: List[Dict]) -> Dict:
+    """
+    Collate function personalizzata per il dataset di distillazione.
+    Supporta sia pre-computed che online feature extraction.
+    
+    Single-view returns:
+        - 'image_paths': lista di path (B)
+        - 'teacher_features': Tensor (B,C,H,W)
+    """
+    image_paths = [item["image_path"] for item in batch]
+    
+    # Check mode (precomputed vs online)
+    if batch[0]["teacher_features"] is not None:
+        # Precomputed mode
+        teacher_feats = torch.stack([item["teacher_features"] for item in batch], dim=0)
+    else:
+        # Online mode: features will be extracted in train loop
+        # Return dummy tensor to maintain batch structure
+        teacher_feats = None
+    
+    # Collect PIL images if in online mode
+    pil_images = [item["pil_image"] for item in batch] if batch[0]["pil_image"] is not None else None
+    
+    return {
+        "image_paths": image_paths,
+        "teacher_features": teacher_feats,
+        "pil_images": pil_images,
+    }
+
+class TeacherFeatureExtractor:
+    """
+    Wrapper per estrazione feature SAM2 con gestione memoria efficiente.
+    """
+    def __init__(self, checkpoint_path: str, device: str = "cuda"):
+        from feature_extractor import load_sam2_feature_extractor
+        self.extractor = load_sam2_feature_extractor(checkpoint_path, device)
+        self.device = device
+        print(f"[Teacher] Loaded SAM2 feature extractor on {device}")
+    
+    @torch.no_grad()
+    def __call__(self, pil_images: List) -> torch.Tensor:
+        """
+        Estrae feature da lista di PIL images.
+        
+        Args:
+            pil_images: Lista di PIL.Image objects
+        
+        Returns:
+            torch.Tensor (B, 256, 64, 64)
+        """
+        features = []
+        for pil_img in pil_images:
+            feat = self.extractor(pil_img)  # (1, 256, 64, 64) o (256, 64, 64)
+            if isinstance(feat, np.ndarray):
+                feat = torch.from_numpy(feat)
+            if feat.ndim == 3:
+                feat = feat.unsqueeze(0)  # (1, 256, 64, 64)
+            features.append(feat)
+        
+        return torch.cat(features, dim=0)  # (B, 256, 64, 64)
+    
+    def to(self, device):
+        """Move extractor to device."""
+        self.device = device
+        if hasattr(self.extractor, "to"):
+            self.extractor.to(device)
+        return self
+
+# ==================== Loss Functions ====================
+class DistillationLoss(torch.nn.Module):
+    """
+    Loss combinata MSE + (1 - Cosine Similarity) per la distillazione delle feature.
+    
+    Args:
+        mse_weight: peso della componente MSE
+        cosine_weight: peso della componente (1 - cosine similarity)
+        normalize: se True, normalizza lungo i canali (dim=1) prima del calcolo
+    """
+    
+    def __init__(
+        self,
+        mse_weight: float = 0.5,
+        cosine_weight: float = 0.5,
+        normalize: bool = False,
+    ):
+        super().__init__()
+        self.mse_weight = mse_weight
+        self.cosine_weight = cosine_weight
+        self.normalize = normalize
+    
+    def forward(
+        self,
+        student_features: torch.Tensor,
+        teacher_features: torch.Tensor,
+    ) -> Tuple[torch.Tensor, Dict]:
+        """
+        Calcola la loss di distillazione.
+        
+        Args:
+            student_features: Tensor (B,C,H,W) dallo studente
+            teacher_features: Tensor (B,C,H,W) dal teacher
+        
+        Returns:
+            loss: valore scalare totale
+            loss_details: dizionario con componenti ('mse_loss','cos_loss','cos_sim')
+        Note:
+            F.cosine_similarity(..., dim=1) produce (B,H,W); qui facciamo .mean() su tutte le posizioni.
+        """
+        # Optionally normalize
+        if self.normalize:
+            student_norm = F.normalize(student_features, dim=1)
+            teacher_norm = F.normalize(teacher_features, dim=1)
+        else:
+            student_norm = student_features
+            teacher_norm = teacher_features
+
+        mse_per_sample = F.mse_loss(
+            student_norm, 
+            teacher_norm, 
+            reduction='none'  # (B, C, H, W)
+        ).mean(dim=(1, 2, 3))  # Media su (C,H,W) → (B,)
+        
+        mse_loss = mse_per_sample.mean()  # Media su batch → scalare
+        
+        cos_map = F.cosine_similarity(student_norm, teacher_norm, dim=1)  # (B, H, W)
+        cos_sim_per_image = cos_map.flatten(1).mean(dim=1)  # Media su (H,W) → (B,)
+        cos_sim = cos_sim_per_image.mean()  # Media su batch → scalare
+        
+        cos_loss = 1.0 - cos_sim
+        
+        # Combined loss
+        total_loss = self.mse_weight * mse_loss + self.cosine_weight * cos_loss
+        
+        loss_details = {
+            "mse_loss": mse_loss.item(),
+            "cos_loss": cos_loss.item(),
+            "cos_sim": cos_sim.item(),
+        }
+        
+        return total_loss, loss_details
+
+# ==================== Data Loaders ====================
+def build_distillation_dataloader(
+    image_dir: str,
+    features_dir: Optional[str] = None,
+    teacher_extractor: Optional[TeacherFeatureExtractor] = None,
+    batch_size: int = 1,
+    num_workers: int = 4,
+    shuffle: bool = True,
+    image_paths: Optional[List[str]] = None,
+    pin_memory: bool = True,
+    distributed: bool = False,
+) -> DataLoader:
+    """
+    Build a DataLoader for distillation training/validation.
+    
+    Args:
+        image_dir: Directory containing images
+        features_dir: Directory containing teacher features (None for online mode)
+        teacher_extractor: TeacherFeatureExtractor instance (required if features_dir=None)
+        batch_size: Batch size per GPU
+        num_workers: Number of worker processes
+        shuffle: Whether to shuffle the dataset (ignored if distributed=True)
+        image_paths: Optional list of specific image paths to use
+        pin_memory: Whether to use pinned memory
+        distributed: Whether to use DistributedSampler for multi-GPU training
+    
+    Returns:
+        DataLoader per distillazione con supporto pre-computed/online
+    """
+    dataset = DistillationDataset(
+        image_dir=image_dir,
+        features_dir=features_dir,
+        teacher_extractor=teacher_extractor,
+        image_paths=image_paths,
+    )
+    
+    sampler = None
+    if distributed:
+        sampler = torch.utils.data.DistributedSampler(
+            dataset,
+            shuffle=shuffle,
+            drop_last=shuffle,
+        )
+        shuffle = False
+    
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        sampler=sampler,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        collate_fn=collate_fn_distillation,
+        drop_last=shuffle and sampler is None,
+    )
+    
+    return loader
+
+# ==================== Training Functions ====================
+def forward_pass_distillation_unified(
+    model: torch.nn.Module,
+    image_paths: List[str],
+    device: torch.device,
+    use_amp: bool = False,
+    amp_dtype: str = "bf16",
+    process_individually: bool = True,
+) -> torch.Tensor:
+    """
+    Forward pass unificato per MapAnything distillation.
+    Supporta sia single-view batch-safe che multi-view con cross-attention.
+    
+    Args:
+        model: MapAnything model
+        image_paths: Lista di path immagini (flat list)
+        device: Device CUDA
+        use_amp: Se usare mixed precision
+        amp_dtype: Tipo AMP ("bf16" o "fp16")
+        process_individually: Se True, ogni immagine è processata separatamente
+                             (NO cross-attention, single-view batch-safe).
+                             Se False, tutte le immagini sono caricate insieme
+                             (cross-attention applicato, multi-view).
+    
+    Returns:
+        torch.Tensor: Student features (B, C, H, W) dove B = len(image_paths)
+    
+    Examples:
+        >>> # Single-view batch-safe (immagini indipendenti)
+        >>> features = forward_pass_distillation_unified(
+        ...     model, ["img1.jpg", "img2.jpg"], device,
+        ...     process_individually=True
+        ... )
+        >>> features.shape  # (2, 256, 64, 64) - NO cross-attention
+        
+        >>> # Multi-view (gruppo di views della stessa scena)
+        >>> features = forward_pass_distillation_unified(
+        ...     model, ["scene1_v0.jpg", "scene1_v1.jpg"], device,
+        ...     process_individually=False
+        ... )
+        >>> features.shape  # (2, 256, 64, 64) - CON cross-attention
+    """
+    from mapanything.utils.image import load_images
+    
+    amp_dtype_torch = torch.bfloat16 if amp_dtype == "bf16" else torch.float16
+    
+    if process_individually:
+        # ========== SINGLE-VIEW BATCH-SAFE ==========
+        # Processa ogni immagine separatamente per evitare cross-attention
+        all_features = []
+        
+        for img_path in image_paths:
+            # Carica singola immagine come lista di 1 view
+            views = load_images([img_path])
+            
+            # Forward con AMP
+            with torch.autocast("cuda", enabled=use_amp, dtype=amp_dtype_torch):
+                # Sposta su device DENTRO autocast per fix dtype mismatch
+                for v in views:
+                    img = v.get("img")
+                    if isinstance(img, torch.Tensor):
+                        v["img"] = img.to(device, non_blocking=True)
+                
+                # MapAnything vede SINGOLA VIEW → NO cross-attention
+                _ = model(views, memory_efficient_inference=False)
+            
+            # Estrai feature dalla view 0 (unica view)
+            base_model = model.module if hasattr(model, "module") else model
+            student_features_single = getattr(base_model, "_last_feat2_8x", None)
+            if student_features_single is None:
+                raise KeyError(
+                    "Student features not found on model (_last_feat2_8x). "
+                    "Ensure dpt_feature_head_2 is present and forward populates this attribute."
+                )
+            
+            all_features.append(student_features_single)
+        
+        # Concatena feature di tutte le immagini
+        return torch.cat(all_features, dim=0)  # (B, C, H, W)
+    
+    else:
+        # ========== MULTI-VIEW ==========
+        # Carica tutte le immagini insieme (cross-attention applicato)
+        views = load_images(image_paths)
+        
+        # Forward con AMP
+        with torch.autocast("cuda", enabled=use_amp, dtype=amp_dtype_torch):
+            # Sposta su device DENTRO autocast
+            for v in views:
+                img = v.get("img")
+                if isinstance(img, torch.Tensor):
+                    v["img"] = img.to(device, non_blocking=True)
+            
+            # MapAnything vede N VIEWS → cross-attention tra tutte
+            _ = model(views, memory_efficient_inference=False)
+        
+        # Estrai feature (già tutte in un batch)
+        base_model = model.module if hasattr(model, "module") else model
+        student_features = getattr(base_model, "_last_feat2_8x", None)
+        if student_features is None:
+            raise KeyError("Student features not found (_last_feat2_8x)")
+        
+        return student_features  # (B, C, H, W) dove B = len(image_paths)
+
+def train_one_epoch_distillation(
+    model: torch.nn.Module,
+    criterion: torch.nn.Module,
+    data_loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    epoch: int,
+    args,
+    teacher_extractor: Optional[TeacherFeatureExtractor] = None,
+) -> Dict:
+    """
+    Train the model for one epoch on distillation task.
+    
+    Args:
+        model: MapAnything model with dpt_feature_head_2
+        criterion: DistillationLoss instance
+        data_loader: DataLoader providing image paths and teacher features
+        optimizer: Optimizer
+        device: Device to run on
+        epoch: Current epoch number
+        args: Configuration namespace
+        teacher_extractor: TeacherFeatureExtractor for online mode (None if precomputed)
+    
+    Returns:
+        Dictionary of averaged training metrics
+    """
+    model.train(True)
+    metric_logger = train_tools.MetricLogger(delimiter=" | ")
+    metric_logger.add_meter("lr", train_tools.SmoothedValue(window_size=1, fmt="{value:.6f}"))
+    header = f"Distillation Epoch: [{epoch}]"
+    
+    accum_iter = args.accum_iter
+    optimizer.zero_grad()
+
+    # Detect mode from first batch
+    mode = None
+    
+    total_samples = 0
+    sum_loss = 0.0
+    sum_mse = 0.0
+    sum_cos = 0.0
+    sum_cos_sim = 0.0
+    sum_mean_diff = 0.0
+    sum_std_diff = 0.0
+    
+    for data_iter_step, batch in enumerate(
+        metric_logger.log_every(data_loader, args.print_freq, header)
+    ):
+        # Auto-detect mode from first batch
+        if mode is None:
+            mode = "precomputed" if batch["teacher_features"] is not None else "online"
+            print(f"[Train] Feature extraction mode: {mode.upper()}")
+        
+        epoch_f = epoch + data_iter_step / max(1, len(data_loader))
+        
+        # Get data
+        image_paths = batch["image_paths"]
+        
+        # Extract or load teacher features
+        if mode == "precomputed":
+            teacher_features = batch["teacher_features"].to(device, non_blocking=True)
+        else:  # online
+            if teacher_extractor is None:
+                raise ValueError("teacher_extractor required for online mode but not provided")
+            
+            pil_images = batch["pil_images"]
+            with torch.no_grad():
+                teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
+        
+        # Forward pass to get student features
+        student_features = forward_pass_distillation_unified(
+            model=model,
+            image_paths=image_paths,
+            device=device,
+            use_amp=args.amp,
+            amp_dtype=args.amp_dtype,
+            process_individually=not args.multi_view_mode,
+        )
+        
+        # Resize student features to match teacher resolution if needed
+        if student_features.shape[-2:] != teacher_features.shape[-2:]:
+            H, W = teacher_features.shape[-2:]
+            student_features = F.interpolate(
+                student_features,
+                size=(H, W),
+                mode="bilinear",
+                align_corners=False,
+            )
+
+        # Compute loss
+        loss, loss_details = criterion(student_features, teacher_features)
+        mse_value = float(loss_details.get("mse_loss", 0.0))
+        cos_value = float(loss_details.get("cos_loss", 0.0))
+        cos_sim_value = float(loss_details.get("cos_sim", 0.0))
+
+        try:
+            md, sd, cs = mean_std_difference(student_features, teacher_features)
+            md = float(md)
+            sd = float(sd)
+            cs = float(cs)
+        except Exception:
+            md = sd = 0.0
+            cs = cos_sim_value
+
+        loss_value = loss.detach().cpu().item()
+
+        if not math.isfinite(loss_value):
+            print(f"Loss is {loss_value}, stopping training", flush=True)
+            sys.exit(1)
+
+        # W&B batch-level logging
+        is_main_process = (train_tools.get_rank() == 0)
+        if (
+            args.use_wandb
+            and WANDB_AVAILABLE
+            and is_main_process
+            and (wandb is not None)
+            and (getattr(wandb, "run", None) is not None)
+        ):
+            if data_iter_step % getattr(args, "log_freq", 100) == 0:
+                wandb.log(
+                    {
+                        "train/loss": float(loss_value),
+                        "train/mse_loss": float(mse_value),
+                        "train/cos_loss": float(cos_value),
+                        "train/cos_sim": float(cos_sim_value),
+                        "train/lr": float(optimizer.param_groups[0]["lr"]),
+                        "epoch_progress": epoch_f,
+                    }
+                )
+        
+        # Gradient Accumulation
+        loss /= accum_iter
+        loss.backward()
+
+        if (data_iter_step + 1) % accum_iter == 0:
+            if args.clip_grad > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
+            optimizer.step()
+            optimizer.zero_grad()
+
+        # Accumulate weighted sums
+        batch_size = student_features.shape[0]
+        total_samples += batch_size
+        sum_loss += loss_value * batch_size
+        sum_mse += mse_value * batch_size
+        sum_cos += cos_value * batch_size
+        sum_cos_sim += cos_sim_value * batch_size
+        sum_mean_diff += md * batch_size
+        sum_std_diff += sd * batch_size
+
+        # Clean up
+        del loss, student_features, teacher_features
+        
+        # Update metrics
+        metric_logger.update(epoch=epoch_f)
+        metric_logger.update(lr=optimizer.param_groups[0]["lr"])
+        metric_logger.update(loss=loss_value, **loss_details)
+
+    # Return averaged stats
+    denom = max(1, total_samples)
+    results = {
+        "loss_mean": sum_loss / denom,
+        "mse_loss_mean": sum_mse / denom,
+        "cos_loss_mean": sum_cos / denom,
+        "cos_sim_mean": sum_cos_sim / denom,
+        "mean_diff": sum_mean_diff / denom,
+        "std_diff": sum_std_diff / denom,
+        "lr": optimizer.param_groups[0]["lr"],
+        "samples": total_samples,
+    }
+    return results
+
+@torch.no_grad()
+def validate_one_epoch_distillation(
+    model: torch.nn.Module,
+    criterion: torch.nn.Module,
+    data_loader: DataLoader,
+    device: torch.device,
+    epoch: int,
+    args,
+    teacher_extractor: Optional[TeacherFeatureExtractor] = None,  # ← NEW
+) -> Dict:
+    """
+    Validate the model for one epoch on distillation task.
+    
+    Args:
+        model: MapAnything model with dpt_feature_head_2
+        criterion: DistillationLoss instance
+        data_loader: DataLoader providing validation data
+        device: Device to run on
+        epoch: Current epoch number
+        args: Configuration namespace
+        teacher_extractor: TeacherFeatureExtractor for online mode
+    
+    Returns:
+        Dictionary of validation metrics
+    """
+    model.eval()
+    metric_logger = train_tools.MetricLogger(delimiter=" | ")
+    metric_logger.meters = defaultdict(lambda: train_tools.SmoothedValue(window_size=int(1e6)))
+    header = f"Distillation Validation: [{epoch}]"
+    
+    mode = None
+    total_samples = 0
+    sum_loss = 0.0
+    sum_mse = 0.0
+    sum_cos = 0.0
+    sum_cos_sim = 0.0
+    sum_mean_diff = 0.0
+    sum_std_diff = 0.0
+
+    for batch_idx, batch in enumerate(
+        metric_logger.log_every(data_loader, args.print_freq, header)
+    ):
+        # Auto-detect mode
+        if mode is None:
+            mode = "precomputed" if batch["teacher_features"] is not None else "online"
+            print(f"[Val] Feature extraction mode: {mode.upper()}")
+        
+        image_paths = batch["image_paths"]
+        
+        # Extract or load teacher features
+        if mode == "precomputed":
+            teacher_features = batch["teacher_features"].to(device, non_blocking=True)
+        else:
+            pil_images = batch["pil_images"]
+            teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
+        
+        # Forward pass
+        student_features = forward_pass_distillation_unified(
+            model=model,
+            image_paths=image_paths,
+            device=device,
+            use_amp=args.amp,
+            amp_dtype=args.amp_dtype,
+            process_individually=not args.multi_view_mode,
+        )
+        
+        # Resize if needed
+        if student_features.shape[-2:] != teacher_features.shape[-2:]:
+            H, W = teacher_features.shape[-2:]
+            student_features = F.interpolate(
+                student_features,
+                size=(H, W),
+                mode="bilinear",
+                align_corners=False,
+            )
+        
+        # Compute loss
+        loss, loss_details = criterion(student_features, teacher_features)
+        loss_value = loss.detach().cpu().item()
+        mse_value = float(loss_details.get("mse_loss", 0.0))
+        cos_value = float(loss_details.get("cos_loss", 0.0))
+        cos_sim_value = float(loss_details.get("cos_sim", 0.0))
+
+        try:
+            md, sd, cs = mean_std_difference(student_features, teacher_features)
+            md = float(md)
+            sd = float(sd)
+            cs = float(cs)
+        except Exception:
+            md = sd = 0.0
+            cs = cos_sim_value
+
+        metric_logger.update(loss=loss_value, mse_loss=mse_value, cos_loss=cos_value, cos_sim=cos_sim_value)
+        
+        # Salva visualizzazioni se richiesto
+        if args.save_visualizations and batch_idx == 0:
+            save_pca_visualizations(
+                student_features=student_features,
+                teacher_features=teacher_features,
+                image_paths=image_paths,
+                epoch=epoch,
+                output_dir=args.output_dir,
+            )
+        
+        # Accumulate
+        batch_size = student_features.shape[0]
+        total_samples += batch_size
+        sum_loss += loss_value * batch_size
+        sum_mse += mse_value * batch_size
+        sum_cos += cos_value * batch_size
+        sum_cos_sim += cos_sim_value * batch_size
+        sum_mean_diff += md * batch_size
+        sum_std_diff += sd * batch_size
+
+        del student_features, teacher_features
+
+    denom = max(1, total_samples)
+    results = {
+        "loss_mean": sum_loss / denom,
+        "mse_loss_mean": sum_mse / denom,
+        "cos_loss_mean": sum_cos / denom,
+        "cos_sim_mean": sum_cos_sim / denom,
+        "mean_diff": sum_mean_diff / denom,
+        "std_diff": sum_std_diff / denom,
+        "samples": total_samples,
+        "loss_avg": sum_loss / denom,
+    }
+    return results
+
+# ==================== Visualization Functions ====================
+def save_pca_visualizations(
+    student_features: torch.Tensor,
+    teacher_features: torch.Tensor,
+    image_paths: List[str],
+    epoch: int,
+    output_dir: str,
+):
+    """
+    Salva visualizzazioni affiancate basate su PCA di (studente | immagine | teacher).
+    
+    Uses nico.utils.create_student_original_teacher_side_by_side which handles:
+    - PCA conversion of features
+    - Loading original image
+    - Creating side-by-side composite (student | original | teacher)
+    - Saving to disk
+    
+    Args:
+        student_features: (B, C, H, W) student features
+        teacher_features: (B, C, H, W) teacher features
+        image_paths: List of image paths for this batch
+        epoch: Current epoch number
+        output_dir: Output directory for saving visualizations
+    """
+    # Cartella di output per le visualizzazioni
+    viz_dir = Path(output_dir) / "visualizations"
+    viz_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Move to CPU
+    student_cpu = student_features.detach().cpu()  # (B, C, H, W)
+    teacher_cpu = teacher_features.detach().cpu()  # (B, C, H, W)
+    
+    B = student_cpu.shape[0]
+    
+    for batch_idx in range(B):
+        img_path = image_paths[batch_idx]
+        
+        # Extract single image features (keep batch dimension for nico.utils compatibility)
+        student_single = student_cpu[batch_idx:batch_idx+1]  # (1, C, H, W)
+        teacher_single = teacher_cpu[batch_idx:batch_idx+1]  # (1, C, H, W)
+        
+        # Create and save side-by-side visualization using nico.utils function
+        # This function handles PCA, image loading, compositing, and saving
+        try:
+            create_student_original_teacher_side_by_side(
+                student_embeddings=student_single,
+                teacher_embeddings=teacher_single,
+                img_path=img_path,
+                epoch=epoch,
+                output_heatmaps=str(viz_dir),
+                is_overfit_image=False,  # Dynamic PCA basis (not saved/loaded from disk)
+            )
+            student_save_path = Path(str(viz_dir)) / "student"
+            student_save_path.mkdir(parents=True, exist_ok=True)
+            teacher_save_path = Path(str(viz_dir)) / "teacher"
+            teacher_save_path.mkdir(parents=True, exist_ok=True)
+            print(f"Image path: {img_path}")
+
+            # Ensure tensors are detached, cloned, and contiguous before saving
+            # student_single = student_single.detach().cpu().contiguous().clone()
+            # teacher_single = teacher_single.detach().cpu().contiguous().clone()
+            img_basename = Path(img_path).stem  # Es: "000000544826"
+            torch.save(student_single, student_save_path / f"{epoch}_{img_basename}.pt")
+            torch.save(teacher_single, teacher_save_path / f"{epoch}_{img_basename}.pt")
+        except Exception as e:
+            print(f"[WARN] Failed to create PCA visualization for {img_path}: {e}")
+            continue
+    
+    print(f"[VIZ] Saved {B} PCA visualizations to {viz_dir}")
+
+# ==================== Main Training Loop ====================
+def distill(args):
+    """
+    Main distillation training function.
+    """
+    train_tools.init_distributed_mode(args.distributed)
+    global_rank = train_tools.get_rank()
+    
+    if not args.output_dir:
+        default_run_name = args.wandb_name or datetime.datetime.now().strftime("distill_%Y%m%d_%H%M%S")
+        args.output_dir = os.path.join(OUT_DIR, default_run_name)
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    
+    print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
+    print("{}".format(args).replace(", ", ",\n"))
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    seed = args.seed + global_rank
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    cudnn.benchmark = not args.disable_cudnn_benchmark
+    
+    if run_cluster and getattr(args, "print_freq", 10) < 200:
+        args.print_freq = 200
+
+    # ========== INITIALIZE TEACHER EXTRACTOR (if online mode) ==========
+    teacher_extractor = None
+    if not args.precomputed_features:
+        print(f"[INFO] Initializing online teacher feature extractor from {SAM2_PATH}")
+        teacher_extractor = TeacherFeatureExtractor(
+            checkpoint_path=SAM2_PATH,
+            device=str(device),
+        )
+        teacher_extractor.to(device)
+    
+    # ========== BUILD DATALOADERS ==========
+    print(f"Building train dataloader from {TRAIN_IMAGES_DIR}")
+    train_image_paths = None
+    if args.debug_max_train_images:
+        all_imgs = sorted([
+            os.path.join(TRAIN_IMAGES_DIR, f)
+            for f in os.listdir(TRAIN_IMAGES_DIR)
+            if DistillationDataset._is_image_file(f)
+        ])
+        train_image_paths = random.sample(all_imgs, min(args.debug_max_train_images, len(all_imgs)))
+    
+    data_loader_train = build_distillation_dataloader(
+        image_dir=TRAIN_IMAGES_DIR,
+        features_dir=TRAIN_FEATURES_DIR if args.precomputed_features else None,
+        teacher_extractor=teacher_extractor,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        shuffle=True,
+        image_paths=train_image_paths,
+        distributed=args.distributed.distributed,
+    )
+    
+    print(f"Building val dataloader from {VAL_IMAGES_DIR}")
+    val_image_paths = None
+    if args.debug_max_val_images:
+        all_val_imgs = sorted([
+            os.path.join(VAL_IMAGES_DIR, f)
+            for f in os.listdir(VAL_IMAGES_DIR)
+            if DistillationDataset._is_image_file(f)
+        ])
+        val_image_paths = all_val_imgs[:args.debug_max_val_images]
+    
+    data_loader_val = build_distillation_dataloader(
+        image_dir=VAL_IMAGES_DIR,
+        features_dir=VAL_FEATURES_DIR if args.precomputed_features else None,
+        teacher_extractor=teacher_extractor,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        shuffle=False,
+        image_paths=val_image_paths,
+        distributed=args.distributed.distributed,
+    )
+    
+    # ========== LOAD MODEL ==========
+    print("Loading MapAnything model...")
+    if global_rank == 0:
+        model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
+    if global_rank != 0:
+        model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
+    
+    model_without_ddp = model
+    print(f"Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
+
+    # ========== FREEZE STRATEGY ==========
+    # 1. Freeze tutto inizialmente
+    print("Freezing all parameters...")
+    for param in model.parameters():
+        param.requires_grad = False
+    
+    # 2. Unfreeze dpt_feature_head_2 e sam2_compat (sempre trainable)
+    print("Unfreezing dpt_feature_head_2 and sam2_compat...")
+    for name, param in model.named_parameters():
+        if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat"):
+            param.requires_grad = True
+
+    # 3. Unfreeze ultimi N blocchi di info_sharing.self_attention_blocks (opzionale)
+    num_info_sharing_blocks = getattr(args, 'num_info_sharing_blocks_unfreeze', 0)
+    if num_info_sharing_blocks > 0 and hasattr(model, "info_sharing"):
+        info_sharing = model.info_sharing
+        
+        # Trova i blocchi (self_attention_blocks per MapAnything)
+        if hasattr(info_sharing, "self_attention_blocks"):
+            blocks = info_sharing.self_attention_blocks
+        elif hasattr(info_sharing, "blocks"):
+            blocks = info_sharing.blocks
+        elif hasattr(info_sharing, "layers"):
+            blocks = info_sharing.layers
+        else:
+            print("[WARN] info_sharing has no 'self_attention_blocks', 'blocks', or 'layers'. Skipping unfreezing.")
+            blocks = []
+        
+        if len(blocks) > 0:
+            start_idx = max(0, len(blocks) - num_info_sharing_blocks)
+            unfrozen_count = 0
+            unfrozen_indices = []
+            for i in range(start_idx, len(blocks)):
+                for param in blocks[i].parameters():
+                    param.requires_grad = True
+                    unfrozen_count += param.numel()
+                unfrozen_indices.append(i)
+            args.info_sharing_unfrozen_indices = unfrozen_indices
+            print(f"[INFO] Unfroze last {num_info_sharing_blocks} info_sharing blocks (indices {unfrozen_indices})")
+            print(f"[INFO] Unfroze {unfrozen_count:,} parameters in info_sharing")
+        else:
+            args.info_sharing_unfrozen_indices = []
+    else:
+        args.info_sharing_unfrozen_indices = []
+
+    # ========== VERIFY TRAINABLE PARAMETERS ==========
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    frozen_params = [p for p in model.parameters() if not p.requires_grad]
+    
+    trainable_count = sum(p.numel() for p in trainable_params)
+    frozen_count = sum(p.numel() for p in frozen_params)
+    total_count = trainable_count + frozen_count
+    
+    print("\n" + "="*80)
+    print("TRAINABLE PARAMETERS SUMMARY")
+    print("="*80)
+    print(f"Trainable params: {trainable_count:,} ({100*trainable_count/total_count:.2f}%)")
+    print(f"Frozen params:    {frozen_count:,} ({100*frozen_count/total_count:.2f}%)")
+    print(f"Total params:     {total_count:,}")
+    
+    # Lista dei gruppi trainable
+    trainable_groups = {}
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            # Estrai il gruppo (es. "info_sharing.self_attention_blocks.10")
+            parts = name.split(".")
+            if len(parts) >= 4 and parts[0] == "info_sharing" and parts[1] == "self_attention_blocks":
+                # info_sharing.self_attention_blocks.10.attn.qkv.weight -> info_sharing.self_attention_blocks.10
+                group = ".".join(parts[:3])
+            elif len(parts) >= 3:
+                group = ".".join(parts[:3])
+            else:
+                group = ".".join(parts[:2])
+            
+            if group not in trainable_groups:
+                trainable_groups[group] = 0
+            trainable_groups[group] += param.numel()
+    
+    print("\n📦 Trainable parameter groups:")
+    for group, count in sorted(trainable_groups.items()):
+        print(f"   - {group}: {count:,} params")
+    print("="*80 + "\n")
+    
+    # Initialize criterion
+    criterion = DistillationLoss(
+        mse_weight=args.mse_weight,
+        cosine_weight=args.cosine_weight,
+        normalize=args.normalize_features,
+    ).to(device)
+
+    # ========== OPTIMIZER ==========
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+
+    optimizer = optim.AdamW(
+        trainable_params,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+        betas=(0.9, 0.95),
+    )
+    print(optimizer)
+
+    #################### DEBUG ########################
+    # # subito DOPO aver creato optimizer (una sola volta)
+    # print("OPTIMIZER param groups summary:")
+    # for i, pg in enumerate(optimizer.param_groups):
+    #     n_params = sum(p.numel() for p in pg['params'])
+    #     print(f" pg {i}: lr={pg.get('lr')}, params={n_params:,}")
+    # # totale trainable come prima stampata
+    # trainable_opt_params = sum(p.numel() for p in optimizer.param_groups[0]['params'])
+    # print("Total params in first group (approx):", trainable_opt_params)
+    ###################################################
+    
+    # ========== WRAPPING IN DDP ==========
+    if args.distributed.distributed:
+        model = torch.nn.parallel.DistributedDataParallel(
+            model,
+            device_ids=[args.distributed.gpu],
+            find_unused_parameters=False,
+        )
+        model_without_ddp = model.module
+        
+        # If the module graph is static across iterations, avoid re-registering DDP hooks every iteration.
+        # This prevents errors like "marked ready twice" when using checkpointing / reentrant autograd.
+        try:
+            if hasattr(model, "_set_static_graph"):
+                model._set_static_graph()
+        except Exception:
+            pass
+    
+    # Scheduler LR: Cosine annealing per epoca, coerente con distillation.py
+    if not args.disable_scheduler:
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args.lr_scheduler_t_max,
+            eta_min=args.lr_min,
+        )
+    else:
+        scheduler = None
+        print(f"[INFO] Learning rate scheduler disabled. LR will remain constant at {args.lr}")
+    
+    # Resume: ricarica head 2 + optimizer + scheduler; riparte dall'epoca successiva
+    start_epoch = 0
+    best_val_loss = float("inf")
+    if args.resume_ckpt:
+        print(f"Resuming from checkpoint: {args.resume_ckpt}")
+        ckpt = torch.load(args.resume_ckpt, map_location=device, weights_only=False)
+        model_without_ddp.dpt_feature_head_2.load_state_dict(ckpt["dpt_feature_head_2"])
+
+        # Load sam2_compat if present in checkpoint
+        if "sam2_compat" in ckpt and hasattr(model_without_ddp, "sam2_compat"):
+            model_without_ddp.sam2_compat.load_state_dict(ckpt["sam2_compat"])
+            print("[INFO] Loaded sam2_compat state from checkpoint")
+        elif hasattr(model_without_ddp, "sam2_compat"):
+            print("[WARN] sam2_compat exists on model but not found in checkpoint. Using random initialization.")
+
+        # Restore unfrozen info_sharing blocks if present
+        if "info_sharing_blocks" in ckpt and hasattr(model_without_ddp, "info_sharing"):
+            info = model_without_ddp.info_sharing
+            if hasattr(info, "self_attention_blocks"):
+                blocks = info.self_attention_blocks
+            elif hasattr(info, "blocks"):
+                blocks = info.blocks
+            elif hasattr(info, "layers"):
+                blocks = info.layers
+            else:
+                blocks = []
+            saved_indices = ckpt.get("info_sharing_unfrozen_indices", [])
+            missing = []
+            for idx, state_dict in ckpt["info_sharing_blocks"].items():
+                if idx < len(blocks):
+                    try:
+                        blocks[idx].load_state_dict(state_dict)
+                    except Exception as e:
+                        print(f"[WARN] Failed loading info_sharing block {idx}: {e}")
+                else:
+                    missing.append(idx)
+            print(f"[INFO] Restored unfrozen info_sharing blocks from checkpoint: {saved_indices}")
+            if missing:
+                print(f"[WARN] Saved block indices not present in current model: {missing}")
+            args.info_sharing_unfrozen_indices = saved_indices
+
+        optimizer.load_state_dict(ckpt["optimizer"])
+
+        if args.disable_scheduler or args.override_lr:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = args.lr
+            print(f"[INFO] Overriding optimizer LR to {args.lr}")
+
+
+        # Scheduler resume logic with T_max override
+        if not args.disable_scheduler and "scheduler" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler"])
+            # If user provided a new T_max, overwrite it in the scheduler
+            if hasattr(scheduler, "T_max") and getattr(args, "overwrite_scheduler", False):
+                old_tmax = getattr(scheduler, "T_max", None)
+                scheduler.T_max = args.lr_scheduler_t_max
+                print(f"[INFO] Overriding scheduler T_max: {old_tmax} -> {scheduler.T_max}")
+        start_epoch = ckpt.get("epoch", 0) + 1
+        best_val_loss = ckpt.get("best_val_loss", float("inf"))
+        print(f"Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
+    
+    # Inizializzazione opzionale di W&B (solo rank 0): salva anche config e gestisce resume
+    if args.use_wandb and WANDB_AVAILABLE and global_rank == 0:
+        wandb_kwargs = {
+            "project": args.wandb_project,
+            "name": args.wandb_name,
+            "config": vars(args),
+        }
+        if args.wandb_resume_id:
+            wandb_kwargs.update(id=args.wandb_resume_id, resume="allow")
+        wandb.init(**wandb_kwargs)
+    
+    # ========== TRAINING LOOP ==========
+    print(f"Start distillation training for {args.epochs} epochs from epoch {start_epoch}")
+    start_time = time.time()
+    
+    for epoch in range(start_epoch, args.epochs):
+        if args.distributed.distributed and hasattr(data_loader_train.sampler, 'set_epoch'):
+            data_loader_train.sampler.set_epoch(epoch)
+        
+        epoch_start = time.time()
+        
+        # Train one epoch (passa teacher_extractor)
+        train_stats = train_one_epoch_distillation(
+            model=model,
+            criterion=criterion,
+            data_loader=data_loader_train,
+            optimizer=optimizer,
+            device=device,
+            epoch=epoch,
+            args=args,
+            teacher_extractor=teacher_extractor,
+        )
+        
+        # Validation
+        val_stats = {}
+        if args.eval_freq > 0 and (epoch + 1) % args.eval_freq == 0:
+            val_stats = validate_one_epoch_distillation(
+                model=model,
+                criterion=criterion,
+                data_loader=data_loader_val,
+                device=device,
+                epoch=epoch,
+                args=args,
+                teacher_extractor=teacher_extractor,
+            )
+            
+            # Check for new best
+            val_loss_avg = val_stats.get("loss_avg", float("inf"))
+            if val_loss_avg < best_val_loss:
+                best_val_loss = val_loss_avg
+                print(f"New best validation loss: {best_val_loss:.6f}")
+                # Save best checkpoint
+                if global_rank == 0:
+                    save_checkpoint_distillation(
+                        model_without_ddp,
+                        optimizer,
+                        scheduler,
+                        epoch,
+                        best_val_loss,
+                        args.output_dir,
+                        tag="best",
+                        args=args,
+                    )
+        
+        # Step scheduler
+        if not args.disable_scheduler and scheduler is not None:
+            scheduler.step()
+        
+        # Save checkpoint periodically
+        if (epoch + 1) % args.save_freq == 0 or (epoch + 1) == args.epochs:
+            if global_rank == 0:
+                save_checkpoint_distillation(
+                    model_without_ddp,
+                    optimizer,
+                    scheduler,
+                    epoch,
+                    best_val_loss,
+                    args.output_dir,
+                    tag=f"epoch{epoch+1}",
+                    args=args,
+                )
+        
+        epoch_time = time.time() - epoch_start
+
+        # Log to wandb (match distillation.py keys)
+        if args.use_wandb and WANDB_AVAILABLE and global_rank == 0:
+            log_dict = {
+                "epoch": epoch + 1,
+                "train_loss": train_stats.get("loss_mean", 0.0),
+                "train_mse_loss": train_stats.get("mse_loss_mean", 0.0),
+                "train_cos_loss": train_stats.get("cos_loss_mean", 0.0),
+                "train_mean_diff": train_stats.get("mean_diff", 0.0),
+                "train_std_diff": train_stats.get("std_diff", 0.0),
+                "train_cos_sim": train_stats.get("cos_sim_mean", 0.0),
+                "lr": optimizer.param_groups[0]["lr"],
+                "epoch_time_sec": epoch_time,
+            }
+            if val_stats:
+                print(f"[DEBUG] Logging validation stats to W&B: {val_stats}")  # <--- DEBUG
+                log_dict.update({
+                    "val_loss": val_stats.get("loss_mean", 0.0),
+                    "val_mse_loss": val_stats.get("mse_loss_mean", 0.0),
+                    "val_cos_loss": val_stats.get("cos_loss_mean", 0.0),
+                    "val_mean_diff": val_stats.get("mean_diff", 0.0),
+                    "val_std_diff": val_stats.get("std_diff", 0.0),
+                    "val_cosine_similarity": val_stats.get("cos_sim_mean", 0.0),
+                })
+            else:
+                print(f"[DEBUG] val_stats is empty, skipping validation logging for epoch {epoch+1}")  # <--- DEBUG
+            wandb.log(log_dict)
+        print(
+            f"Epoch {epoch+1}/{args.epochs} | "
+            f"Train Loss: {train_stats.get('loss_mean', 0):.6f} | "
+            f"Val Loss: {val_stats.get('loss_mean', 0):.6f} | "
+            f"Time: {epoch_time:.2f}s"
+        )
+    
+    # Save final checkpoint
+    if global_rank == 0:
+        save_checkpoint_distillation(
+            model_without_ddp,
+            optimizer,
+            scheduler,
+            args.epochs - 1,
+            best_val_loss,
+            args.output_dir,
+            tag="final",
+            args=args,
+        )
+    
+    total_time = time.time() - start_time
+    print(f"Distillation training completed in {str(datetime.timedelta(seconds=int(total_time)))}")
+    
+    if args.use_wandb and WANDB_AVAILABLE and global_rank == 0:
+        wandb.finish()
+
+# ==================== Checkpoint Management ====================
+def save_checkpoint_distillation(
+    model_without_ddp,
+    optimizer,
+    scheduler,
+    epoch: int,
+    best_val_loss: float,
+    output_dir: str,
+    tag: str = "last",
+    args=None,
+):
+    """
+    Save checkpoint containing only dpt_feature_head_2 and optimizer state.
+    
+    Args:
+        model_without_ddp: Model without DDP wrapper
+        optimizer: Optimizer
+        scheduler: Learning rate scheduler
+        epoch: Current epoch
+        best_val_loss: Best validation loss so far
+        output_dir: Directory to save checkpoint
+        tag: Tag for checkpoint filename (e.g., "best", "last", "epoch10")
+    """
     state = {
-        "dpt_feature_head_2": model.dpt_feature_head_2.state_dict(),
+        "dpt_feature_head_2": model_without_ddp.dpt_feature_head_2.state_dict(),
         "optimizer": optimizer.state_dict(),
         "epoch": epoch,
-        "loss": loss,
+        "best_val_loss": best_val_loss,
     }
-    ckpt_path = Path(output_dir) / f"checkpoint_{tag}.pth"
+
+    # Save sam2_compat if present
+    if hasattr(model_without_ddp, "sam2_compat"):
+        state["sam2_compat"] = model_without_ddp.sam2_compat.state_dict()
+        # print("[INFO] sam2_compat state added to checkpoint")
+
+    # Save unfrozen info_sharing blocks if any
+    if args is not None and hasattr(model_without_ddp, "info_sharing") and getattr(args, "info_sharing_unfrozen_indices", []):
+        info = model_without_ddp.info_sharing
+        if hasattr(info, "self_attention_blocks"):
+            blocks = info.self_attention_blocks
+        elif hasattr(info, "blocks"):
+            blocks = info.blocks
+        elif hasattr(info, "layers"):
+            blocks = info.layers
+        else:
+            blocks = []
+        indices = [i for i in getattr(args, "info_sharing_unfrozen_indices", []) if i < len(blocks)]
+        state["info_sharing_unfrozen_indices"] = indices
+        state["info_sharing_blocks"] = {i: blocks[i].state_dict() for i in indices}
+        print(f"[INFO] Added {len(indices)} unfrozen info_sharing blocks to checkpoint: {indices}")
+
+    if scheduler is not None:
+        state["scheduler"] = scheduler.state_dict()
+    
+    # Save wandb run_id if available
+    if WANDB_AVAILABLE and wandb.run is not None:
+        state["wandb_run_id"] = wandb.run.id
+    
+    # Crea la sottocartella checkpoints
+    ckpt_dir = Path(output_dir) / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    
+    ckpt_path = ckpt_dir / f"checkpoint_{tag}.pth"  # Ora salva in checkpoints/
     torch.save(state, ckpt_path)
-    print(f"[INFO] Checkpoint salvato (solo head): {ckpt_path}")
+    print(f"[SAVE] Checkpoint saved: {ckpt_path}")
 
-def is_image_file(name: str) -> bool:
-    name_low = name.lower()
-    return name_low.endswith((".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"))
-
-def main():
-    # Setup
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    np.random.seed(SEED) # numpy seed
-    torch.manual_seed(SEED) # torch seed
-    random.seed(SEED) # random seed
-
-    if CHECKPOINT_DIR:
-        Path(CHECKPOINT_DIR).mkdir(parents=True, exist_ok=True) # crea cartella output se non esiste
-
-
-    if USE_WANDB:
-        wandb.init(
-            project="mapanything-distillation",
-            notes=WANDB_NOTES if 'WANDB_NOTES' in os.environ else None,
-            config={
-                "learning_rate": LR,
-                "epochs": EPOCHS,
-                "batch_size": BATCH_SIZE_IMAGES,
-                "norm": NORM,
-                "amp": AMP,
-                "use_early_stopping": USE_EARLY_STOPPING,
-                "early_stopping_patience": EARLY_STOPPING_PATIENCE,
-                "use_lr_on_plateau": USE_LR_ON_PLATEAU,
-                "lr_on_plateau_patience": LR_ON_PLATEAU_PATIENCE,
-                "lr_on_plateau_factor": LR_ON_PLATEAU_FACTOR,
-                "min_lr": MIN_LR,
-                "single_image": SINGLE_IMAGE,
-                "debug_max_train_images": DEBUG_MAX_TRAIN_IMAGES,
-                "debug_max_val_images": DEBUG_MAX_VAL_IMAGES,
-                "loss_mix": "0.5_mse_0.5_cosine",
-                "train_mean_diff": None,
-                "train_std_diff": None,
-                "train_cos_sim": None
-            }
-        )
-
-    print(f"output_dir: {OUTPUT_DIR}")
-
-    # Modello + freeze
+# ==================== Argument Parser ====================
+def get_args_parser():
+    """
+    Create argument parser for distillation training.
+    
+    Returns:
+        argparse.ArgumentParser
+    """
+    # Parser degli argomenti CLI: organizza le opzioni per eseguire il training di distillazione
+    parser = argparse.ArgumentParser(
+        description="Distillation training for MapAnything with SAM2 encoder features"
+    )
+    
+    # Paths
+    parser.add_argument("--output_dir", type=str, default=None, help="Output directory for checkpoints and logs (default: OUT_DIR/wandb_name or timestamp)")
+    # Note: dataset paths are derived from COCO2017_ROOT constants depending on run_cluster
+    
+    # Model
     # Config file path: /scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a/config.json
-    model = MapAnything.from_pretrained("facebook/map-anything", strict=False).to(device)
+    parser.add_argument("--model_name", type=str, default="facebook/map-anything", help="MapAnything model name or path")
+    
+    # Training hyperparameters
+    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size per GPU")
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument("--override_lr", action="store_true", help="Override LR from checkpoint with --lr value")
+    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
+    parser.add_argument("--lr_min", type=float, default=1e-6, help="Minimum learning rate for scheduler")
+    parser.add_argument("--lr_scheduler_t_max", type=int, default=None, help="T_max for CosineAnnealingLR")
+    parser.add_argument("--overwrite_scheduler", action="store_true", help="Overwrite scheduler T_max when resuming")
+    parser.add_argument("--clip_grad", type=float, default=1.0, help="Gradient clipping max norm (0 to disable)")
+    parser.add_argument("--accum_iter", type=int, default=1, help="Gradient accumulation iterations")
+    parser.add_argument("--log_freq", type=int, default=100, help="Log to W&B every N batches")
+    parser.add_argument("--disable_scheduler", action="store_true", help="Disable learning rate scheduler (keep lr constant)")
+    parser.add_argument("--multi_view_mode", action="store_true", help="Enable multi-view mode (cross-attention between views)")
+    
+    # Loss
+    parser.add_argument("--mse_weight", type=float, default=0.5, help="Weight for MSE loss")
+    parser.add_argument("--cosine_weight", type=float, default=0.5, help="Weight for cosine loss")
+    parser.add_argument("--normalize_features", action="store_true", help="Normalize features before loss")
+    
+    # Data
+    parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
+    parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging")
+    parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
+    parser.add_argument("--precomputed_features", action="store_true", help="Use precomputed features from disk")
+    
+    # Mixed precision
+    parser.add_argument("--amp", action="store_true", help="Use automatic mixed precision")
+    parser.add_argument("--amp_dtype", type=str, default="bf16", choices=["bf16", "fp16"], help="AMP dtype")
+    
+    # Checkpointing
+    parser.add_argument("--resume_ckpt", type=str, default=None, help="Path to checkpoint to resume from")
+    parser.add_argument("--save_freq", type=int, default=10, help="Save checkpoint every N epochs")
+    parser.add_argument("--eval_freq", type=int, default=1, help="Run validation every N epochs")
+    
+    # Logging
+    parser.add_argument("--print_freq", type=int, default=10, help="Print frequency (iterations)")
+    parser.add_argument("--use_wandb", action="store_true", help="Use Weights & Biases logging")
+    parser.add_argument("--wandb_project", type=str, default="mapanything-distillation", help="W&B project name")
+    parser.add_argument("--wandb_name", type=str, default=None, help="W&B run name")
+    parser.add_argument("--wandb_resume_id", type=str, default=None, help="W&B run ID to resume")
+    parser.add_argument("--save_visualizations", action="store_true", help="Save PCA visualizations during validation")
+    
+    # Other
+    parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--disable_cudnn_benchmark", action="store_true", help="Disable cudnn benchmark")
+    
+    # Distributed (opzionale): abilita DDP; dist_url di solito 'env://' con torchrun; local_rank impostato da torchrun
+    parser.add_argument("--distributed", action="store_true", help="Enable distributed training")
+    parser.add_argument("--dist_url", type=str, default="env://", help="URL for distributed training")
+    parser.add_argument("--local_rank", type=int, default=0, help="Local rank for distributed training")
 
-    ############### DEBUG CHECKS ###############
+    # Unfreeze strategy
+    parser.add_argument("--num_info_sharing_blocks_unfreeze", type=int, default=0, help="Number of last info_sharing transformer blocks to unfreeze")
+    
+    # comando debug pc lab
+    # python distillation.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2
+    # python distillation.py --epochs 10 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 4 --resume_ckpt /scratch2/nico/distillation/output/distill_20251125_143157/checkpoints/checkpoint_best.pth
+
+    # Proporzioni
+    # batch_size 1, lr 1e-4, accum_iter 1
+    # batch_size 2, lr 2e-4, accum_iter 1
+    # batch_size 1, lr 1e-4, accum_iter 2
+
+    return parser
+
+# ==================== Entry Point ====================
+def main():
     """
-    names_head2 = [n for n, _ in model.named_parameters() if n.startswith("dpt_feature_head_2")]
-    print(f"[CHECK] num params dpt_feature_head_2: {len(names_head2)}")
-    if not names_head2:
-        raise RuntimeError("dpt_feature_head_2 non trovata: controlla init/config.")
-
-    # 2) Verifica se il ckpt ha caricato qualcosa per head2 (dovrebbe essere 0)
-    loaded_for_head2 = [k for k in getattr(model, "_last_loaded_keys", set()) if k.startswith("dpt_feature_head_2")]
-    print(f"[CHECK] loaded keys for head2 from ckpt: {len(loaded_for_head2)} (atteso 0)")
-
-    # 3) Verifica gradiente: marca head2 trainabile, fai un fwd+bwd dummy e controlla grad
-    for n, p in model.named_parameters():
-        p.requires_grad = n.startswith("dpt_feature_head_2")
-
-    # Sanity check: esistenza e parametri della seconda head
-    print("[MODEL] has dpt_feature_head_2:", hasattr(model, "dpt_feature_head_2"))
+    Entry point for distillation training script.
     """
-    ############################################
-
-    # freeze all parameters except the new head
-    for name, p in model.named_parameters():
-        if not name.startswith("dpt_feature_head_2"):
-            p.requires_grad = False
-
-    # Optimizer (solo head)
-    params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = optim.AdamW(params, lr=LR, weight_decay=WEIGHT_DECAY, betas=(0.9, 0.95))
-
-    # Scheduler ReduceLROnPlateau opzionale
-    if USE_LR_ON_PLATEAU:
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode="min", factor=LR_ON_PLATEAU_FACTOR, patience=LR_ON_PLATEAU_PATIENCE, min_lr=MIN_LR
+    parser = get_args_parser()
+    args = parser.parse_args()
+    if args.lr_scheduler_t_max is None:
+        args.lr_scheduler_t_max = args.epochs  # Default T_max to epochs if not set
+    
+    # Crea un oggetto Namespace compatibile con train_tools
+    # (train_tools si aspetta args.distributed come oggetto con attributi: distributed/dist_url/gpu).
+    # Nota: in uno scenario torchrun si potrebbero leggere anche gli env (LOCAL_RANK, RANK, WORLD_SIZE)
+    # per riempire automaticamente questi campi.
+    if not hasattr(args, "distributed") or not isinstance(args.distributed, argparse.Namespace):
+        distributed_args = argparse.Namespace(
+            distributed=args.distributed if hasattr(args, "distributed") else False,
+            dist_url=args.dist_url if hasattr(args, "dist_url") else "env://",
+            gpu=args.local_rank if hasattr(args, "local_rank") else 0,
         )
-
-    # Caricamento checkpoint se richiesto
-    start_epoch = 0
-    best_loss = None # per early stopping
-    epochs_no_improve = 0 # contatore early stopping
-    if LOAD_CHECKPOINT is not None:
-        ckpt_path = Path(CHECKPOINT_DIR) / LOAD_CHECKPOINT
-        if not ckpt_path.exists():
-            raise FileNotFoundError(f"Checkpoint {ckpt_path} non trovato!")
-        checkpoint = torch.load(ckpt_path, map_location=device) # carica su device
-        model.dpt_feature_head_2.load_state_dict(checkpoint["dpt_feature_head_2"]) # carica solo head
-        optimizer.load_state_dict(checkpoint["optimizer"]) # carica stato optimizer
-        start_epoch = checkpoint.get("epoch", 0) # riprendi da epoch successiva
-        best_loss = checkpoint.get("loss", None)
-        print(f"[INFO] Checkpoint {ckpt_path.name} caricato. Riprendo da epoch {start_epoch+1}.")
-
-    print(f"Start training for {EPOCHS} epochs from epoch {start_epoch+1}.")
-    start_time = time.time()
-
-    # Prepara file di log con header corretto in base alla modalità
-    if EPOCHS > 0:
-        log_path = Path(OUTPUT_DIR) / "loss_log.csv"
-        if not log_path.exists():
-            with open(log_path, "w") as f:
-                writer = csv.writer(f)
-                if SINGLE_IMAGE:
-                    # D = Down, U = Up - segnala direzione desiderata, aggiunti lr e epoch_time_sec
-                    writer.writerow([
-                        "epoch",
-                        "train_loss - D",
-                        "val_loss - D",
-                        "train_mean_diff - D",
-                        "train_std_diff - D",
-                        "train_cos_sim - U (1.0)",
-                        "mean_diff - D",
-                        "std_diff - D",
-                        "avg_cosine_sim - U (1.0)",
-                        "lr",
-                        "epoch_time_sec"
-                    ])
-                else:
-                    writer.writerow(["epoch", "mean_loss - D", "mean_diff - D", "std_diff - D", "avg_cosine_sim - U (1.0)", "lr", "epoch_time_sec"])
-
-    if SINGLE_IMAGE:
-        print("[DEBUG] SINGLE_IMAGE=True: batching immagini singole come dimensione batch.")
-
-        last_train_loss = None
-        last_val_loss = None
-
-        # ---- Carica liste train / val ----
-        if not os.path.isdir(TRAIN_IMAGES_DIR) or not os.path.isdir(TRAIN_FEATURES_DIR):
-            print(f"[ERR] Directory train mancanti: {TRAIN_IMAGES_DIR} / {TRAIN_FEATURES_DIR}")
-            return
-        if not os.path.isdir(VAL_IMAGES_DIR) or not os.path.isdir(VAL_FEATURES_DIR):
-            print(f"[ERR] Directory val mancanti: {VAL_IMAGES_DIR} / {VAL_FEATURES_DIR}")
-            return
-
-        train_image_paths = [os.path.join(TRAIN_IMAGES_DIR, f) for f in os.listdir(TRAIN_IMAGES_DIR) if is_image_file(f)]
-        val_image_paths = [os.path.join(VAL_IMAGES_DIR, f) for f in os.listdir(VAL_IMAGES_DIR) if is_image_file(f)]
-        train_image_paths.sort()
-        val_image_paths.sort()
-        # Limita il numero di immagini per il debug: campionamento casuale ad ogni epoca
-        train_image_paths_full = train_image_paths.copy()
-        if DEBUG_MAX_VAL_IMAGES and len(val_image_paths) > DEBUG_MAX_VAL_IMAGES:
-            val_image_paths = val_image_paths[:DEBUG_MAX_VAL_IMAGES]
-            print(f"[DEBUG] Limito val a {len(val_image_paths)} immagini.")
-
-        print(f"[SPLIT] Train images: {len(train_image_paths)} | Val images: {len(val_image_paths)}")
-        if len(train_image_paths) == 0 or len(val_image_paths) == 0:
-            print("[ERR] Uno degli split è vuoto.")
-            return
-
-        autocast_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
-
-        for epoch in range(start_epoch, EPOCHS):
-            epoch_t0 = time.time()
-            print(f"Epoch {epoch+1}/{EPOCHS}")
-            # ---- TRAIN ----
-            # Campiona DEBUG_MAX_TRAIN_IMAGES immagini casuali dal training set
-            if DEBUG_MAX_TRAIN_IMAGES and len(train_image_paths_full) > DEBUG_MAX_TRAIN_IMAGES:
-                train_image_paths = random.sample(train_image_paths_full, DEBUG_MAX_TRAIN_IMAGES)
-                # train_image_paths = train_image_paths_full[:DEBUG_MAX_TRAIN_IMAGES] # debug --> overfit on the first image
-                print(f"[DEBUG] Epoca {epoch+1}: campiono {len(train_image_paths)} immagini train casuali.")
-            else:
-                train_image_paths = train_image_paths_full.copy()
-            model.train(True)
-            train_loss_acc = 0.0
-            train_samples = 0
-            train_mean_diff_acc = 0.0
-            train_std_diff_acc = 0.0
-            train_cos_sim_acc = 0.0
-            train_mse_loss_acc = 0.0
-            train_cos_loss_acc = 0.0
-            # shuffle train
-            random.shuffle(train_image_paths)
-
-            # select the iterator type based on disable_tqdm (cluster or local)
-            if disable_tqdm:
-                iterator = range(0, len(train_image_paths), BATCH_SIZE_IMAGES)
-            else:
-                iterator = tqdm(range(0, len(train_image_paths), BATCH_SIZE_IMAGES), desc=f"Train Ep {epoch+1}")
-
-            for start_idx in iterator:
-                batch_paths = train_image_paths[start_idx:start_idx + BATCH_SIZE_IMAGES]
-                # print(f"[DEBUG] batch_paths: {batch_paths}")
-                views_list = load_images(batch_paths)
-                if len(views_list) == 0:
-                    print("[WARN] Nessuna immagine caricata correttamente, salto batch.")
-                    continue
-                imgs = torch.cat([v["img"] for v in views_list], dim=0).to(device, non_blocking=True)
-                batched_view = [{"img": imgs, "data_norm_type": views_list[0]["data_norm_type"]}]
-                # teacher batch
-                teacher_tensors = []
-                skip = False
-                for p in batch_paths:
-                    base = os.path.splitext(os.path.basename(p))[0]
-                    t_path = Path(TRAIN_FEATURES_DIR) / f"{base}.pt"
-                    if not t_path.is_file():
-                        skip = True; break
-                    t = torch.load(str(t_path), map_location="cpu")
-                    if t.dim() == 3: t = t.unsqueeze(0)
-                    if t.dim() != 4 or t.shape[0] != 1:
-                        skip = True; break
-                    teacher_tensors.append(t)
-                if skip or len(teacher_tensors) == 0:
-                    print(f"[WARN] Teacher features mancanti o malformate per alcune immagini, salto batch.")
-                    continue
-                teacher_batch = torch.cat(teacher_tensors, dim=0).to(device)
-                optimizer.zero_grad(set_to_none=True)
-                with torch.amp.autocast(device_type='cuda', enabled=AMP, dtype=autocast_dtype):
-                    _ = model.forward(batched_view)
-                    student_batch = getattr(model, "_last_feat2_8x", None)
-                    if student_batch is None:
-                        raise KeyError("_last_feat2_8x mancante (train).")
-                    student_batch = resize_to_64x64(student_batch)
-                    if teacher_batch.shape[1:] != student_batch.shape[1:]:
-                        raise ValueError(f"Shape mismatch teacher {teacher_batch.shape} vs student {student_batch.shape}")
-                    if NORM:
-                        student_norm = F.normalize(student_batch, dim=1) # normalization is needed to align embeddings representations onto a common space (hypersphere)
-                        teacher_norm = F.normalize(teacher_batch, dim=1)
-                    else:
-                        student_norm = student_batch
-                        teacher_norm = teacher_batch
-
-                    # create_student_original_teacher_side_by_side(student_norm, teacher_norm, "/scratch2/nico/distillation/coco2017/train/val2017/000000000724.jpg", epoch, "/scratch2/nico/distillation/output/heatmaps")
-                    # Salva gli embeddings student e teacher su disco per analisi/debug
-                    # embeddings_dir = os.path.join(OUTPUT_DIR, "embeddings")
-                    # student_save_path = os.path.join(embeddings_dir, f"student_embeddings.pt")
-                    # teacher_save_path = os.path.join(embeddings_dir, f"teacher_embeddings.pt")
-                    # torch.save(student_norm.detach().cpu(), student_save_path)
-                    # torch.save(teacher_norm.detach().cpu(), teacher_save_path)
-
-                    cos_loss = 1 - F.cosine_similarity(student_norm, teacher_norm, dim=1).mean() # cosine loss for "teaching the same semantic language"
-                    mse_loss = F.mse_loss(student_norm, teacher_norm) # mse loss for the same spatial structure/shape
-                    loss = 0.5 * mse_loss + 0.5 * cos_loss
-                loss.backward()
-                optimizer.step()
-                train_loss_acc += float(loss.detach().cpu()) * student_batch.shape[0]
-                train_samples += student_batch.shape[0]
-                # Accumula mse_loss e cos_loss pesati per numero immagini
-                train_mse_loss_acc += float(mse_loss.detach().cpu()) * student_batch.shape[0]
-                train_cos_loss_acc += float(cos_loss.detach().cpu()) * student_batch.shape[0]
-                # Metriche train (accumulate pesate per numero immagini)
-                md, sd, cs = mean_std_difference(student_batch, teacher_batch)
-                train_mean_diff_acc += float(md) * student_batch.shape[0]
-                train_std_diff_acc  += float(sd) * student_batch.shape[0]
-                train_cos_sim_acc   += float(cs) * student_batch.shape[0]
-            train_loss_mean = train_loss_acc / train_samples if train_samples > 0 else 0.0
-            train_mse_loss_mean = train_mse_loss_acc / train_samples if train_samples > 0 else 0.0
-            train_cos_loss_mean = train_cos_loss_acc / train_samples if train_samples > 0 else 0.0
-            train_mean_diff = train_mean_diff_acc / train_samples if train_samples > 0 else 0.0
-            train_std_diff  = train_std_diff_acc  / train_samples if train_samples > 0 else 0.0
-            train_cos_sim   = train_cos_sim_acc   / train_samples if train_samples > 0 else 0.0
-
-            # ---- VALIDATION ----
-            model.eval()
-            val_loss_acc = 0.0
-            val_samples = 0
-            val_mean_diff_acc = 0.0
-            val_std_diff_acc = 0.0
-            val_cos_sim_acc = 0.0
-            val_mse_loss_acc = 0.0
-            val_cos_loss_acc = 0.0
-
-            if VALIDATION:
-                with torch.no_grad():
-                    # select the iterator type based on disable_tqdm (cluster or local)
-                    if disable_tqdm:
-                        iterator = range(0, len(val_image_paths), BATCH_SIZE_IMAGES)
-                    else:
-                        iterator = tqdm(range(0, len(val_image_paths), BATCH_SIZE_IMAGES), desc=f"Val Ep {epoch+1}")
-                    for start_idx in iterator:
-                        batch_paths = val_image_paths[start_idx:start_idx + BATCH_SIZE_IMAGES]
-                        views_list = load_images(batch_paths)
-                        if len(views_list) == 0:
-                            continue
-                        imgs = torch.cat([v["img"] for v in views_list], dim=0).to(device, non_blocking=True)
-                        batched_view = [{"img": imgs, "data_norm_type": views_list[0]["data_norm_type"]}]
-                        teacher_tensors = []
-                        skip = False
-                        for p in batch_paths:
-                            base = os.path.splitext(os.path.basename(p))[0]
-                            t_path = Path(VAL_FEATURES_DIR) / f"{base}.pt"
-                            if not t_path.is_file(): skip = True; break
-                            t = torch.load(str(t_path), map_location="cpu")
-                            if t.dim() == 3: t = t.unsqueeze(0)
-                            if t.dim() != 4 or t.shape[0] != 1: skip = True; break
-                            teacher_tensors.append(t)
-                        if skip or len(teacher_tensors) == 0: continue
-                        teacher_batch = torch.cat(teacher_tensors, dim=0).to(device)
-                        with torch.amp.autocast(device_type='cuda', enabled=AMP, dtype=autocast_dtype):
-                            _ = model.forward(batched_view)
-                            student_batch = getattr(model, "_last_feat2_8x", None)
-                            if student_batch is None:
-                                raise KeyError("_last_feat2_8x mancante (val).")
-                            student_batch = resize_to_64x64(student_batch) # ridimensiona a 64x64 per allineare a teacher
-                            if teacher_batch.shape[1:] != student_batch.shape[1:]:
-                                raise ValueError(f"Shape mismatch (val) teacher {teacher_batch.shape} vs student {student_batch.shape}")
-                            if NORM:
-                                student_norm = F.normalize(student_batch, dim=1)
-                                teacher_norm = F.normalize(teacher_batch, dim=1)
-                            else:
-                                student_norm = student_batch
-                                teacher_norm = teacher_batch
-
-                            cos_loss = 1 - F.cosine_similarity(student_norm, teacher_norm, dim=1).mean()
-                            mse_loss = F.mse_loss(student_norm, teacher_norm)
-                            vloss = 0.5 * mse_loss + 0.5 * cos_loss
-                        val_loss_acc += float(vloss.detach().cpu()) * student_batch.shape[0]
-                        val_samples += student_batch.shape[0]
-                        val_mse_loss_acc += float(mse_loss.detach().cpu()) * student_batch.shape[0]
-                        val_cos_loss_acc += float(cos_loss.detach().cpu()) * student_batch.shape[0]
-                        md, sd, cs = mean_std_difference(student_batch, teacher_batch)
-                        val_mean_diff_acc += float(md) * student_batch.shape[0]
-                        val_std_diff_acc  += float(sd) * student_batch.shape[0]
-                        val_cos_sim_acc   += float(cs) * student_batch.shape[0]
-            val_loss_mean = val_loss_acc / val_samples if val_samples > 0 else 0.0
-            val_mean_diff = val_mean_diff_acc / val_samples if val_samples > 0 else 0.0
-            val_std_diff  = val_std_diff_acc  / val_samples if val_samples > 0 else 0.0
-            val_cos_sim   = val_cos_sim_acc   / val_samples if val_samples > 0 else 0.0
-            val_mse_loss_mean = val_mse_loss_acc / val_samples if val_samples > 0 else 0.0
-            val_cos_loss_mean = val_cos_loss_acc / val_samples if val_samples > 0 else 0.0
-            last_train_loss = train_loss_mean
-            last_val_loss = val_loss_mean
-
-            epoch_time = time.time() - epoch_t0
-            current_lr = optimizer.param_groups[0]["lr"]
-            print(
-                f"Epoch {epoch+1} done - "
-                f"train_loss={train_loss_mean:.4f} val_loss={val_loss_mean:.4f} | "
-                f"val_mean_diff={val_mean_diff:.4f} val_std_diff={val_std_diff:.4f} "
-                f"val_cos_sim={val_cos_sim:.4f} lr={current_lr:.2e} time={epoch_time:.1f}s"
-            )
-
-            # Log CSV
-            if EPOCHS > 0:
-                with open(log_path, "a") as f:
-                    writer = csv.writer(f)
-                    writer.writerow([
-                        epoch+1,
-                        train_loss_mean,
-                        val_loss_mean,
-                        train_mean_diff,
-                        train_std_diff,
-                        train_cos_sim,
-                        val_mean_diff,
-                        val_std_diff,
-                        val_cos_sim,
-                        current_lr,
-                        f"{epoch_time:.2f}"
-                    ])
-
-            # wandb logging
-            if USE_WANDB:
-                wandb.log({
-                    "epoch": epoch+1,
-                    "train_loss": train_loss_mean if 'train_loss_mean' in locals() else epoch_loss_mean,
-                    "train_mse_loss": train_mse_loss_mean if 'train_mse_loss_mean' in locals() else None,
-                    "train_cos_loss": train_cos_loss_mean if 'train_cos_loss_mean' in locals() else None,
-                    "train_mean_diff": train_mean_diff,
-                    "train_std_diff": train_std_diff,
-                    "train_cos_sim": train_cos_sim,
-                    "val_loss": val_loss_mean if 'val_loss_mean' in locals() else None,
-                    "val_mse_loss": val_mse_loss_mean if 'val_mse_loss_mean' in locals() else None,
-                    "val_cos_loss": val_cos_loss_mean if 'val_cos_loss_mean' in locals() else None,
-                    "mean_diff": val_mean_diff if 'val_mean_diff' in locals() else mean_diff,
-                    "std_diff": val_std_diff if 'val_std_diff' in locals() else std_diff,
-                    "cosine_similarity": val_cos_sim if 'val_cos_sim' in locals() else avg_cosine_sim,
-                    "lr": current_lr,
-                    "epoch_time_sec": epoch_time
-                })
-
-            # Scheduler & Early Stopping sulla val_loss
-            target_loss = val_loss_mean
-            if USE_LR_ON_PLATEAU:
-                scheduler.step(target_loss)
-            improved = best_loss is None or target_loss < best_loss - 1e-6
-            if improved:
-                best_loss = target_loss; epochs_no_improve = 0
-                save_checkpoint(model, optimizer, epoch+1, target_loss, CHECKPOINT_DIR, tag="best")
-            else:
-                epochs_no_improve += 1
-                print(f"[INFO] Nessun miglioramento val ({epochs_no_improve}/{EARLY_STOPPING_PATIENCE}).")
-            if USE_EARLY_STOPPING and epochs_no_improve >= EARLY_STOPPING_PATIENCE:
-                print(f"[EARLY STOP] Stoppo a epoch {epoch+1}.")
-                break
-
-            if VALIDATION:
-                save_checkpoint(model, optimizer, epoch+1, target_loss, CHECKPOINT_DIR, tag=f"epoch{epoch+1}")
-
-    else:
-        print("[DEBUG] SINGLE_IMAGE=False: Carico e processo tutte le immagini per ogni cartella.")
-
-        folders = [f for f in sorted(Path(INPUT_DIR).iterdir()) if f.is_dir()]
-        if len(folders) == 0:
-            print(f"Nessuna cartella trovata in {INPUT_DIR}")
-            return
-
-        autocast_dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
-
-        for epoch in range(start_epoch, EPOCHS):
-            epoch_loss_acc = 0.0 # somma delle loss per epoch
-            samples_acc = 0 # numero di immagini totali per epoch
-            epoch_t0 = time.time()
-            print(f"Epoch {epoch+1}/{EPOCHS}")
-            model.train(True) # modalità training (abilita dropout, batchnorm, ecc.)
-
-            for folder in tqdm(folders, disable=disable_tqdm, desc=f"Epoch {epoch+1}"):
-                # Path cartella immagini
-                img_dir = str(folder)
-
-                # Preprocessing immagini
-                views = load_images(img_dir)
-                if len(views) == 0:
-                    print(f"[WARN] Cartella vuota: {folder}")
-                    continue
-
-                # Carica un unico file teacher_embeddings.pt con shape (B, C, H, W)
-                teacher_path = Path(folder) / "teacher_embeddings.pt"
-                if not teacher_path.exists():
-                    print(f"[SKIP] teacher_embeddings.pt non trovato in {folder.name}")
-                    continue
-                teacher_batch = torch.load(teacher_path, map_location="cpu") # carica su CPU per risparmiare memoria GPU (sposto dopo su GPU solo il batch che mi serve)
-                if teacher_batch.dim() != 4:
-                    print(f"[WARN] Shape teacher inattesa: {teacher_batch.shape}")
-                    continue
-                if teacher_batch.shape[0] != len(views):
-                    print(f"[WARN] Mismatch batch: teacher ({teacher_batch.shape[0]}) vs immagini ({len(views)}) in {folder.name}")
-                    continue
-
-                # Sposta immagini su device (in-place)
-                for v in views:
-                    if isinstance(v, dict) and "img" in v:
-                        v["img"] = v["img"].to(device, non_blocking=True) # non_blocking=True per trasferimento asincrono
-
-                teacher_batch = teacher_batch.to(device) # sposta batch teacher su GPU
-
-                optimizer.zero_grad(set_to_none=True) # azzera i gradienti prima di calcolare quelli nuovi (set_to_none=True per efficienza memoria)
-
-                with torch.amp.autocast(device_type='cuda', enabled=AMP, dtype=autocast_dtype):
-                    outputs = model.forward(views) # produce embeddings dell'encoder di MapAnything (in training mode, quindi calcola i gradienti)
-                    student_list = []
-                    for o in outputs:
-                        if "_last_feat2_8x" not in o:
-                            raise KeyError("Output della head '_last_feat2_8x' non trovato. Verifica integrazione.")
-                        emb = o["_last_feat2_8x"] # filtra gli emebddings della head aggiuntiva
-                        emb = resize_to_64x64(emb) # ridimensiona a 64x64 per allineare a teacher
-                        student_list.append(emb)
-                    student_batch = torch.cat(student_list, dim=0) # concatena in un unico batch gli embeddings (B, C, H, W)
-
-                    if teacher_batch.shape[1] != student_batch.shape[1]: # non dovrebbe mai succedere
-                        raise ValueError(
-                            f"Mismatch canali teacher({teacher_batch.shape[1]}) vs student({student_batch.shape[1]}). Aggiungi un proiettore.")
-
-                    if NORM:
-                        student_norm = F.normalize(student_batch, dim=1)
-                        teacher_norm = F.normalize(teacher_batch, dim=1)
-                    else:
-                        student_norm = student_batch
-                        teacher_norm = teacher_batch
-
-                    cos_loss = 1 - F.cosine_similarity(student_norm, teacher_norm, dim=1).mean()
-                    mse_loss = F.mse_loss(student_norm, teacher_norm)
-                    loss = 0.5 * mse_loss + 0.5 * cos_loss
-
-                loss.backward() # calcola i gradienti
-                optimizer.step() # aggiorna i pesi della head in base ai gradienti calcolati
-
-                batch_loss = float(loss.detach().cpu()) # sposta la loss su CPU e converte in float
-                epoch_loss_acc += batch_loss * len(views) # somma la loss pesata per il numero di immagini
-                samples_acc += len(views) # aggiorna il contatore immagini
-                print(f"[Folder {folder.name}] N={len(views)} loss={batch_loss:.4f}")
-
-                # Analisi statistiche (opzionale, commenta se non serve)
-                mean_diff, std_diff, avg_cosine_sim = mean_std_difference(student_batch, teacher_batch)
-                # print(f"  Mean diff: {mean_diff:.6f}, Std diff: {std_diff:.6f}, Avg Cosine Sim: {avg_cosine_sim:.6f}")
-
-            epoch_loss_mean = epoch_loss_acc / samples_acc if samples_acc > 0 else 0.0 # loss media epoch
-            epoch_time = time.time() - epoch_t0
-            current_lr = optimizer.param_groups[0]["lr"]
-            print(f"Epoch {epoch+1} done - mean_loss={epoch_loss_mean:.4f} mean_diff={mean_diff:.4f} std_diff={std_diff:.4f} avg_cosine_sim={avg_cosine_sim:.4f} lr={current_lr:.2e} time={epoch_time/60:.2f} min")
-
-            # Logga la loss su file CSV
-            with open(log_path, "a") as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    epoch+1,
-                    epoch_loss_mean,
-                    mean_diff,
-                    std_diff,
-                    avg_cosine_sim,
-                    current_lr,
-                    f"{epoch_time:.2f}"
-                ])
-
-            # wandb logging
-            if USE_WANDB:
-                wandb.log({
-                    "epoch": epoch+1,
-                    "train_loss": train_loss_mean if 'train_loss_mean' in locals() else epoch_loss_mean,
-                    "train_mse_loss": mse_loss.item() if 'mse_loss' in locals() else None,
-                    "train_cos_loss": cos_loss.item() if 'cos_loss' in locals() else None,
-                    "val_loss": val_loss_mean if 'val_loss_mean' in locals() else None,
-                    "mean_diff": val_mean_diff if 'val_mean_diff' in locals() else mean_diff,
-                    "std_diff": val_std_diff if 'val_std_diff' in locals() else std_diff,
-                    "cosine_similarity": val_cos_sim if 'val_cos_sim' in locals() else avg_cosine_sim,
-                    "lr": current_lr,
-                    "epoch_time_sec": epoch_time
-                })
-
-            # Scheduler LR on plateau
-            if USE_LR_ON_PLATEAU:
-                scheduler.step(epoch_loss_mean) # step dello scheduler passando la loss media
-
-            # Early stopping
-            improved = best_loss is None or epoch_loss_mean < best_loss - 1e-6
-            if improved:
-                best_loss = epoch_loss_mean
-                epochs_no_improve = 0
-            else:
-                epochs_no_improve += 1
-                print(f"[INFO] Nessun miglioramento da {epochs_no_improve} epoche.")
-            if USE_EARLY_STOPPING and epochs_no_improve >= EARLY_STOPPING_PATIENCE:
-                print(f"[EARLY STOPPING] Stoppo il training dopo {epoch+1} epoche: nessun miglioramento su loss per {EARLY_STOPPING_PATIENCE} epoche.")
-                break
-
-            # Salva checkpoint ogni epoca
-            save_checkpoint(model, optimizer, epoch+1, epoch_loss_mean, CHECKPOINT_DIR, tag=f"epoch{epoch+1}")
-
-    total_time = time.time() - start_time
-    print(f"Training completed in {total_time/60:.2f} min")
-
-    # Salva modello finale
-    if EPOCHS > 0:
-        if SINGLE_IMAGE:
-            final_loss = last_val_loss if (last_val_loss is not None) else (last_train_loss if last_train_loss is not None else 0.0)
-        else:
-            final_loss = epoch_loss_mean if 'epoch_loss_mean' in locals() else (best_loss if best_loss is not None else 0.0)
-        final_epoch = (epoch + 1) if 'epoch' in locals() else start_epoch
-        save_checkpoint(model, optimizer, final_epoch, final_loss, CHECKPOINT_DIR, tag="final")
-
-    # Analisi finale con heatmap
-    if SINGLE_IMAGE:
-        # Usa preferibilmente lo split di validazione per le heatmap finali; fallback al train se mancano.
-        source_image_paths = None
-        if 'val_image_paths' in locals() and len(val_image_paths) > 0:
-            source_image_paths = val_image_paths
-            print("[HEATMAP] Uso immagini di validation per l'analisi finale.")
-        elif 'train_image_paths' in locals() and len(train_image_paths) > 0:
-            source_image_paths = train_image_paths
-            print("[HEATMAP] Val vuoto: uso immagini di train per l'analisi finale.")
-        else:
-            print("[HEATMAP][WARN] Nessuna lista immagini disponibile per generare heatmap.")
-            source_image_paths = []
-
-        num_images = min(NUM_HEATMAPS, len(source_image_paths))
-
-        if num_images == 0:
-            print("[HEATMAP][WARN] Nessuna immagine da processare.")
-        else:
-            selected_paths = random.sample(source_image_paths, num_images)
-            print(f"Analisi heatmap per {num_images} immagini scelte casualmente dallo split selezionato.")
-
-            for img_path in selected_paths:
-                img_name = os.path.splitext(os.path.basename(img_path))[0]
-                print(f"Analisi heatmap per immagine: {img_name}")
-                # Caricamento singola immagine mantenendo compatibilità con load_images
-                # with Image.open(img_path) as img:
-                #     print(f"[SHAPE] Shape originale immagine: {img.size} (W, H), mode: {img.mode}")
-                view = load_images([str(img_path)])
-                # if len(view) > 0 and "img" in view[0]:
-                #     print(f"[SHAPE] Shape dopo load_images: {view[0]['img'].shape} (N, C, H, W), data_norm_type: {view[0]['data_norm_type']}")
-                if len(view) == 0:
-                    print(f"[WARN] Nessuna immagine caricata da {img_path}")
-                    continue
-                if isinstance(view, dict):
-                    view = [view]  # normalizza a lista
-                for v in view:
-                    if "img" in v:
-                        v["img"] = v["img"].to(device, non_blocking=True)
-
-                model.eval()
-                model.infer(
-                    view,
-                    memory_efficient_inference=False,
-                    use_amp=True,
-                    amp_dtype="bf16",
-                    apply_mask=True,
-                    mask_edges=True,
-                    apply_confidence_mask=False,
-                    confidence_percentile=0,
-                )
-                student_embeddings = getattr(model, "_last_feat2_8x", None)
-                if student_embeddings is None:
-                    print("[HEATMAP][WARN] _last_feat2_8x non presente dopo infer().")
-                    continue
-
-                student_embeddings = resize_to_64x64(student_embeddings) # (B*V, 256, 64, 64)
-
-                # print("[SHAPE] Student embeddings shape:", student_embeddings.shape)
-
-                # Path teacher: prima prova nello split di validazione, poi fallback al train
-                candidate_teacher_paths = [
-                    os.path.join(VAL_FEATURES_DIR, f"{img_name}.pt"),
-                    os.path.join(TRAIN_FEATURES_DIR, f"{img_name}.pt"),
-                ]
-                teacher_path = None
-                for ctp in candidate_teacher_paths:
-                    if os.path.isfile(ctp):
-                        teacher_path = ctp
-                        break
-                if teacher_path is None:
-                    print(f"[HEATMAP][WARN] Teacher feature non trovata per {img_name}.")
-                    continue
-                teacher_embeddings = torch.load(teacher_path, map_location="cpu")
-
-                output_heatmaps = os.path.join(OUTPUT_DIR, "heatmaps")
-                os.makedirs(output_heatmaps, exist_ok=True)
-                print(f"[HEATMAP] Salvo heatmap in {output_heatmaps}")
-                # heatmap_sanity_check_single_channel(student_embeddings, teacher_embeddings, img_name, output_heatmaps)
-                # heatmap_sanity_check_avg_all_channels(student_embeddings, teacher_embeddings, img_name, output_heatmaps)
-                create_student_original_teacher_side_by_side(student_embeddings, teacher_embeddings, img_path, img_name, output_heatmaps)
-    else:
-        for folder in folders:
-            print(f"Analisi heatmap per cartella: {folder.name}")
-            images = os.path.join(INPUT_DIR, folder)
-            views = load_images(images)
-
-            model.eval() # modalità eval (disabilita dropout, batchnorm, ecc.)
-            model.infer(
-                views,
-                memory_efficient_inference=False,
-                use_amp=True,
-                amp_dtype="bf16",
-                apply_mask=True,
-                mask_edges=True,
-                apply_confidence_mask=False,
-                confidence_percentile=0,
-            )
-            student_embeddings = getattr(model, "_last_feat2_8x", None)
-            student_embeddings = resize_to_64x64(student_embeddings) # (B*V, 256, 64, 64)
-
-            teacher_path = Path(folder) / "teacher_embeddings.pt"
-            teacher_embeddings = torch.load(teacher_path, map_location="cpu")
-
-            output_heatmaps = os.path.join(OUTPUT_DIR, "heatmaps")
-            print(f"[DEBUG] Saving heatmaps to {output_heatmaps}")
-            os.makedirs(output_heatmaps, exist_ok=True)
-            # heatmap_sanity_check_single_channel(student_embeddings, teacher_embeddings, folder.name, output_heatmaps)
-            # heatmap_sanity_check_avg_all_channels(student_embeddings, teacher_embeddings, folder.name, output_heatmaps)
-
-if __name__ == "__main__":
+        args.distributed = distributed_args
+    
+    # Run distillation
     try:
-        main()
+        distill(args)
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
     except KeyboardInterrupt:
-        print("\n[INTERRUPT] Training interrotto manualmente da tastiera.")
+        print("\n[INTERRUPT] Training interrupted by user.")
     except Exception as e:
-        print(f"[ERROR] Eccezione imprevista: {e}")
+        print(f"[ERROR] Unexpected exception: {e}")
         raise
     finally:
-        # chiusura sicura di wandb
-        if USE_WANDB:
+        # Cleanup
+        if args.use_wandb and WANDB_AVAILABLE:
             wandb.finish()
-            print("[CLEANUP] Chiusura sessione wandb e salvataggio stato finale.")
+
+if __name__ == "__main__":
+    main()
