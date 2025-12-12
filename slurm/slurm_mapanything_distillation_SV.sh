@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=SV_09_unfrozen
+#SBATCH --job-name=SV_03_norm
 #
 # Specify output file.
-#SBATCH --output=SV_09_unfrozen_%j.log
+#SBATCH --output=SV_03_norm_%j.log
 #
 # Specify error file.
-#SBATCH --error=SV_09_unfrozen_%j.err
+#SBATCH --error=SV_03_norm_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -71,20 +71,21 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --distributed \
   --use_wandb \
   --num_workers 8 \
-  --dataset ETH3D_single \
-  --wandb_name "SV_ETH3D" \
-  --epochs 500 \
+  --dataset coco2017 \
+  --wandb_name "SV_03_norm" \
+  --epochs 100 \
   --lr 1e-3 \
   --batch_size 16 \
   --lr_scheduler none \
   --eval_freq 1 \
-  --save_freq 10 \
+  --save_freq 25 \
   --print_freq 100 \
   --amp \
   --save_visualizations \
-  --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D \
-  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D/checkpoints/checkpoint_epoch250.pth \
-  --wandb_resume_id n0h9ug8q
+  --normalize_features
+#   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D \
+#   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D/checkpoints/checkpoint_epoch250.pth \
+#   --wandb_resume_id n0h9ug8q
 #   --num_info_sharing_blocks_unfreeze 24
 #   --precomputed_features
 
