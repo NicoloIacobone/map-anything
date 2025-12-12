@@ -626,6 +626,86 @@ def forward_pass_distillation_unified(
             # Estrai feature dalla view 0 (unica view)
             base_model = model.module if hasattr(model, "module") else model
             student_features_single = getattr(base_model, "_last_feat2_8x", None)
+
+            ############## DEBUG VISUALIZZAZIONE PCA ##############
+            # encoder_features = getattr(base_model, "_last_encoder_features", None)
+            # print(f"[DEBUG] student_features_single shape: {student_features_single.shape if student_features_single is not None else 'None'}")
+            # print(f"[DEBUG] encoder_features shape: {encoder_features.shape if encoder_features is not None else 'None'}")
+            # # Resize encoder features to match student spatial resolution
+            # encoder_resized = F.interpolate(
+            #     encoder_features,
+            #     size=student_features_single.shape[-2:],  # (64, 64)
+            #     mode="bilinear",
+            #     align_corners=False
+            # )
+
+            # self_dense_input = getattr(base_model, "_nico_dense_head_inputs", None)
+
+            # self_dense_input[0] = F.interpolate(
+            #     self_dense_input[0],
+            #     size=student_features_single.shape[-2:],  # (64, 64)
+            #     mode="bilinear",
+            #     align_corners=False
+            # )
+            # self_dense_input[1] = F.interpolate(
+            #     self_dense_input[1],
+            #     size=student_features_single.shape[-2:],  # (64, 64)
+            #     mode="bilinear",
+            #     align_corners=False
+            # )
+            # self_dense_input[2] = F.interpolate(
+            #     self_dense_input[2],
+            #     size=student_features_single.shape[-2:],  # (64, 64)
+            #     mode="bilinear",
+            #     align_corners=False
+            # )
+            # self_dense_input[3] = F.interpolate(
+            #     self_dense_input[3],
+            #     size=student_features_single.shape[-2:],  # (64, 64)
+            #     mode="bilinear",
+            #     align_corners=False
+            # )
+            
+            # Project encoder channels (1024) to student channels (256)
+            # Simple average pooling over channel groups
+            # B, C_enc, H, W = encoder_resized.shape
+            # C_student = student_features_single.shape[1]
+            # group_size = C_enc // C_student  # 1024 // 256 = 4
+            
+            # encoder_projected = encoder_resized.reshape(B, C_student, group_size, H, W).mean(dim=2)
+            # dense_0 = self_dense_input[0].reshape(B, C_student, group_size, H, W).mean(dim=2)
+            # dense_1 = self_dense_input[1].reshape(B, C_student, group_size, H, W).mean(dim=2)
+            # dense_2 = self_dense_input[2].reshape(B, C_student, group_size, H, W).mean(dim=2)
+            # dense_3 = self_dense_input[3].reshape(B, C_student, group_size, H, W).mean(dim=2)
+
+            # Now encoder_projected is (1, 256, 64, 64) - same shape as student
+            # save_pca_visualizations(
+            #         student_features=student_features_single,
+            #         teacher_features=encoder_projected,
+            #         image_paths=image_paths,
+            #         epoch=1,
+            #         output_dir="/scratch2/nico/distillation/output/test_dino",
+            #     )
+            # print("fatto 1")
+            # save_pca_visualizations(
+            #         student_features=dense_0,
+            #         teacher_features=dense_1,
+            #         image_paths=image_paths,
+            #         epoch=2,
+            #         output_dir="/scratch2/nico/distillation/output/test_dino",
+            #     )
+            # print("fatto 2")
+            # save_pca_visualizations(
+            #         student_features=dense_2,
+            #         teacher_features=dense_3,
+            #         image_paths=image_paths,
+            #         epoch=3,
+            #         output_dir="/scratch2/nico/distillation/output/test_dino",
+            #     )
+            # print("fatto 3")
+
+            ######################################################
+
             if student_features_single is None:
                 raise KeyError(
                     "Student features not found on model (_last_feat2_8x). "
@@ -656,6 +736,16 @@ def forward_pass_distillation_unified(
         # Estrai feature (già tutte in un batch)
         base_model = model.module if hasattr(model, "module") else model
         student_features = getattr(base_model, "_last_feat2_8x", None)
+        ############## DEBUG VISUALIZZAZIONE PCA ##############
+        # encoder_features = getattr(base_model, "_last_encoder_features", None)
+        # save_pca_visualizations(
+        #         student_features=student_features,
+        #         teacher_features=encoder_features,
+        #         image_paths=image_paths,
+        #         epoch=1,
+        #         output_dir="/scratch2/nico/distillation/output/test_dino",
+        #     )
+        ######################################################
         if student_features is None:
             raise KeyError("Student features not found (_last_feat2_8x)")
         
