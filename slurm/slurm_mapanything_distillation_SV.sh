@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=SV_coco_unfrozen_2
+#SBATCH --job-name=SV_coco_unfrozen_3
 #
 # Specify output file.
-#SBATCH --output=SV_coco_unfrozen_2_%j.log
+#SBATCH --output=SV_coco_unfrozen_3_%j.log
 #
 # Specify error file.
-#SBATCH --error=SV_coco_unfrozen_2_%j.err
+#SBATCH --error=SV_coco_unfrozen_3_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -72,7 +72,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --num_workers 8 \
   --dataset coco2017 \
-  --wandb_name "SV_coco_unfrozen_2" \
+  --wandb_name "SV_coco_unfrozen_3" \
   --epochs 1000 \
   --lr 1e-3 \
   --batch_size 4 \
@@ -82,7 +82,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --amp \
   --save_visualizations \
   --mse_type sample \
-  --lr_encoder_scale 0.1 \
+  --lr_encoder_scale 1.0 \
   --num_info_sharing_blocks_unfreeze 24 \
   --no_augmentation
 #   --lr_encoder_scale 0.05
