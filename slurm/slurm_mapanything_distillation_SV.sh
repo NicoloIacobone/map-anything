@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=SV_03_norm
+#SBATCH --job-name=SV_04_norm
 #
 # Specify output file.
-#SBATCH --output=SV_03_norm_%j.log
+#SBATCH --output=SV_04_norm_%j.log
 #
 # Specify error file.
-#SBATCH --error=SV_03_norm_%j.err
+#SBATCH --error=SV_04_norm_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -72,8 +72,8 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --num_workers 8 \
   --dataset coco2017 \
-  --wandb_name "SV_03_norm" \
-  --epochs 100 \
+  --wandb_name "SV_04_norm" \
+  --epochs 500 \
   --lr 1e-3 \
   --batch_size 16 \
   --lr_scheduler none \
