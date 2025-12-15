@@ -81,7 +81,8 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --print_freq 250 \
   --amp \
   --save_visualizations \
-  --no_augmentation
+  --no_augmentation \
+  --mse_type pixel
 #   --lr_encoder_scale 0.05
 #   --num_info_sharing_blocks_unfreeze 24 \
 #   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D \

@@ -446,6 +446,7 @@ class DistillationLoss(torch.nn.Module):
         self,
         student_features: torch.Tensor,
         teacher_features: torch.Tensor,
+        mse_type: str = "pixel",
     ) -> Tuple[torch.Tensor, Dict]:
         """
         Calcola la loss di distillazione.
@@ -453,6 +454,7 @@ class DistillationLoss(torch.nn.Module):
         Args:
             student_features: Tensor (B,C,H,W) dallo studente
             teacher_features: Tensor (B,C,H,W) dal teacher
+            mse_type: Tipo di MSE ("pixel" o "sample")
         
         Returns:
             loss: valore scalare totale
@@ -468,19 +470,27 @@ class DistillationLoss(torch.nn.Module):
             student_norm = student_features
             teacher_norm = teacher_features
 
-        mse_per_sample = F.mse_loss(
-            student_norm, 
-            teacher_norm, 
-            reduction='none'  # (B, C, H, W)
-        ).mean(dim=(1, 2, 3))  # Media su (C,H,W) → (B,)
-        
-        mse_loss = mse_per_sample.mean()  # Media su batch → scalare
-        
         cos_map = F.cosine_similarity(student_norm, teacher_norm, dim=1)  # (B, H, W)
         cos_sim_per_image = cos_map.flatten(1).mean(dim=1)  # Media su (H,W) → (B,)
         cos_sim = cos_sim_per_image.mean()  # Media su batch → scalare
         
         cos_loss = 1.0 - cos_sim
+
+        if mse_type == "sample":
+            # Calcola MSE sample-wise (media su batch, ma SOMMA su C,H,W)
+            mse_per_sample = F.mse_loss(
+                student_norm, 
+                teacher_norm, 
+                reduction='none'  # (B, C, H, W)
+            ).mean(dim=(1, 2, 3))  # Media su (C,H,W) → (B,)
+            
+            mse_loss = mse_per_sample.mean()  # Media su batch → scalare
+
+        elif mse_type == "pixel":
+            # IN QUESTO:
+            # Calcola MSE pixel-wise (media su batch, H, W, ma SOMMA su canali C)
+            diff = student_norm - teacher_norm
+            mse_loss = (diff ** 2).sum(dim=1).mean() # Somma su C, media su H,W
         
         # Combined loss
         total_loss = self.mse_weight * mse_loss + self.cosine_weight * cos_loss
@@ -847,7 +857,7 @@ def train_one_epoch_distillation(
             )
 
         # Compute loss
-        loss, loss_details = criterion(student_features, teacher_features)
+        loss, loss_details = criterion(student_features, teacher_features, mse_type=args.mse_type)
         mse_value = float(loss_details.get("mse_loss", 0.0))
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
@@ -1007,7 +1017,7 @@ def validate_one_epoch_distillation(
             )
         
         # Compute loss
-        loss, loss_details = criterion(student_features, teacher_features)
+        loss, loss_details = criterion(student_features, teacher_features, mse_type=args.mse_type)
         loss_value = loss.detach().cpu().item()
         mse_value = float(loss_details.get("mse_loss", 0.0))
         cos_value = float(loss_details.get("cos_loss", 0.0))
@@ -1749,6 +1759,7 @@ def get_args_parser():
     # Loss
     parser.add_argument("--mse_weight", type=float, default=0.5, help="Weight for MSE loss")
     parser.add_argument("--cosine_weight", type=float, default=0.5, help="Weight for cosine loss")
+    parser.add_argument("--mse_type", type=str, default="pixel", choices=["pixel", "sample"], help="Type of MSE loss computation")
     parser.add_argument("--normalize_features", action="store_true", help="Normalize features before loss")
     
     # Data
