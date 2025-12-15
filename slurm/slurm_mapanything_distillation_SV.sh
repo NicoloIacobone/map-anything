@@ -83,7 +83,8 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --amp \
   --save_visualizations \
   --num_info_sharing_blocks_unfreeze 24 \
-  --no_augmentation
+  --no_augmentation \
+  --lr_encoder_scale 0.05
 #   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D \
 #   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D/checkpoints/checkpoint_epoch250.pth \
 #   --wandb_resume_id n0h9ug8q

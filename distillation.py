@@ -1358,9 +1358,9 @@ def distill(args):
     for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        if name.startswith("dpt_feature_head_2"):
+        if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat"):
             head_params.append(p)
-        elif name.startswith("info_sharing") or name.startswith("sam2_compat"):
+        elif name.startswith("info_sharing"):
             encoder_params.append(p)
         else:
             other_params.append(p)
