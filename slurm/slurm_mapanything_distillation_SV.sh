@@ -1,19 +1,19 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=SV_04_norm
+#SBATCH --job-name=SV_coco_unfrozen
 #
 # Specify output file.
-#SBATCH --output=SV_04_norm_%j.log
+#SBATCH --output=SV_coco_unfrozen_%j.log
 #
 # Specify error file.
-#SBATCH --error=SV_04_norm_%j.err
+#SBATCH --error=SV_coco_unfrozen_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=12:00:00
+#SBATCH --time=72:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -72,22 +72,21 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --num_workers 8 \
   --dataset coco2017 \
-  --wandb_name "SV_04_norm" \
-  --epochs 500 \
-  --lr 1e-3 \
-  --batch_size 16 \
+  --wandb_name "SV_coco_unfrozen" \
+  --epochs 1000 \
+  --lr 2.5e-3 \
+  --batch_size 4 \
   --lr_scheduler none \
   --eval_freq 1 \
-  --save_freq 25 \
+  --save_freq 10 \
   --print_freq 100 \
   --amp \
   --save_visualizations \
-  --normalize_features
+  --num_info_sharing_blocks_unfreeze 24 \
+  --no_augmentation
 #   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D \
 #   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D/checkpoints/checkpoint_epoch250.pth \
 #   --wandb_resume_id n0h9ug8q
-#   --num_info_sharing_blocks_unfreeze 24
-#   --precomputed_features
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
