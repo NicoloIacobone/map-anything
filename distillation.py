@@ -487,7 +487,6 @@ class DistillationLoss(torch.nn.Module):
             mse_loss = mse_per_sample.mean()  # Media su batch → scalare
 
         elif mse_type == "pixel":
-            # IN QUESTO:
             # Calcola MSE pixel-wise (media su batch, H, W, ma SOMMA su canali C)
             diff = student_norm - teacher_norm
             mse_loss = (diff ** 2).sum(dim=1).mean() # Somma su C, media su H,W
