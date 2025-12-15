@@ -60,6 +60,19 @@ if hasattr(torch.backends.cuda, "matmul") and hasattr(
 ):
     torch.backends.cuda.matmul.allow_tf32 = True
 
+def _log_trainable_and_frozen(model):
+    """Stampa un riepilogo di quali parti sono trainabili e quante hanno requires_grad=True."""
+    trainable = []
+    frozen = []
+    for name, p in model.named_parameters():
+        (trainable if p.requires_grad else frozen).append(name)
+    print(f"[CHECK] Trainable params: {len(trainable)}, Frozen params: {len(frozen)}")
+    # Focus su encoder/info_sharing
+    enc_trainable = [n for n in trainable if n.startswith("info_sharing")]
+    print(f"[CHECK] info_sharing trainable count: {len(enc_trainable)}")
+    if enc_trainable:
+        print(f"[CHECK] Examples: {enc_trainable[:5]} ...")
+
 def setup_runtime_paths(args):
     """Inizializza OUT_DIR, BASE_DIR, DATASET, SAM2_PATH e le directory immagini/feature usando args."""
     import torch.hub as _torch_hub
@@ -892,6 +905,19 @@ def train_one_epoch_distillation(
         loss /= accum_iter
         loss.backward()
 
+        # --- CHECK GRADIENTI SUBITO DOPO backward ---
+        if data_iter_step % args.print_freq == 0:
+            base_model = model.module if hasattr(model, "module") else model
+            has_grad = 0
+            nonzero = 0
+            for name, p in base_model.named_parameters():
+                if name.startswith("info_sharing") and p.requires_grad:
+                    if p.grad is not None:
+                        has_grad += 1
+                        if p.grad.abs().sum().item() > 0:
+                            nonzero += 1
+            print(f"[GRAD(step)] info_sharing params with grad: {has_grad}, non-zero grad: {nonzero}")
+
         if (data_iter_step + 1) % accum_iter == 0:
             if args.clip_grad > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
@@ -1260,6 +1286,41 @@ def distill(args):
     model_without_ddp = model
     print(f"Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
 
+    # --- HOOK DIAGNOSTICO SU UN BLOCCO DELL'ENCODER ---
+    encoder_grad_norm = {"val": None}
+    def _register_encoder_hook_once(m):
+        # Prende un parametro rappresentativo (es. la weight del primo MLP o attn)
+        for name, p in m.named_parameters():
+            if "weight" in name and p.requires_grad:
+                def _hook(grad):
+                    try:
+                        encoder_grad_norm["val"] = grad.detach().abs().sum().item()
+                    except Exception:
+                        encoder_grad_norm["val"] = None
+                p.register_hook(_hook)
+                print(f"[HOOK] Registered grad hook on {m.__class__.__name__}.{name}")
+                return True
+        return False
+
+    # Registra il primo hook disponibile dentro info_sharing
+    if hasattr(model, "info_sharing"):
+        info = model.info_sharing
+        blocks = getattr(info, "self_attention_blocks", None) or getattr(info, "blocks", None) or getattr(info, "layers", None)
+        if blocks:
+            for blk in blocks:
+                if _register_encoder_hook_once(blk):
+                    break
+        else:
+            print("[WARN] info_sharing has no iterable blocks to hook")
+
+    # --- CHECK DI UN’ATTIVAZIONE DELL’ENCODER NELLA FORWARD ---
+    def _check_encoder_activation_requires_grad(base_model):
+        enc_act = getattr(base_model, "_last_encoder_features", None)
+        if enc_act is None:
+            print("[CHECK] _last_encoder_features not set")
+            return
+        print(f"[CHECK] encoder activation shape: {tuple(enc_act.shape)} | requires_grad: {enc_act.requires_grad}")
+
     # ========== FREEZE STRATEGY ==========
     # 1. Freeze tutto inizialmente
     print("Freezing all parameters...")
@@ -1304,6 +1365,25 @@ def distill(args):
             args.info_sharing_unfrozen_indices = []
     else:
         args.info_sharing_unfrozen_indices = []
+
+    _log_trainable_and_frozen(model_without_ddp)
+
+    def _check_encoder_grads_once(model):
+        """Controlla una volta (dopo backward) se l'encoder riceve gradienti."""
+        has_grad = 0
+        nonzero = 0
+        examples = []
+        for name, p in model.named_parameters():
+            if name.startswith("info_sharing") and p.requires_grad:
+                if p.grad is not None:
+                    has_grad += 1
+                    if p.grad.abs().sum().item() > 0:
+                        nonzero += 1
+                        if len(examples) < 3:
+                            examples.append(name)
+        print(f"[GRAD] info_sharing params with grad: {has_grad}, non-zero grad: {nonzero}")
+        if examples:
+            print(f"[GRAD] Non-zero grad examples: {examples}")
 
     # ========== VERIFY TRAINABLE PARAMETERS ==========
     trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -1525,6 +1605,12 @@ def distill(args):
             args=args,
             teacher_extractor=teacher_extractor,
         )
+        _check_encoder_grads_once(model_without_ddp)
+        # Dopo l’ultimo backward dell’epoca: stampa la norma del grad raccolta dall’hook
+        base_model = model_without_ddp
+        _check_encoder_activation_requires_grad(base_model)
+        print(f"[GRAD] info_sharing hooked grad sum: {encoder_grad_norm['val']}")
+        _check_encoder_grads_once(model_without_ddp)
         
         # Validation
         val_stats = {}
