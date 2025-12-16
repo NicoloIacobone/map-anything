@@ -1423,10 +1423,10 @@ def distill(args):
     elif args.lr_scheduler == "step":
         scheduler = optim.lr_scheduler.StepLR(
             optimizer,
-            step_size=args.lr_decay_steps,
+            step_size=args.lr_decay_epochs,
             gamma=0.1,
         )
-        print(f"[INFO] Using StepLR with step_size={args.lr_decay_steps}, gamma=0.1")
+        print(f"[INFO] Using StepLR with step_size={args.lr_decay_epochs}, gamma=0.1")
     elif args.lr_scheduler == "plateau":
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
@@ -1742,7 +1742,7 @@ def get_args_parser():
     parser.add_argument("--lr_min", type=float, default=1e-6, help="Minimum learning rate for scheduler")
     parser.add_argument("--lr_scheduler", type=str, default="none", choices=["cosine","step", "plateau", "none"])
     parser.add_argument("--plateau_patience", type=int, default=10, help="Patience for ReduceLROnPlateau scheduler")
-    parser.add_argument("--lr_decay_steps", type=int, default=1000, help="Steps per decay x0.1 (StepLR)")
+    parser.add_argument("--lr_decay_epochs", type=int, default=1000, help="Epochs per decay x0.1 (StepLR)")
     parser.add_argument("--lr_scheduler_t_max", type=int, default=None, help="T_max for CosineAnnealingLR")
     parser.add_argument("--override_lr", action="store_true", help="Override LR from checkpoint with --lr value")
     parser.add_argument("--overwrite_scheduler_t_max", action="store_true", help="Overwrite scheduler T_max when resuming")
@@ -1758,7 +1758,7 @@ def get_args_parser():
     # Loss
     parser.add_argument("--mse_weight", type=float, default=0.5, help="Weight for MSE loss")
     parser.add_argument("--cosine_weight", type=float, default=0.5, help="Weight for cosine loss")
-    parser.add_argument("--mse_type", type=str, default="pixel", choices=["pixel", "sample"], help="Type of MSE loss computation")
+    parser.add_argument("--mse_type", type=str, default="sample", choices=["pixel", "sample"], help="Type of MSE loss computation")
     parser.add_argument("--normalize_features", action="store_true", help="Normalize features before loss")
     
     # Data

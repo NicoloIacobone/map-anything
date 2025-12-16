@@ -1,19 +1,19 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=SV_coco_unfrozen_3
+#SBATCH --job-name=SV_03_mse_pixel
 #
 # Specify output file.
-#SBATCH --output=SV_coco_unfrozen_3_%j.log
+#SBATCH --output=SV_03_mse_pixel_%j.log
 #
 # Specify error file.
-#SBATCH --error=SV_coco_unfrozen_3_%j.err
+#SBATCH --error=SV_03_mse_pixel_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=72:00:00
+#SBATCH --time=24:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -72,24 +72,26 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --num_workers 8 \
   --dataset coco2017 \
-  --wandb_name "SV_coco_unfrozen_3" \
-  --epochs 1000 \
+  --wandb_name "SV_03_mse_pixel" \
+  --epochs 10 \
   --lr 1e-3 \
-  --batch_size 4 \
-  --eval_freq 10 \
-  --save_freq 10 \
+  --batch_size 16 \
+  --eval_freq 1 \
+  --save_freq 1 \
   --print_freq 250 \
   --amp \
   --save_visualizations \
-  --mse_type sample \
-  --lr_encoder_scale 1.0 \
-  --num_info_sharing_blocks_unfreeze 24 \
-  --no_augmentation
+  --no_augmentation \
+  --mse_type pixel \
+  --mse_weight 0.002 \
+  --cosine_weight 1.0 \
+  --lr_scheduler step \
+  --lr_decay_epochs 5
+#   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_03_the_return \
+#   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_03_the_return/checkpoints/checkpoint_epoch250.pth \
+#   --wandb_resume_id n0h9ug8q
 #   --lr_encoder_scale 0.05
 #   --num_info_sharing_blocks_unfreeze 24 \
-#   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D \
-#   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D/checkpoints/checkpoint_epoch250.pth \
-#   --wandb_resume_id n0h9ug8q
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
