@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=SV_coco_unfrozen_3
+#SBATCH --job-name=SV_10_dinov2
 #
 # Specify output file.
-#SBATCH --output=SV_coco_unfrozen_3_%j.log
+#SBATCH --output=SV_10_dinov2_%j.log
 #
 # Specify error file.
-#SBATCH --error=SV_coco_unfrozen_3_%j.err
+#SBATCH --error=SV_10_dinov2_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -72,18 +72,18 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --num_workers 8 \
   --dataset coco2017 \
-  --wandb_name "SV_coco_unfrozen_3" \
-  --epochs 10 \
+  --wandb_name "SV_10_dinov2" \
+  --epochs 50 \
   --lr 1e-3 \
-  --batch_size 4 \
+  --batch_size 16 \
   --eval_freq 1 \
   --save_freq 1 \
   --print_freq 250 \
   --amp \
   --save_visualizations \
-  --lr_encoder_scale 1.0 \
-  --num_info_sharing_blocks_unfreeze 24 \
   --no_augmentation
+#   --lr_encoder_scale 1.0 \
+#   --num_info_sharing_blocks_unfreeze 24 \
 #   --lr_encoder_scale 0.05
 #   --num_info_sharing_blocks_unfreeze 24 \
 #   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D \
