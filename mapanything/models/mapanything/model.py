@@ -661,6 +661,21 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         )
         encoder_output = self.encoder(encoder_input)
 
+        # [NICO] Estrai 4 layer intermedi da DINOv2 per la seconda DPT head
+        if hasattr(self, "dpt_feature_head_2"):
+            # Estrai layer [6, 12, 18, 24] (o gli indici che preferisci da 0-24)
+            encoder_intermediate_features = self.encoder.model.get_intermediate_layers(
+                all_imgs_across_views, 
+                n=[5, 11, 17, 23],  # oppure n=4 per distribuire uniformemente
+                reshape=True,       # return BCHW
+                norm=True           # applica LayerNorm prima
+            )
+            # encoder_intermediate_features è una tuple di 4 tensori BCHW (1024 channels)
+            # print(f"[DINO] Extracted 4 intermediate layers:")
+            # for i, feat in enumerate(encoder_intermediate_features):
+            #     print(f"  Layer {[6,12,18,24][i]}: shape {feat.shape}, dtype {feat.dtype}")
+            self._dino_4layer_features = encoder_intermediate_features
+
         ############ DEBUG NICO ############
         # # Salva encoder_output.features su disco --> DINOv2 Features
         # torch.save(encoder_output.features, "/scratch2/nico/distillation/hdbscan_test/dino_features/dino_features.pt")
@@ -1368,13 +1383,29 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
             # [NICO] seconda head
             if hasattr(self, "dpt_feature_head_2"):
                 target_hw_2 = (64, 64)
+
+                # dpt_features_2 = self.dpt_feature_head_2(
+                #     PredictionHeadLayeredInput(
+                #         list_features=dense_head_inputs,
+                #         target_output_shape=target_hw_2,
+                #     )
+                # )
+                
+                # Converti tuple in list per DPTFeature
+                dino_layer_list = list(self._dino_4layer_features)
+
+                # print(f"[DPT2] Input list_features shapes:")
+                # for i, feat in enumerate(dino_layer_list):
+                #     print(f"  Input {i}: {feat.shape}")
+                
                 dpt_features_2 = self.dpt_feature_head_2(
                     PredictionHeadLayeredInput(
-                        list_features=dense_head_inputs,
+                        list_features=dino_layer_list,
                         target_output_shape=target_hw_2,
                     )
                 )
                 feat_8x = dpt_features_2.features_upsampled_8x  # (B*V, C, H, W)
+                # print(f"[DPT2] Output feat_8x shape before resize: {feat_8x.shape}")
                 # print(f"[NICO] Extracted feat2_8x with shape: {feat_8x.shape}")
 
                 # Garantisce dimensione spaziale fissa
@@ -1386,12 +1417,14 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                         mode="bilinear",
                         align_corners=False,
                     )
+                    # print(f"[DPT2] Output feat_8x shape after resize: {feat_8x.shape}")
                 # print(f"[NICO] Resized feat2_8x to shape: {feat_8x.shape}")
 
                 # Proiezione a 256 canali
                 if hasattr(self, "sam2_compat"):
                     feat_8x = self.sam2_compat(feat_8x)
                     assert feat_8x.shape[1] == 256, f"Expected 256 channels, got {feat_8x.shape[1]}"
+                    # print(f"[DPT2] Output feat_8x shape after sam2_compat: {feat_8x.shape}")
 
                 self._last_feat2_8x = feat_8x
                 # print(f"[NICO] Stored feat2_8x with shape: {feat_8x.shape}")
