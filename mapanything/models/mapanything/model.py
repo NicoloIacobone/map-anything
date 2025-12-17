@@ -641,7 +641,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 print(self.load_state_dict(filtered_ckpt, strict=False))
         return
     
-    def _encode_n_views(self, views):
+    def _encode_n_views(self, views, use_encoder_features=False):
         """
         Encode all the input views (batch of images) in a single forward pass.
         Assumes all the input views have the same image shape, batch size, and data normalization type.
@@ -662,7 +662,8 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         encoder_output = self.encoder(encoder_input)
 
         # [NICO] Estrai 4 layer intermedi da DINOv2 per la seconda DPT head
-        if hasattr(self, "dpt_feature_head_2"):
+        # if hasattr(self, "dpt_feature_head_2"):
+        if use_encoder_features:
             # Estrai layer [6, 12, 18, 24] (o gli indici che preferisci da 0-24)
             encoder_intermediate_features = self.encoder.model.get_intermediate_layers(
                 all_imgs_across_views, 
@@ -1352,6 +1353,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         self,
         dense_head_inputs: Union[torch.Tensor, List[torch.Tensor]],
         img_shape: Tuple[int, int],
+        use_encoder_features: bool = False,
     ):
         """
         Run the downstream dense prediction head
@@ -1384,23 +1386,13 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
             if hasattr(self, "dpt_feature_head_2"):
                 target_hw_2 = (64, 64)
 
-                # dpt_features_2 = self.dpt_feature_head_2(
-                #     PredictionHeadLayeredInput(
-                #         list_features=dense_head_inputs,
-                #         target_output_shape=target_hw_2,
-                #     )
-                # )
-                
-                # Converti tuple in list per DPTFeature
-                dino_layer_list = list(self._dino_4layer_features)
-
                 # print(f"[DPT2] Input list_features shapes:")
                 # for i, feat in enumerate(dino_layer_list):
                 #     print(f"  Input {i}: {feat.shape}")
                 
                 dpt_features_2 = self.dpt_feature_head_2(
                     PredictionHeadLayeredInput(
-                        list_features=dino_layer_list,
+                        list_features=list(self._dino_4layer_features) if use_encoder_features else dense_head_inputs,
                         target_output_shape=target_hw_2,
                     )
                 )
@@ -1441,6 +1433,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         scale_head_inputs: torch.Tensor,
         img_shape: Tuple[int, int],
         memory_efficient_inference: bool = False,
+        use_encoder_features: bool = False,
     ):
         """
         Run Prediction Heads & Post-Process Outputs
@@ -1486,7 +1479,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
 
                 # Dense prediction (mini-batched)
                 dense_final_outputs_batch = self.downstream_dense_head(
-                    dense_head_inputs_batch, img_shape
+                    dense_head_inputs_batch, img_shape, use_encoder_features=use_encoder_features
                 )
                 dense_final_outputs_list.append(dense_final_outputs_batch)
 
@@ -1583,7 +1576,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
 
         return dense_final_outputs, pose_final_outputs, scale_final_output
 
-    def forward(self, views, memory_efficient_inference=False):
+    def forward(self, views, memory_efficient_inference=False, use_encoder_features=False):
         """
         Forward pass performing the following operations:
         1. Encodes the N input views (images).
@@ -1620,7 +1613,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         ############### Multi-Modal Encoders ###############
 
         # Run the image encoder on all the input views
-        all_encoder_features_across_views = self._encode_n_views(views)
+        all_encoder_features_across_views = self._encode_n_views(views, use_encoder_features=use_encoder_features)
         # print("[SHAPE] all_encoder_features_across_views shapes:",
             #   [x.shape for x in all_encoder_features_across_views])
 
@@ -1780,6 +1773,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                     scale_head_inputs=scale_head_inputs,
                     img_shape=img_shape,
                     memory_efficient_inference=memory_efficient_inference,
+                    use_encoder_features=use_encoder_features,
                 )
             )
 

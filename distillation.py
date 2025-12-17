@@ -63,7 +63,7 @@ if hasattr(torch.backends.cuda, "matmul") and hasattr(
 def setup_runtime_paths(args):
     """Inizializza OUT_DIR, BASE_DIR, DATASET, SAM2_PATH e le directory immagini/feature usando args."""
     import torch.hub as _torch_hub
-    global OUT_DIR, BASE_DIR, DATASET, SAM2_PATH
+    global OUT_DIR, BASE_DIR, DATASET, SAM2_PATH, CONFIG_JSON_PATH
     global TRAIN_SPLIT, VAL_SPLIT
     global IMAGES_DIRNAME, FEATURES_DIRNAME
     global TRAIN_IMAGES_DIR, VAL_IMAGES_DIR, TRAIN_FEATURES_DIR, VAL_FEATURES_DIR
@@ -80,10 +80,12 @@ def setup_runtime_paths(args):
         OUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"
         BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset"
         SAM2_PATH = "/cluster/scratch/niacobone/sam2/checkpoints/sam2.1_hiera_large.pt"
+        CONFIG_JSON_PATH = "/cluster/scratch/niacobone/.cache/huggingface/hub/models--facebook--map-anything/snapshots/6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a"
     else:
         OUT_DIR = "/scratch2/nico/distillation/output"
         BASE_DIR = "/scratch2/nico/distillation/dataset"
         SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
+        CONFIG_JSON_PATH = "/scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a/"
 
     # Usa args.dataset
     DATASET = args.dataset  # "coco2017" o "ETH3D"
@@ -103,6 +105,7 @@ def setup_runtime_paths(args):
     VAL_IMAGES_DIR = os.path.join(BASE_DIR, IMAGES_DIRNAME, VAL_SPLIT)
     TRAIN_FEATURES_DIR = os.path.join(BASE_DIR, FEATURES_DIRNAME, TRAIN_SPLIT)
     VAL_FEATURES_DIR = os.path.join(BASE_DIR, FEATURES_DIRNAME, VAL_SPLIT)
+    CONFIG_JSON_PATH = os.path.join(CONFIG_JSON_PATH, "config.json")
 
     print(f"[INFO] Using TRAIN_IMAGES_DIR: {TRAIN_IMAGES_DIR}")
     print(f"[INFO] Using VAL_IMAGES_DIR: {VAL_IMAGES_DIR}")
@@ -574,6 +577,7 @@ def forward_pass_distillation_unified(
     use_amp: bool = False,
     amp_dtype: str = "bf16",
     process_individually: bool = True,
+    use_encoder_features: bool = False,
 ) -> torch.Tensor:
     """
     Forward pass unificato per MapAnything distillation.
@@ -630,7 +634,7 @@ def forward_pass_distillation_unified(
                         v["img"] = img.to(device, non_blocking=True)
                 
                 # MapAnything vede SINGOLA VIEW → NO cross-attention
-                _ = model(views, memory_efficient_inference=False)
+                _ = model(views, memory_efficient_inference=False, use_encoder_features=use_encoder_features)
             
             # Estrai feature dalla view 0 (unica view)
             base_model = model.module if hasattr(model, "module") else model
@@ -740,7 +744,7 @@ def forward_pass_distillation_unified(
                     v["img"] = img.to(device, non_blocking=True)
             
             # MapAnything vede N VIEWS → cross-attention tra tutte
-            _ = model(views, memory_efficient_inference=False)
+            _ = model(views, memory_efficient_inference=False, use_encoder_features=use_encoder_features)
         
         # Estrai feature (già tutte in un batch)
         base_model = model.module if hasattr(model, "module") else model
@@ -843,6 +847,7 @@ def train_one_epoch_distillation(
             use_amp=args.amp,
             amp_dtype=args.amp_dtype,
             process_individually=not args.multi_view_mode,
+            use_encoder_features=args.use_encoder_features,
         )
         
         # Resize student features to match teacher resolution if needed
@@ -1003,6 +1008,7 @@ def validate_one_epoch_distillation(
             use_amp=args.amp,
             amp_dtype=args.amp_dtype,
             process_individually=not args.multi_view_mode,
+            use_encoder_features=args.use_encoder_features,
         )
         
         # Resize if needed
@@ -1259,6 +1265,29 @@ def distill(args):
     
     # ========== LOAD MODEL ==========
     print("Loading MapAnything model...")
+
+    # Patch config file based on use_encoder_features
+    if CONFIG_JSON_PATH and os.path.exists(CONFIG_JSON_PATH):
+        import json
+        with open(CONFIG_JSON_PATH, 'r') as f:
+            config = json.load(f)
+        
+        # Modify input_feature_dims in feature_head_2 based on use_encoder_features
+        if args.use_encoder_features:
+            new_dims = [1024, 1024, 1024, 1024]
+            print(f"[INFO] use_encoder_features=True: Setting feature_head_2.input_feature_dims to {new_dims}")
+        else:
+            new_dims = [1024, 768, 768, 768]
+            print(f"[INFO] use_encoder_features=False: Setting feature_head_2.input_feature_dims to {new_dims}")
+        
+        if "pred_head_config" in config and "feature_head_2" in config["pred_head_config"]:
+            config["pred_head_config"]["feature_head_2"]["input_feature_dims"] = new_dims
+            
+            # Save modified config back to original location to overwrite
+            with open(CONFIG_JSON_PATH, 'w') as f:
+                json.dump(config, f, indent=2)
+            print(f"[INFO] Overwritten config file: {CONFIG_JSON_PATH}")
+
     if global_rank == 0:
         model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
     if torch.distributed.is_initialized():
@@ -1736,6 +1765,7 @@ def get_args_parser():
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
     parser.add_argument("--clip_grad", type=float, default=1.0, help="Gradient clipping max norm (0 to disable)")
     parser.add_argument("--accum_iter", type=int, default=1, help="Gradient accumulation iterations")
+    parser.add_argument("--use_encoder_features", action="store_true", help="Use encoder features instead of transformer features for distillation")
     
     # Learning rate and scheduler
     parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate") # Usa 5e-4 per BS_eff = 16 --> 1e-3 per BS_eff = 32, 2.5e-4 per BS_eff = 8
