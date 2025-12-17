@@ -1272,6 +1272,10 @@ def distill(args):
         with open(CONFIG_JSON_PATH, 'r') as f:
             config = json.load(f)
         
+        # DEBUG: Print original config
+        print("[DEBUG] Original config content:")
+        print(json.dumps(config, indent=2))
+        
         # Modify input_feature_dims in feature_head_2 based on use_encoder_features
         if args.use_encoder_features:
             new_dims = [1024, 1024, 1024, 1024]
@@ -1283,10 +1287,20 @@ def distill(args):
         if "pred_head_config" in config and "feature_head_2" in config["pred_head_config"]:
             config["pred_head_config"]["feature_head_2"]["input_feature_dims"] = new_dims
             
+            # DEBUG: Print modified config before save
+            print("[DEBUG] Modified config content (before save):")
+            print(json.dumps(config, indent=2))
+            
             # Save modified config back to original location to overwrite
             with open(CONFIG_JSON_PATH, 'w') as f:
                 json.dump(config, f, indent=2)
             print(f"[INFO] Overwritten config file: {CONFIG_JSON_PATH}")
+            
+            # DEBUG: Print config after save (read it back)
+            with open(CONFIG_JSON_PATH, 'r') as f:
+                config_after = json.load(f)
+            print("[DEBUG] Config content (after save, read back):")
+            print(json.dumps(config_after, indent=2))
 
     if global_rank == 0:
         model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
