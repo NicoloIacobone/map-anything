@@ -74,21 +74,21 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --dataset coco2017 \
   --wandb_name "SV_10_dinov2" \
   --epochs 50 \
-  --lr 1e-3 \
+  --lr 1e-4 \
   --batch_size 16 \
   --eval_freq 1 \
   --save_freq 1 \
   --print_freq 250 \
   --amp \
   --save_visualizations \
-  --no_augmentation
+  --no_augmentation \
+  --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_10_dinov2 \
+  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_10_dinov2/checkpoints/checkpoint_epoch4.pth \
+  --wandb_resume_id lvk36xjw
 #   --lr_encoder_scale 1.0 \
 #   --num_info_sharing_blocks_unfreeze 24 \
 #   --lr_encoder_scale 0.05
 #   --num_info_sharing_blocks_unfreeze 24 \
-#   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D \
-#   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_ETH3D/checkpoints/checkpoint_epoch250.pth \
-#   --wandb_resume_id n0h9ug8q
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}

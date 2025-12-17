@@ -76,7 +76,8 @@ class TripletAnalyzer:
         # Extract original image name (remove first number and underscore)
         # Example: "0_000000000139.png" -> "000000000139.png"
         original_img_name = (img_name.split("_", 1)[1] if "_" in img_name else img_name).replace(".png", ".jpg")
-        original_img_path = f"/scratch2/nico/distillation/dataset/coco2017/images/val2017/{original_img_name}"
+        # original_img_path = f"/scratch2/nico/distillation/dataset/coco2017/images/val2017/{original_img_name}"
+        original_img_path = f"/Users/nicoloiacobone/Desktop/nico/UNIVERSITA/MAGISTRALE/Tesi/Tommasi/Zurigo/git_clones/distillation/dataset/coco2017/images/val2017/{original_img_name}"
         
         if not os.path.exists(original_img_path):
             print(f"[WARN] Original image not found: {original_img_path}")
@@ -201,7 +202,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--vis_dir", type=str, default="/scratch2/nico/distillation/output/SV_03/visualizations/",
+    parser.add_argument("--vis_dir", type=str, default="/Users/nicoloiacobone/Desktop/nico/UNIVERSITA/MAGISTRALE/Tesi/Tommasi/Zurigo/git_clones/distillation/tests/SV_10_dinov2/",
                         help="Folder containing images + student/teacher subfolders")
     args = parser.parse_args()
 
