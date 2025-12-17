@@ -1546,7 +1546,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
             # Run prediction for all (batch_size * num_views) in one go
             # Dense prediction
             dense_final_outputs = self.downstream_dense_head(
-                dense_head_inputs, img_shape
+                dense_head_inputs, img_shape, use_encoder_features=use_encoder_features
             )
 
             # Pose prediction
