@@ -1389,10 +1389,14 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 # print(f"[DPT2] Input list_features shapes:")
                 # for i, feat in enumerate(dino_layer_list):
                 #     print(f"  Input {i}: {feat.shape}")
+                if use_encoder_features:
+                    dpt_head_inputs = list(self._dino_4layer_features)
+                else:
+                    dpt_head_inputs = dense_head_inputs
                 
                 dpt_features_2 = self.dpt_feature_head_2(
                     PredictionHeadLayeredInput(
-                        list_features=list(self._dino_4layer_features) if use_encoder_features else dense_head_inputs,
+                        list_features=dpt_head_inputs,
                         target_output_shape=target_hw_2,
                     )
                 )
