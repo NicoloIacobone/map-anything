@@ -74,14 +74,18 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --dataset coco2017 \
   --wandb_name "SV_10_dinov2" \
   --epochs 50 \
-  --lr 1e-4 \
+  --lr 1e-3 \
   --batch_size 16 \
   --eval_freq 1 \
   --save_freq 1 \
   --print_freq 250 \
+  --lr_scheduler step \
+  --lr_decay_epochs 10 \
+  --override_scheduler \
   --amp \
   --save_visualizations \
   --no_augmentation \
+  --use_encoder_features \
   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_10_dinov2 \
   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_10_dinov2/checkpoints/checkpoint_epoch4.pth \
   --wandb_resume_id lvk36xjw

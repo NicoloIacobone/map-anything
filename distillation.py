@@ -1533,14 +1533,33 @@ def distill(args):
                 param_group['lr'] = args.lr
             print(f"[INFO] Overriding optimizer LR to {args.lr}")
 
-        # Scheduler resume logic with T_max override
-        if args.lr_scheduler != "none" and "scheduler" in ckpt:
+        # Scheduler resume logic
+        if args.lr_scheduler != "none" and "scheduler" in ckpt and not args.override_scheduler:
             scheduler.load_state_dict(ckpt["scheduler"])
             # If user provided a new T_max, overwrite it in the scheduler
             if hasattr(scheduler, "T_max") and getattr(args, "overwrite_scheduler_t_max", False):
                 old_tmax = getattr(scheduler, "T_max", None)
                 scheduler.T_max = args.lr_scheduler_t_max
                 print(f"[INFO] Overriding scheduler T_max: {old_tmax} -> {scheduler.T_max}")
+        elif args.override_scheduler or args.lr_scheduler != "none":
+            print(f"[INFO] Using NEW scheduler from CLI: {args.lr_scheduler} (not loading from checkpoint)")
+
+            # [NUOVO] Se override scheduler, avanza manualmente per recuperare gli step persi
+            if args.override_scheduler and scheduler is not None:
+                resumed_epoch = ckpt.get("epoch", 0) + 1
+                
+                if args.lr_scheduler == "step":
+                    # StepLR: Chiama step() per ogni epoca già completata
+                    for _ in range(resumed_epoch):
+                        scheduler.step()
+                    print(f"[INFO] Advanced StepLR scheduler by {resumed_epoch} steps (current LR: {optimizer.param_groups[0]['lr']:.6e})")
+                
+                elif args.lr_scheduler == "cosine":
+                    # CosineAnnealingLR: Salta direttamente all'epoca corrente
+                    scheduler.last_epoch = resumed_epoch - 1  # last_epoch è 0-indexed
+                    scheduler.step()  # Aggiorna LR basato su last_epoch
+                    print(f"[INFO] Set CosineAnnealingLR to epoch {resumed_epoch} (current LR: {optimizer.param_groups[0]['lr']:.6e})")
+
         start_epoch = ckpt.get("epoch", 0) + 1
         best_val_loss = ckpt.get("best_val_loss", float("inf"))
         print(f"Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
@@ -1790,6 +1809,7 @@ def get_args_parser():
     parser.add_argument("--lr_scheduler_t_max", type=int, default=None, help="T_max for CosineAnnealingLR")
     parser.add_argument("--override_lr", action="store_true", help="Override LR from checkpoint with --lr value")
     parser.add_argument("--overwrite_scheduler_t_max", action="store_true", help="Overwrite scheduler T_max when resuming")
+    parser.add_argument("--override_scheduler", action="store_true", help="Override scheduler from checkpoint with CLI args")
     
     # Mixed precision
     parser.add_argument("--amp", action="store_true", help="Use automatic mixed precision")
