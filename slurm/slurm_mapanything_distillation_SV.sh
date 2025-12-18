@@ -74,8 +74,8 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --dataset coco2017 \
   --wandb_name "SV_11_ALL_UNFROZEN" \
   --epochs 50 \
-  --lr 1e-3 \
-  --batch_size 16 \
+  --lr 5e-4 \
+  --batch_size 8 \
   --eval_freq 1 \
   --save_freq 1 \
   --print_freq 250 \
