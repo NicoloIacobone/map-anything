@@ -80,12 +80,12 @@ def setup_runtime_paths(args):
         OUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"
         BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset"
         SAM2_PATH = "/cluster/scratch/niacobone/sam2/checkpoints/sam2.1_hiera_large.pt"
-        CONFIG_JSON_PATH = "/cluster/scratch/niacobone/.cache/huggingface/hub/models--facebook--map-anything/snapshots/6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a"
+        CONFIG_JSON_PATH = "/cluster/scratch/niacobone/.cache/huggingface/hub/models--facebook--map-anything/snapshots/562de9ff7077addd5780415661c5fb031eb8003e"
     else:
         OUT_DIR = "/scratch2/nico/distillation/output"
         BASE_DIR = "/scratch2/nico/distillation/dataset"
         SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
-        CONFIG_JSON_PATH = "/scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a/"
+        CONFIG_JSON_PATH = "/scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/562de9ff7077addd5780415661c5fb031eb8003e/"
 
     # Usa args.dataset
     DATASET = args.dataset  # "coco2017" o "ETH3D"
@@ -1144,6 +1144,29 @@ def save_pca_visualizations(
     
     print(f"[VIZ] Saved {B} PCA visualizations to {viz_dir}")
 
+def log_param_status(model, max_print=None):
+    trainable, frozen = [], []
+    for name, p in model.named_parameters():
+        (trainable if p.requires_grad else frozen).append(name)
+
+    print("\n" + "="*80)
+    print("DETAILED PARAMETER STATUS")
+    print("="*80)
+    print(f"Trainable entries: {len(trainable)}")
+    print(f"Frozen entries:    {len(frozen)}")
+
+    def _dump(title, items):
+        print(title)
+        limit = len(items) if max_print is None else min(len(items), max_print)
+        for n in sorted(items)[:limit]:
+            print(f"  {n}")
+        if limit < len(items):
+            print(f"  ... and {len(items) - limit} more")
+
+    _dump("[TRAINABLE]", trainable)
+    _dump("[FROZEN]", frozen)
+    print("="*80)
+
 # ==================== Main Training Loop ====================
 def distill(args):
     """
@@ -1272,9 +1295,9 @@ def distill(args):
         with open(CONFIG_JSON_PATH, 'r') as f:
             config = json.load(f)
         
-        # DEBUG: Print original config
-        print("[DEBUG] Original config content:")
-        print(json.dumps(config, indent=2))
+        # # DEBUG: Print original config
+        # print("[DEBUG] Original config content:")
+        # print(json.dumps(config, indent=2))
         
         # Modify input_feature_dims in feature_head_2 based on use_encoder_features
         if args.use_encoder_features:
@@ -1287,20 +1310,20 @@ def distill(args):
         if "pred_head_config" in config and "feature_head_2" in config["pred_head_config"]:
             config["pred_head_config"]["feature_head_2"]["input_feature_dims"] = new_dims
             
-            # DEBUG: Print modified config before save
-            print("[DEBUG] Modified config content (before save):")
-            print(json.dumps(config, indent=2))
+            # # DEBUG: Print modified config before save
+            # print("[DEBUG] Modified config content (before save):")
+            # print(json.dumps(config, indent=2))
             
             # Save modified config back to original location to overwrite
             with open(CONFIG_JSON_PATH, 'w') as f:
                 json.dump(config, f, indent=2)
             print(f"[INFO] Overwritten config file: {CONFIG_JSON_PATH}")
             
-            # DEBUG: Print config after save (read it back)
-            with open(CONFIG_JSON_PATH, 'r') as f:
-                config_after = json.load(f)
-            print("[DEBUG] Config content (after save, read back):")
-            print(json.dumps(config_after, indent=2))
+            # # DEBUG: Print config after save (read it back)
+            # with open(CONFIG_JSON_PATH, 'r') as f:
+            #     config_after = json.load(f)
+            # print("[DEBUG] Config content (after save, read back):")
+            # print(json.dumps(config_after, indent=2))
 
     if global_rank == 0:
         model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
@@ -1349,6 +1372,10 @@ def distill(args):
                     param.requires_grad = True
                     unfrozen_count += param.numel()
                 unfrozen_indices.append(i)
+            if num_info_sharing_blocks == 24:
+                for name, p in model.named_parameters():
+                    if name.startswith(("info_sharing.proj_embed", "info_sharing.norm")):
+                        p.requires_grad = True
             args.info_sharing_unfrozen_indices = unfrozen_indices
             print(f"[INFO] Unfroze last {num_info_sharing_blocks} info_sharing blocks (indices {unfrozen_indices})")
             print(f"[INFO] Unfroze {unfrozen_count:,} parameters in info_sharing")
@@ -1356,6 +1383,87 @@ def distill(args):
             args.info_sharing_unfrozen_indices = []
     else:
         args.info_sharing_unfrozen_indices = []
+
+    # 4. Unfreeze ultimi N blocchi di DINOv2 encoder (opzionale)
+    num_dino_layers_unfreeze = getattr(args, 'num_dino_layers_unfreeze', 0)
+    if num_dino_layers_unfreeze > 0:
+        # Trova l'encoder DINOv2
+        dino_encoder = None
+        if hasattr(model, "encoder"):
+            dino_encoder = model.encoder
+        elif hasattr(model, "dinov2_encoder"):
+            dino_encoder = model.dinov2_encoder
+        elif hasattr(model, "backbone"):
+            dino_encoder = model.backbone
+        
+        if dino_encoder is not None:
+            # Cerca i blocchi transformer dell'encoder
+            blocks = None
+            if hasattr(dino_encoder, "blocks"):
+                blocks = dino_encoder.blocks
+            elif hasattr(dino_encoder, "layers"):
+                blocks = dino_encoder.layers
+            elif hasattr(dino_encoder, "transformer"):
+                if hasattr(dino_encoder.transformer, "blocks"):
+                    blocks = dino_encoder.transformer.blocks
+                elif hasattr(dino_encoder.transformer, "layers"):
+                    blocks = dino_encoder.transformer.layers
+            elif hasattr(dino_encoder, "model"):
+                if hasattr(dino_encoder.model, "blocks"):
+                    blocks = dino_encoder.model.blocks
+                elif hasattr(dino_encoder.model, "layers"):
+                    blocks = dino_encoder.model.layers
+            
+            if blocks is not None and len(blocks) > 0:
+                start_idx = max(0, len(blocks) - num_dino_layers_unfreeze)
+                unfrozen_count = 0
+                unfrozen_dino_indices = []
+                for i in range(start_idx, len(blocks)):
+                    for param in blocks[i].parameters():
+                        param.requires_grad = True
+                        unfrozen_count += param.numel()
+                    unfrozen_dino_indices.append(i)
+                if num_dino_layers_unfreeze == 24:
+                    for name, p in model.named_parameters():
+                        if name.startswith((
+                            "encoder.model.patch_embed.proj",
+                            "encoder.model.pos_embed",
+                            "encoder.model.cls_token",
+                            "encoder.model.norm",
+                        )):
+                            p.requires_grad = True
+
+                args.dino_unfrozen_indices = unfrozen_dino_indices
+                print(f"[INFO] Unfroze last {num_dino_layers_unfreeze} DINOv2 encoder blocks (indices {unfrozen_dino_indices})")
+                print(f"[INFO] Unfroze {unfrozen_count:,} parameters in DINOv2 encoder")
+            else:
+                print("[WARN] DINOv2 encoder has no 'blocks' or 'layers' attribute. Skipping unfreezing.")
+                args.dino_unfrozen_indices = []
+        else:
+            print("[WARN] DINOv2 encoder not found on model. Skipping unfreezing.")
+            args.dino_unfrozen_indices = []
+    else:
+        args.dino_unfrozen_indices = []
+
+    # ========== DEBUG: Print DINOv2 encoder layer names ==========
+    # dino_encoder = None
+    # if hasattr(model, "encoder"):
+    #     dino_encoder = model.encoder
+    # elif hasattr(model, "dinov2_encoder"):
+    #     dino_encoder = model.dinov2_encoder
+    # elif hasattr(model, "backbone"):
+    #     dino_encoder = model.backbone
+    
+    # if dino_encoder is not None:
+    #     print("\n" + "="*80)
+    #     print("DINOv2 ENCODER LAYER NAMES")
+    #     print("="*80)
+    #     for name, module in dino_encoder.named_modules():
+    #         if name and ("block" in name.lower() or "layer" in name.lower()):
+    #             print(f"  {name}")
+    #     print("="*80 + "\n")
+    # else:
+    #     print("[WARN] DINOv2 encoder not found on model for debugging")
 
     # ========== VERIFY TRAINABLE PARAMETERS ==========
     trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -1394,6 +1502,9 @@ def distill(args):
     for group, count in sorted(trainable_groups.items()):
         print(f"   - {group}: {count:,} params")
     print("="*80 + "\n")
+
+    log_param_status(model, max_print=None)
+    raise Exception
     
     # Initialize criterion
     criterion = DistillationLoss(
@@ -1404,6 +1515,7 @@ def distill(args):
 
     # ========== OPTIMIZER con LR differenziati ==========
     head_params = []
+    transformer_params = []
     encoder_params = []
     other_params = []
 
@@ -1413,6 +1525,8 @@ def distill(args):
         if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat"):
             head_params.append(p)
         elif name.startswith("info_sharing"):
+            transformer_params.append(p)
+        elif name.startswith("encoder") and hasattr(args, 'dino_unfrozen_indices') and args.dino_unfrozen_indices:
             encoder_params.append(p)
         else:
             other_params.append(p)
@@ -1424,10 +1538,12 @@ def distill(args):
 
     lr_head = args.lr
     lr_encoder = args.lr * args.lr_encoder_scale
+    lr_transformer = args.lr * args.lr_transformer_scale
 
     optimizer = optim.AdamW(
         [
             {"params": head_params, "lr": lr_head},
+            {"params": transformer_params, "lr": lr_transformer},
             {"params": encoder_params, "lr": lr_encoder},
         ],
         lr=args.lr,  # non usato per i gruppi espliciti, rimane come default
@@ -1435,7 +1551,8 @@ def distill(args):
         betas=(0.9, 0.95),
     )
     print(f"[OPT] Groups: head={sum(p.numel() for p in head_params):,} params @ LR {lr_head}, "
-          f"encoder={sum(p.numel() for p in encoder_params):,} params @ LR {lr_encoder}")
+          f"encoder={sum(p.numel() for p in encoder_params):,} params @ LR {lr_encoder}, "
+          f"transformer={sum(p.numel() for p in transformer_params):,} params @ LR {lr_transformer}")
     
     # ========== WRAPPING IN DDP ==========
     if args.distributed.distributed:
@@ -1526,12 +1643,54 @@ def distill(args):
                 print(f"[WARN] Saved block indices not present in current model: {missing}")
             args.info_sharing_unfrozen_indices = saved_indices
 
+            if "info_sharing_wrappers" in ckpt:
+                for name, data in ckpt["info_sharing_wrappers"].items():
+                    param = dict(model_without_ddp.info_sharing.named_parameters())[name]
+                    param.data.copy_(data)
+                    param.requires_grad = True
+                print(f"[RESUME] Restored {len(ckpt['info_sharing_wrappers'])} info_sharing wrapper params")
+
+        # Restore unfrozen DINOv2 blocks
+        if "dino_encoder_blocks" in ckpt and hasattr(model_without_ddp, "encoder"):
+            dino_encoder = model_without_ddp.encoder
+            if hasattr(dino_encoder, "blocks"):
+                blocks = dino_encoder.blocks
+            elif hasattr(dino_encoder, "transformer") and hasattr(dino_encoder.transformer, "blocks"):
+                blocks = dino_encoder.transformer.blocks
+            elif hasattr(dino_encoder, "model"):
+                if hasattr(dino_encoder.model, "blocks"):
+                    blocks = dino_encoder.model.blocks
+                elif hasattr(dino_encoder.model, "layers"):
+                    blocks = dino_encoder.model.layers
+            else:
+                blocks = []
+            
+            for idx, state_dict in ckpt["dino_encoder_blocks"].items():
+                if idx < len(blocks):
+                    try:
+                        blocks[idx].load_state_dict(state_dict)
+                    except Exception as e:
+                        print(f"[WARN] Failed loading DINOv2 block {idx}: {e}")
+            print(f"[INFO] Restored unfrozen DINOv2 encoder blocks from checkpoint")
+            args.dino_unfrozen_indices = list(ckpt["dino_encoder_blocks"].keys())
+
+            if "dino_encoder_wrappers" in ckpt:
+                dino_model = dino_encoder.model if hasattr(dino_encoder, "model") else dino_encoder
+                for name, data in ckpt["dino_encoder_wrappers"].items():
+                    param = dict(dino_model.named_parameters())[name]
+                    param.data.copy_(data)
+                    param.requires_grad = True
+                print(f"[RESUME] Restored {len(ckpt['dino_encoder_wrappers'])} DINOv2 wrapper params")
+
         optimizer.load_state_dict(ckpt["optimizer"])
 
         if args.lr_scheduler == "none" or args.override_lr:
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = args.lr
-            print(f"[INFO] Overriding optimizer LR to {args.lr}")
+            # Rispetta i gruppi differenziati: head, transformer, encoder
+            optimizer.param_groups[0]['lr'] = args.lr                          # head
+            optimizer.param_groups[1]['lr'] = args.lr * args.lr_transformer_scale  # transformer
+            optimizer.param_groups[2]['lr'] = args.lr * args.lr_encoder_scale      # encoder
+            print(f"[INFO] Overriding optimizer LR: head={optimizer.param_groups[0]['lr']}, "
+                f"transformer={optimizer.param_groups[1]['lr']}, encoder={optimizer.param_groups[2]['lr']}")
 
         # Scheduler resume logic
         if args.lr_scheduler != "none" and "scheduler" in ckpt and not args.override_scheduler:
@@ -1756,6 +1915,49 @@ def save_checkpoint_distillation(
         state["info_sharing_blocks"] = {i: blocks[i].state_dict() for i in indices}
         print(f"[INFO] Added {len(indices)} unfrozen info_sharing blocks to checkpoint: {indices}")
 
+        if args.num_info_sharing_blocks_unfreeze == 24:
+            wrapper_state = {}
+            for name, param in model_without_ddp.info_sharing.named_parameters():
+                if name.startswith(("proj_embed", "norm")):
+                    wrapper_state[name] = param.data.clone()
+            if wrapper_state:
+                state["info_sharing_wrappers"] = wrapper_state
+                print(f"[INFO] Added {len(wrapper_state)} info_sharing wrapper params to checkpoint")
+
+    # Save unfrozen DINOv2 blocks
+    if args is not None and hasattr(args, 'dino_unfrozen_indices') and args.dino_unfrozen_indices:
+        dino_encoder = model_without_ddp.encoder
+        if hasattr(dino_encoder, "blocks"):
+            blocks = dino_encoder.blocks
+        elif hasattr(dino_encoder, "transformer") and hasattr(dino_encoder.transformer, "blocks"):
+            blocks = dino_encoder.transformer.blocks
+        elif hasattr(dino_encoder, "model"):
+            if hasattr(dino_encoder.model, "blocks"):
+                blocks = dino_encoder.model.blocks
+            elif hasattr(dino_encoder.model, "layers"):
+                blocks = dino_encoder.model.layers
+        else:
+            blocks = []
+        
+        if blocks:
+            state["dino_encoder_blocks"] = {}
+            for idx in args.dino_unfrozen_indices:
+                if idx < len(blocks):
+                    state["dino_encoder_blocks"][idx] = blocks[idx].state_dict()
+
+        if args.num_dino_layers_unfreeze == 24:
+            wrapper_state = {}
+            # Trova il modello DINO effettivo (potrebbe essere sotto .model)
+            dino_model = dino_encoder.model if hasattr(dino_encoder, "model") else dino_encoder
+            for name, param in dino_model.named_parameters():
+                if name.startswith(("patch_embed.proj", "pos_embed", "cls_token", "norm")):
+                    wrapper_state[name] = param.data.clone()
+            if wrapper_state:
+                state["dino_encoder_wrappers"] = wrapper_state
+                print(f"[INFO] Added {len(wrapper_state)} DINOv2 wrapper params to checkpoint")
+
+        print(f"[INFO] Added {len(state['dino_encoder_blocks'])} unfrozen DINOv2 encoder blocks to checkpoint: {list(state['dino_encoder_blocks'].keys())}")
+
     if scheduler is not None:
         state["scheduler"] = scheduler.state_dict()
     
@@ -1857,8 +2059,10 @@ def get_args_parser():
     parser.add_argument("--local_rank", type=int, default=0, help="Local rank for distributed training")
 
     # Unfreeze strategy
-    parser.add_argument("--num_info_sharing_blocks_unfreeze", type=int, default=0, help="Number of last info_sharing transformer blocks to unfreeze")
+    parser.add_argument("--num_info_sharing_blocks_unfreeze", type=int, default=0, help="Number of last info_sharing transformer blocks to unfreeze") # max 24
+    parser.add_argument("--num_dino_layers_unfreeze", type=int, default=0, help="Number of last DINOv2 encoder layers to unfreeze") # max 24
     parser.add_argument("--lr_encoder_scale", type=float, default=0.1, help="Scale factor for encoder LR relative to --lr")
+    parser.add_argument("--lr_transformer_scale", type=float, default=1.0, help="Scale factor for transformer LR relative to --lr")
     
     # comando debug pc lab
     # python distillation_test_multi_view_gemini.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2
