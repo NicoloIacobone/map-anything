@@ -85,8 +85,8 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --amp \
   --save_visualizations \
   --no_augmentation \
-  --lr_encoder_scale 0.01 \
-  --lr_transformer_scale 0.01 \
+  --lr_encoder_scale 0.1 \
+  --lr_transformer_scale 0.1 \
   --num_info_sharing_blocks_unfreeze 24 \
   --num_dino_layers_unfreeze 24
 #   --use_encoder_features
