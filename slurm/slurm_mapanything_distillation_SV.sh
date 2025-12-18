@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=SV_10_dinov2
+#SBATCH --job-name=SV_11_ALL_UNFROZEN
 #
 # Specify output file.
-#SBATCH --output=SV_10_dinov2_%j.log
+#SBATCH --output=SV_11_ALL_UNFROZEN_%j.log
 #
 # Specify error file.
-#SBATCH --error=SV_10_dinov2_%j.err
+#SBATCH --error=SV_11_ALL_UNFROZEN_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -72,7 +72,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --num_workers 8 \
   --dataset coco2017 \
-  --wandb_name "SV_10_dinov2" \
+  --wandb_name "SV_11_ALL_UNFROZEN" \
   --epochs 50 \
   --lr 1e-3 \
   --batch_size 16 \
@@ -85,10 +85,14 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --amp \
   --save_visualizations \
   --no_augmentation \
-  --use_encoder_features \
-  --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_10_dinov2 \
-  --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_10_dinov2/checkpoints/checkpoint_epoch4.pth \
-  --wandb_resume_id lvk36xjw
+  --lr_encoder_scale 0.01 \
+  --lr_transformer_scale 0.01 \
+  --num_info_sharing_blocks_unfreeze 24 \
+  --num_dino_layers_unfreeze 24
+#   --use_encoder_features
+#   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_10_dinov2 \
+#   --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/SV_10_dinov2/checkpoints/checkpoint_epoch4.pth \
+#   --wandb_resume_id lvk36xjw
 #   --lr_encoder_scale 1.0 \
 #   --num_info_sharing_blocks_unfreeze 24 \
 #   --lr_encoder_scale 0.05
