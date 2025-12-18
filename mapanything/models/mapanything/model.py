@@ -1614,6 +1614,39 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         img_shape = (int(height), int(width))
         num_views = len(views)
 
+        if use_encoder_features and hasattr(self, "dpt_feature_head_2"):
+            # Esegue l'encoder e popola self._dino_4layer_features
+            _ = self._encode_n_views(views, use_encoder_features=True)
+
+            # Usa i 4 layer intermedi del DINO come input alla seconda DPT head
+            dpt_head_inputs = list(self._dino_4layer_features)  # ciascuno BCHW
+
+            target_hw_2 = (64, 64)
+            dpt_features_2 = self.dpt_feature_head_2(
+                PredictionHeadLayeredInput(
+                    list_features=dpt_head_inputs,
+                    target_output_shape=target_hw_2,
+                )
+            )
+            feat_8x = dpt_features_2.features_upsampled_8x  # (B*V, C, H, W)
+
+            if feat_8x.shape[-2:] != target_hw_2:
+                import torch.nn.functional as F
+                feat_8x = F.interpolate(
+                    feat_8x, size=target_hw_2, mode="bilinear", align_corners=False
+                )
+
+            if hasattr(self, "sam2_compat"):
+                feat_8x = self.sam2_compat(feat_8x)
+
+            # Espone le feature al chiamante (distillation legge questo)
+            self._last_feat2_8x = feat_8x
+
+            # Salta geometrie, MV-transformer e altre head
+            return []
+
+        raise Exception
+
         ############### Multi-Modal Encoders ###############
 
         # Run the image encoder on all the input views
