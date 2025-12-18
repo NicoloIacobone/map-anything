@@ -1504,7 +1504,6 @@ def distill(args):
     print("="*80 + "\n")
 
     log_param_status(model, max_print=None)
-    raise Exception
     
     # Initialize criterion
     criterion = DistillationLoss(
