@@ -4,10 +4,10 @@
 #SBATCH --job-name=SV_13_COCO_UNFROZEN_fast
 #
 # Specify output file.
-#SBATCH --output=SV_13_COCO_UNFROZEN_fast%j.log
+#SBATCH --output=SV_13_COCO_UNFROZEN_fast_%j.log
 #
 # Specify error file.
-#SBATCH --error=SV_13_COCO_UNFROZEN_fast%j.err
+#SBATCH --error=SV_13_COCO_UNFROZEN_fast_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
