@@ -2013,7 +2013,7 @@ def get_args_parser():
     # Model
     # Config file path: /scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a/config.json
     parser.add_argument("--model_name", type=str, default="facebook/map-anything", help="MapAnything model name or path")
-    parser.add_argument("--model_revision", type=str, default="6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a", help="HF snapshot hash to pin")
+    # parser.add_argument("--model_revision", type=str, default="6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a", help="HF snapshot hash to pin")
     
     # Training hyperparameters
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
