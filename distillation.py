@@ -1336,13 +1336,13 @@ def distill(args):
     #     torch.distributed.barrier()
     # if global_rank != 0:
     #     model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
-    
+
     if global_rank == 0:
         model = MapAnything.from_pretrained(
             args.model_name,
             revision="562de9ff7077addd5780415661c5fb031eb8003e",
             strict=False,
-            local_files_only=True,
+            # local_files_only=True,
         ).to(device)
     if torch.distributed.is_initialized():
         torch.distributed.barrier()
@@ -1351,7 +1351,7 @@ def distill(args):
             args.model_name,
             revision="562de9ff7077addd5780415661c5fb031eb8003e",
             strict=False,
-            local_files_only=True,
+            # local_files_only=True,
         ).to(device)
     
     model_without_ddp = model
