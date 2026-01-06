@@ -916,9 +916,9 @@ def train_one_epoch_distillation(
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
             optimizer.step()
             # Optional: interactive LR inspection with pdb (halts execution)
-            if getattr(args, "debug_pdb_lr", False):
-                import pdb
-                pdb.set_trace()
+            # if getattr(args, "debug_pdb_lr", False):
+            #     import pdb
+            #     pdb.set_trace()
             optimizer.zero_grad()
 
         # Accumulate weighted sums
