@@ -915,6 +915,10 @@ def train_one_epoch_distillation(
             if args.clip_grad > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
             optimizer.step()
+            # Optional: interactive LR inspection with pdb (halts execution)
+            if getattr(args, "debug_pdb_lr", False):
+                import pdb
+                pdb.set_trace()
             optimizer.zero_grad()
 
         # Accumulate weighted sums
@@ -1816,6 +1820,10 @@ def distill(args):
                     scheduler.step(val_stats.get("loss_avg", float("inf")))
             else:
                 scheduler.step()
+            # Optional: stop here to inspect scheduler/optimizer state via pdb
+            if getattr(args, "debug_pdb_lr", False):
+                import pdb
+                pdb.set_trace()
         
         # Save checkpoint periodically
         if (epoch + 1) % args.save_freq == 0 or (epoch + 1) == args.epochs:
@@ -2023,6 +2031,7 @@ def get_args_parser():
     parser.add_argument("--clip_grad", type=float, default=1.0, help="Gradient clipping max norm (0 to disable)")
     parser.add_argument("--accum_iter", type=int, default=1, help="Gradient accumulation iterations")
     parser.add_argument("--use_encoder_features", action="store_true", help="Use encoder features instead of transformer features for distillation")
+    parser.add_argument("--debug_pdb_lr", action="store_true", help="Stop after optimizer.step() to inspect LRs via pdb")
     
     # Learning rate and scheduler
     parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate") # Usa 5e-4 per BS_eff = 16 --> 1e-3 per BS_eff = 32, 2.5e-4 per BS_eff = 8
