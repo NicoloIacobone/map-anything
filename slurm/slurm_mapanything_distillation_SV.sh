@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=SV_13_COCO_UNFROZEN_fast
+#SBATCH --job-name=test_LR_decay_reduced_0
 #
 # Specify output file.
-#SBATCH --output=SV_13_COCO_UNFROZEN_fast_%j.log
+#SBATCH --output=test_LR_decay_reduced_0_%j.log
 #
 # Specify error file.
-#SBATCH --error=SV_13_COCO_UNFROZEN_fast_%j.err
+#SBATCH --error=test_LR_decay_reduced_0_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -72,22 +72,24 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --num_workers 8 \
   --dataset coco2017 \
-  --wandb_name "SV_13_COCO_UNFROZEN_fast" \
+  --wandb_name "test_LR_decay_reduced_0" \
   --epochs 50 \
   --lr 5e-4 \
   --batch_size 8 \
   --eval_freq 1 \
-  --save_freq 1 \
+  --save_freq 50 \
   --print_freq 250 \
-  --lr_scheduler step \
-  --lr_decay_epochs 10 \
-  --override_scheduler \
+  --lr_scheduler none \
   --amp \
-  --save_visualizations \
   --no_augmentation \
-  --lr_encoder_scale 1 \
-  --use_encoder_features \
-  --num_dino_layers_unfreeze 24
+  --debug_max_train_images 5000 \
+  --debug_max_val_images 1000
+#   --override_scheduler \
+#   --save_visualizations \
+#   --lr_decay_epochs 25 \
+#   --num_dino_layers_unfreeze 24 \
+#   --lr_encoder_scale 1
+#   --use_encoder_features \
 #   --lr_transformer_scale 1 \
 #   --num_info_sharing_blocks_unfreeze 24 \
 #   --output_dir /cluster/work/igp_psr/niacobone/distillation/output/SV_10_dinov2 \

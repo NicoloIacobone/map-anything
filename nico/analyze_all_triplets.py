@@ -202,7 +202,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--vis_dir", type=str, default="/Users/nicoloiacobone/Desktop/nico/UNIVERSITA/MAGISTRALE/Tesi/Tommasi/Zurigo/git_clones/distillation/tests/SV_03_mse_pixel/",
+    parser.add_argument("--vis_dir", type=str, default="/Users/nicoloiacobone/Desktop/nico/UNIVERSITA/MAGISTRALE/Tesi/Tommasi/Zurigo/git_clones/distillation/tests/SV_11_ALL_UNFROZEN/",
                         help="Folder containing images + student/teacher subfolders")
     args = parser.parse_args()
 
