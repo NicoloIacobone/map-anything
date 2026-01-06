@@ -70,6 +70,7 @@ def setup_runtime_paths(args):
     global run_cluster
 
     run_cluster = not sys.stdout.isatty()
+    STABLE_REV = getattr(args, "model_revision", "6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a")  # snapshot stabile
     if run_cluster:
         os.environ["TORCH_HOME"] = "/cluster/home/niacobone/torch_cache"
         try:
@@ -80,12 +81,16 @@ def setup_runtime_paths(args):
         OUT_DIR = "/cluster/work/igp_psr/niacobone/distillation/output"
         BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset"
         SAM2_PATH = "/cluster/scratch/niacobone/sam2/checkpoints/sam2.1_hiera_large.pt"
-        CONFIG_JSON_PATH = "/cluster/scratch/niacobone/.cache/huggingface/hub/models--facebook--map-anything/snapshots/562de9ff7077addd5780415661c5fb031eb8003e"
+        # CONFIG_JSON_PATH = "/cluster/scratch/niacobone/.cache/huggingface/hub/models--facebook--map-anything/snapshots/562de9ff7077addd5780415661c5fb031eb8003e"
+        CONFIG_JSON_PATH = f"/cluster/scratch/niacobone/.cache/huggingface/hub/models--facebook--map-anything/snapshots/{STABLE_REV}"
     else:
         OUT_DIR = "/scratch2/nico/distillation/output"
         BASE_DIR = "/scratch2/nico/distillation/dataset"
         SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
-        CONFIG_JSON_PATH = "/scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/562de9ff7077addd5780415661c5fb031eb8003e/"
+        # CONFIG_JSON_PATH = "/scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/562de9ff7077addd5780415661c5fb031eb8003e/"
+        CONFIG_JSON_PATH = f"/scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/{STABLE_REV}"
+    
+    CONFIG_JSON_PATH = os.path.join(CONFIG_JSON_PATH, "config.json")
 
     # Usa args.dataset
     DATASET = args.dataset  # "coco2017" o "ETH3D"
@@ -1325,12 +1330,28 @@ def distill(args):
             # print("[DEBUG] Config content (after save, read back):")
             # print(json.dumps(config_after, indent=2))
 
+    # if global_rank == 0:
+    #     model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
+    # if torch.distributed.is_initialized():
+    #     torch.distributed.barrier()
+    # if global_rank != 0:
+    #     model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
     if global_rank == 0:
-        model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
+        model = MapAnything.from_pretrained(
+            args.model_name,
+            revision=args.model_revision,
+            strict=False,
+            local_files_only=True,
+        ).to(device)
     if torch.distributed.is_initialized():
         torch.distributed.barrier()
     if global_rank != 0:
-        model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
+        model = MapAnything.from_pretrained(
+            args.model_name,
+            revision=args.model_revision,
+            strict=False,
+            local_files_only=True,
+        ).to(device)
     
     model_without_ddp = model
     print(f"Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
@@ -1992,6 +2013,7 @@ def get_args_parser():
     # Model
     # Config file path: /scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a/config.json
     parser.add_argument("--model_name", type=str, default="facebook/map-anything", help="MapAnything model name or path")
+    parser.add_argument("--model_revision", type=str, default="6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a", help="HF snapshot hash to pin")
     
     # Training hyperparameters
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
