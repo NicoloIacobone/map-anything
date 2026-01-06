@@ -1330,28 +1330,29 @@ def distill(args):
             # print("[DEBUG] Config content (after save, read back):")
             # print(json.dumps(config_after, indent=2))
 
-    if global_rank == 0:
-        model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
-    if torch.distributed.is_initialized():
-        torch.distributed.barrier()
-    if global_rank != 0:
-        model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
     # if global_rank == 0:
-    #     model = MapAnything.from_pretrained(
-    #         args.model_name,
-    #         revision=args.model_revision,
-    #         strict=False,
-    #         local_files_only=True,
-    #     ).to(device)
+    #     model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
     # if torch.distributed.is_initialized():
     #     torch.distributed.barrier()
     # if global_rank != 0:
-    #     model = MapAnything.from_pretrained(
-    #         args.model_name,
-    #         revision=args.model_revision,
-    #         strict=False,
-    #         local_files_only=True,
-    #     ).to(device)
+    #     model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
+    
+    if global_rank == 0:
+        model = MapAnything.from_pretrained(
+            args.model_name,
+            revision="562de9ff7077addd5780415661c5fb031eb8003e",
+            strict=False,
+            local_files_only=True,
+        ).to(device)
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
+    if global_rank != 0:
+        model = MapAnything.from_pretrained(
+            args.model_name,
+            revision="562de9ff7077addd5780415661c5fb031eb8003e",
+            strict=False,
+            local_files_only=True,
+        ).to(device)
     
     model_without_ddp = model
     print(f"Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
