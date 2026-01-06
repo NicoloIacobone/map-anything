@@ -1645,8 +1645,6 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
             # Salta geometrie, MV-transformer e altre head
             return []
 
-        raise Exception
-
         ############### Multi-Modal Encoders ###############
 
         # Run the image encoder on all the input views
