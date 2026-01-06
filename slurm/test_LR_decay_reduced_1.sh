@@ -1,19 +1,19 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=test_LR_decay_reduced_0
+#SBATCH --job-name=test_LR_decay_reduced_1
 #
 # Specify output file.
-#SBATCH --output=test_LR_decay_reduced_0_%j.log
+#SBATCH --output=test_LR_decay_reduced_1_%j.log
 #
 # Specify error file.
-#SBATCH --error=test_LR_decay_reduced_0_%j.err
+#SBATCH --error=test_LR_decay_reduced_1_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=01:00:00
+#SBATCH --time=24:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -72,14 +72,15 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --num_workers 8 \
   --dataset coco2017 \
-  --wandb_name "test_LR_decay_reduced_0" \
+  --wandb_name "test_LR_decay_reduced_1" \
   --epochs 50 \
   --lr 5e-4 \
   --batch_size 8 \
   --eval_freq 1 \
   --save_freq 50 \
   --print_freq 250 \
-  --lr_scheduler none \
+  --lr_scheduler step \
+  --lr_decay_epochs 25 \
   --amp \
   --no_augmentation \
   --debug_max_train_images 5000 \
