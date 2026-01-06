@@ -88,7 +88,7 @@ def setup_runtime_paths(args):
         BASE_DIR = "/scratch2/nico/distillation/dataset"
         SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
         # CONFIG_JSON_PATH = "/scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/562de9ff7077addd5780415661c5fb031eb8003e/"
-        CONFIG_JSON_PATH = f"/scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/{STABLE_REV}"
+        CONFIG_JSON_PATH = f"/cluster/scratch/niacobone/.cache/huggingface/hub/models--facebook--map-anything/snapshots/{STABLE_REV}"
     
     CONFIG_JSON_PATH = os.path.join(CONFIG_JSON_PATH, "config.json")
 
