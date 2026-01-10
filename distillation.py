@@ -54,6 +54,10 @@ from mapanything.utils.image import load_images
 from mapanything.utils import train_tools
 from nico.utils import mean_std_difference, create_student_original_teacher_side_by_side
 
+from sam2_minimal.modeling.sam.mask_decoder import MaskDecoder
+from sam2_minimal.modeling.sam.transformer import TwoWayTransformer
+from sam2_minimal.modeling.sam.prompt_encoder import PromptEncoder
+
 # Enable TF32 precision if supported
 if hasattr(torch.backends.cuda, "matmul") and hasattr(
     torch.backends.cuda.matmul, "allow_tf32"
@@ -127,7 +131,7 @@ class DistillationDataset(Dataset):
         self,
         image_dir: str,
         features_dir: Optional[str] = None,
-        teacher_extractor: Optional[callable] = None,
+        teacher_extractor: Optional[callable] = None, # si può rimuovere
         image_paths: Optional[List[str]] = None,
         transform=None,
         multi_view_mode: bool = False,
@@ -136,7 +140,7 @@ class DistillationDataset(Dataset):
     ):
         self.image_dir = Path(image_dir)
         self.features_dir = Path(features_dir) if features_dir else None
-        self.teacher_extractor = teacher_extractor
+        self.teacher_extractor = teacher_extractor # si può rimuovere
         self.transform = transform
         self.multi_view_mode = multi_view_mode
         self.max_views_per_scene = max_views_per_scene
@@ -430,6 +434,172 @@ class TeacherFeatureExtractor:
         if hasattr(self.extractor, "to"):
             self.extractor.to(device)
         return self
+
+
+# ==================== SAM2 Decoder Distillation Helpers ====================
+def _build_sam_prompt_encoder(
+    embed_dim: int = 256,
+    image_embedding_size: Tuple[int, int] = (64, 64),
+    input_image_size: Tuple[int, int] = (1024, 1024),
+    mask_in_chans: int = 16,
+) -> PromptEncoder:
+    return PromptEncoder(
+        embed_dim=embed_dim,
+        image_embedding_size=image_embedding_size,
+        input_image_size=input_image_size,
+        mask_in_chans=mask_in_chans,
+    )
+
+
+def _build_sam_mask_decoder(
+    embed_dim: int = 256,
+    num_multimask_outputs: int = 3,
+    pred_obj_scores: bool = False,
+    pred_obj_scores_mlp: bool = False,
+    use_high_res_features: bool = False,
+    use_multimask_token_for_obj_ptr: bool = False,
+) -> MaskDecoder:
+    transformer = TwoWayTransformer(
+        depth=2,
+        embedding_dim=embed_dim,
+        num_heads=8,
+        mlp_dim=2048,
+    )
+    return MaskDecoder(
+        transformer_dim=embed_dim,
+        transformer=transformer,
+        num_multimask_outputs=num_multimask_outputs,
+        iou_head_depth=3,
+        iou_head_hidden_dim=256,
+        use_high_res_features=use_high_res_features,
+        pred_obj_scores=pred_obj_scores,
+        pred_obj_scores_mlp=pred_obj_scores_mlp,
+        use_multimask_token_for_obj_ptr=use_multimask_token_for_obj_ptr,
+    )
+
+
+def _infer_teacher_decoder_flags_from_state_dict(sd: Dict[str, torch.Tensor]) -> Dict[str, bool]:
+    """Infer optional MaskDecoder constructor flags from checkpoint keys."""
+    use_high_res_features = any(k.startswith("sam_mask_decoder.conv_s0") for k in sd.keys())
+    pred_obj_scores = any(k.startswith("sam_mask_decoder.obj_score_token") for k in sd.keys())
+    pred_obj_scores_mlp = any(k.startswith("sam_mask_decoder.pred_obj_score_head.layers") for k in sd.keys())
+    return {
+        "use_high_res_features": bool(use_high_res_features),
+        "pred_obj_scores": bool(pred_obj_scores),
+        "pred_obj_scores_mlp": bool(pred_obj_scores_mlp),
+    }
+
+
+def load_sam2_teacher_prompt_and_decoder(
+    checkpoint_path: str,
+    device: torch.device,
+    embed_dim: int = 256,
+    image_embedding_size: Tuple[int, int] = (64, 64),
+    input_image_size: Tuple[int, int] = (1024, 1024),
+) -> Tuple[PromptEncoder, MaskDecoder]:
+    """Load SAM2 prompt encoder + mask decoder weights from a SAM2 checkpoint."""
+    ckpt = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    sd = ckpt.get("model", ckpt)
+
+    flags = _infer_teacher_decoder_flags_from_state_dict(sd)
+    prompt_encoder = _build_sam_prompt_encoder(
+        embed_dim=embed_dim,
+        image_embedding_size=image_embedding_size,
+        input_image_size=input_image_size,
+        mask_in_chans=16,
+    )
+    mask_decoder = _build_sam_mask_decoder(
+        embed_dim=embed_dim,
+        num_multimask_outputs=3,
+        pred_obj_scores=flags["pred_obj_scores"],
+        pred_obj_scores_mlp=flags["pred_obj_scores_mlp"],
+        use_high_res_features=flags["use_high_res_features"],
+        use_multimask_token_for_obj_ptr=False,
+    )
+
+    pe_sd = {k.replace("sam_prompt_encoder.", ""): v for k, v in sd.items() if k.startswith("sam_prompt_encoder.")}
+    md_sd = {k.replace("sam_mask_decoder.", ""): v for k, v in sd.items() if k.startswith("sam_mask_decoder.")}
+
+    missing_pe, unexpected_pe = prompt_encoder.load_state_dict(pe_sd, strict=False)
+    missing_md, unexpected_md = mask_decoder.load_state_dict(md_sd, strict=False)
+    if missing_pe or unexpected_pe:
+        print(f"[WARN] PromptEncoder load_state_dict: missing={len(missing_pe)} unexpected={len(unexpected_pe)}")
+    if missing_md or unexpected_md:
+        print(f"[WARN] MaskDecoder load_state_dict: missing={len(missing_md)} unexpected={len(unexpected_md)}")
+
+    prompt_encoder = prompt_encoder.to(device)
+    mask_decoder = mask_decoder.to(device)
+    prompt_encoder.eval()
+    mask_decoder.eval()
+    for p in prompt_encoder.parameters():
+        p.requires_grad = False
+    for p in mask_decoder.parameters():
+        p.requires_grad = False
+
+    return prompt_encoder, mask_decoder
+
+
+@torch.no_grad()
+def forward_sam_decoder_no_prompt(
+    mask_decoder: MaskDecoder,
+    prompt_encoder: PromptEncoder,
+    image_embeddings: torch.Tensor,
+    multimask_output: bool = True,
+    high_res_features: Optional[List[torch.Tensor]] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Run MaskDecoder with empty prompts (no points/boxes/masks), mirroring SAM2 defaults."""
+    B = image_embeddings.shape[0]
+    device = image_embeddings.device
+    dtype = image_embeddings.dtype
+
+    # If no points are provided, SAM2 pads with an empty point (label -1)
+    point_coords = torch.zeros(B, 1, 2, device=device)
+    point_labels = -torch.ones(B, 1, dtype=torch.int32, device=device)
+
+    sparse_embeddings, dense_embeddings = prompt_encoder(
+        points=(point_coords, point_labels),
+        boxes=None,
+        masks=None,
+    )
+
+    image_pe = prompt_encoder.get_dense_pe().to(device=device, dtype=dtype)
+    sparse_embeddings = sparse_embeddings.to(dtype=dtype)
+    dense_embeddings = dense_embeddings.to(dtype=dtype)
+
+    masks, iou_pred, sam_tokens, obj_scores = mask_decoder(
+        image_embeddings=image_embeddings,
+        image_pe=image_pe,
+        sparse_prompt_embeddings=sparse_embeddings,
+        dense_prompt_embeddings=dense_embeddings,
+        multimask_output=multimask_output,
+        repeat_image=False,
+        high_res_features=high_res_features,
+    )
+    return masks, iou_pred, sam_tokens, obj_scores
+
+
+def decoder_distillation_loss_mse(
+    student_out: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+    teacher_out: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    """Compute simple MSE on the 4 decoder outputs: masks, iou_pred, sam_tokens, obj_scores."""
+    s_masks, s_iou, s_tokens, s_obj = student_out
+    t_masks, t_iou, t_tokens, t_obj = teacher_out
+
+    mse_masks = F.mse_loss(s_masks.float(), t_masks.float())
+    mse_iou = F.mse_loss(s_iou.float(), t_iou.float())
+    mse_tokens = F.mse_loss(s_tokens.float(), t_tokens.float())
+    mse_obj = F.mse_loss(s_obj.float(), t_obj.float())
+
+    total = mse_masks + mse_iou + mse_tokens + mse_obj
+    details = {
+        "dec_mse_masks": float(mse_masks.detach().cpu().item()),
+        "dec_mse_iou": float(mse_iou.detach().cpu().item()),
+        "dec_mse_tokens": float(mse_tokens.detach().cpu().item()),
+        "dec_mse_obj": float(mse_obj.detach().cpu().item()),
+        "dec_loss": float(total.detach().cpu().item()),
+    }
+    return total, details
 
 # ==================== Loss Functions ====================
 class DistillationLoss(torch.nn.Module):
@@ -780,6 +950,8 @@ def train_one_epoch_distillation(
     epoch: int,
     args,
     teacher_extractor: Optional[TeacherFeatureExtractor] = None,
+    sam_prompt_encoder_teacher: Optional[PromptEncoder] = None,
+    sam_mask_decoder_teacher: Optional[MaskDecoder] = None,
 ) -> Dict:
     """
     Train the model for one epoch on distillation task.
@@ -813,6 +985,11 @@ def train_one_epoch_distillation(
     sum_mse = 0.0
     sum_cos = 0.0
     sum_cos_sim = 0.0
+    sum_dec_loss = 0.0
+    sum_dec_mse_masks = 0.0
+    sum_dec_mse_iou = 0.0
+    sum_dec_mse_tokens = 0.0
+    sum_dec_mse_obj = 0.0
     sum_mean_diff = 0.0
     sum_std_diff = 0.0
     
@@ -867,11 +1044,42 @@ def train_one_epoch_distillation(
                 align_corners=False,
             )
 
-        # Compute loss
+        # Compute encoder-feature distillation loss
         loss, loss_details = criterion(student_features, teacher_features, mse_type=args.mse_type)
+
+        # Optional: Decoder distillation (online)
+        dec_total = None
+        dec_details: Dict[str, float] = {}
+        if getattr(args, "distill_decoder", False):
+            if sam_prompt_encoder_teacher is None or sam_mask_decoder_teacher is None:
+                raise ValueError("distill_decoder=True but teacher prompt/decoder not provided")
+            base_model = model.module if hasattr(model, "module") else model
+            if not hasattr(base_model, "sam2_mask_decoder_student"):
+                raise AttributeError("Model missing sam2_mask_decoder_student; ensure it is attached in distill()")
+            student_decoder: MaskDecoder = base_model.sam2_mask_decoder_student
+
+            # Forward teacher/student decoders with empty prompts
+            with torch.no_grad():
+                teacher_out = forward_sam_decoder_no_prompt(
+                    mask_decoder=sam_mask_decoder_teacher,
+                    prompt_encoder=sam_prompt_encoder_teacher,
+                    image_embeddings=teacher_features,
+                    multimask_output=getattr(args, "decoder_multimask_output", True),
+                    high_res_features=None,
+                )
+            student_out = forward_sam_decoder_no_prompt(
+                mask_decoder=student_decoder,
+                prompt_encoder=sam_prompt_encoder_teacher,
+                image_embeddings=student_features,
+                multimask_output=getattr(args, "decoder_multimask_output", True),
+                high_res_features=None,
+            )
+            dec_total, dec_details = decoder_distillation_loss_mse(student_out, teacher_out)
+            loss = loss + float(getattr(args, "decoder_loss_weight", 1.0)) * dec_total
         mse_value = float(loss_details.get("mse_loss", 0.0))
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
+        dec_loss_value = float(dec_details.get("dec_loss", 0.0))
 
         try:
             md, sd, cs = mean_std_difference(student_features, teacher_features)
@@ -904,6 +1112,11 @@ def train_one_epoch_distillation(
                         "train/mse_loss": float(mse_value),
                         "train/cos_loss": float(cos_value),
                         "train/cos_sim": float(cos_sim_value),
+                        "train/decoder_loss": float(dec_loss_value),
+                        "train/dec_mse_masks": float(dec_details.get("dec_mse_masks", 0.0)),
+                        "train/dec_mse_iou": float(dec_details.get("dec_mse_iou", 0.0)),
+                        "train/dec_mse_tokens": float(dec_details.get("dec_mse_tokens", 0.0)),
+                        "train/dec_mse_obj": float(dec_details.get("dec_mse_obj", 0.0)),
                         "train/lr": float(optimizer.param_groups[0]["lr"]),
                         "epoch_progress": epoch_f,
                     }
@@ -930,6 +1143,13 @@ def train_one_epoch_distillation(
         sum_mse += mse_value * batch_size
         sum_cos += cos_value * batch_size
         sum_cos_sim += cos_sim_value * batch_size
+        # decoder loss is already included in loss_value; track separately via metric_logger below
+        if getattr(args, "distill_decoder", False) and dec_details:
+            sum_dec_loss += float(dec_details.get("dec_loss", 0.0)) * batch_size
+            sum_dec_mse_masks += float(dec_details.get("dec_mse_masks", 0.0)) * batch_size
+            sum_dec_mse_iou += float(dec_details.get("dec_mse_iou", 0.0)) * batch_size
+            sum_dec_mse_tokens += float(dec_details.get("dec_mse_tokens", 0.0)) * batch_size
+            sum_dec_mse_obj += float(dec_details.get("dec_mse_obj", 0.0)) * batch_size
         sum_mean_diff += md * batch_size
         sum_std_diff += sd * batch_size
 
@@ -940,6 +1160,8 @@ def train_one_epoch_distillation(
         metric_logger.update(epoch=epoch_f)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(loss=loss_value, **loss_details)
+        if getattr(args, "distill_decoder", False) and dec_details:
+            metric_logger.update(decoder_loss=dec_loss_value, **dec_details)
 
     # Return averaged stats
     denom = max(1, total_samples)
@@ -948,6 +1170,11 @@ def train_one_epoch_distillation(
         "mse_loss_mean": sum_mse / denom,
         "cos_loss_mean": sum_cos / denom,
         "cos_sim_mean": sum_cos_sim / denom,
+        "dec_loss_mean": sum_dec_loss / denom,
+        "dec_mse_masks_mean": sum_dec_mse_masks / denom,
+        "dec_mse_iou_mean": sum_dec_mse_iou / denom,
+        "dec_mse_tokens_mean": sum_dec_mse_tokens / denom,
+        "dec_mse_obj_mean": sum_dec_mse_obj / denom,
         "mean_diff": sum_mean_diff / denom,
         "std_diff": sum_std_diff / denom,
         "lr": optimizer.param_groups[0]["lr"],
@@ -964,6 +1191,8 @@ def validate_one_epoch_distillation(
     epoch: int,
     args,
     teacher_extractor: Optional[TeacherFeatureExtractor] = None,
+    sam_prompt_encoder_teacher: Optional[PromptEncoder] = None,
+    sam_mask_decoder_teacher: Optional[MaskDecoder] = None,
 ) -> Dict:
     """
     Validate the model for one epoch on distillation task.
@@ -991,6 +1220,11 @@ def validate_one_epoch_distillation(
     sum_mse = 0.0
     sum_cos = 0.0
     sum_cos_sim = 0.0
+    sum_dec_loss = 0.0
+    sum_dec_mse_masks = 0.0
+    sum_dec_mse_iou = 0.0
+    sum_dec_mse_tokens = 0.0
+    sum_dec_mse_obj = 0.0
     sum_mean_diff = 0.0
     sum_std_diff = 0.0
 
@@ -1032,12 +1266,41 @@ def validate_one_epoch_distillation(
                 align_corners=False,
             )
         
-        # Compute loss
+        # Compute encoder-feature distillation loss
         loss, loss_details = criterion(student_features, teacher_features, mse_type=args.mse_type)
+
+        # Optional: Decoder distillation
+        dec_total = None
+        dec_details: Dict[str, float] = {}
+        if getattr(args, "distill_decoder", False):
+            if sam_prompt_encoder_teacher is None or sam_mask_decoder_teacher is None:
+                raise ValueError("distill_decoder=True but teacher prompt/decoder not provided")
+            base_model = model.module if hasattr(model, "module") else model
+            if not hasattr(base_model, "sam2_mask_decoder_student"):
+                raise AttributeError("Model missing sam2_mask_decoder_student; ensure it is attached in distill()")
+            student_decoder: MaskDecoder = base_model.sam2_mask_decoder_student
+
+            teacher_out = forward_sam_decoder_no_prompt(
+                mask_decoder=sam_mask_decoder_teacher,
+                prompt_encoder=sam_prompt_encoder_teacher,
+                image_embeddings=teacher_features,
+                multimask_output=getattr(args, "decoder_multimask_output", True),
+                high_res_features=None,
+            )
+            student_out = forward_sam_decoder_no_prompt(
+                mask_decoder=student_decoder,
+                prompt_encoder=sam_prompt_encoder_teacher,
+                image_embeddings=student_features,
+                multimask_output=getattr(args, "decoder_multimask_output", True),
+                high_res_features=None,
+            )
+            dec_total, dec_details = decoder_distillation_loss_mse(student_out, teacher_out)
+            loss = loss + float(getattr(args, "decoder_loss_weight", 1.0)) * dec_total
         loss_value = loss.detach().cpu().item()
         mse_value = float(loss_details.get("mse_loss", 0.0))
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
+        dec_loss_value = float(dec_details.get("dec_loss", 0.0))
 
         try:
             md, sd, cs = mean_std_difference(student_features, teacher_features)
@@ -1049,6 +1312,8 @@ def validate_one_epoch_distillation(
             cs = cos_sim_value
 
         metric_logger.update(loss=loss_value, mse_loss=mse_value, cos_loss=cos_value, cos_sim=cos_sim_value)
+        if getattr(args, "distill_decoder", False) and dec_details:
+            metric_logger.update(decoder_loss=dec_loss_value, **dec_details)
         
         # Salva visualizzazioni se richiesto
         if args.save_visualizations and batch_idx == 0:
@@ -1067,6 +1332,12 @@ def validate_one_epoch_distillation(
         sum_mse += mse_value * batch_size
         sum_cos += cos_value * batch_size
         sum_cos_sim += cos_sim_value * batch_size
+        if getattr(args, "distill_decoder", False) and dec_details:
+            sum_dec_loss += float(dec_details.get("dec_loss", 0.0)) * batch_size
+            sum_dec_mse_masks += float(dec_details.get("dec_mse_masks", 0.0)) * batch_size
+            sum_dec_mse_iou += float(dec_details.get("dec_mse_iou", 0.0)) * batch_size
+            sum_dec_mse_tokens += float(dec_details.get("dec_mse_tokens", 0.0)) * batch_size
+            sum_dec_mse_obj += float(dec_details.get("dec_mse_obj", 0.0)) * batch_size
         sum_mean_diff += md * batch_size
         sum_std_diff += sd * batch_size
 
@@ -1078,6 +1349,11 @@ def validate_one_epoch_distillation(
         "mse_loss_mean": sum_mse / denom,
         "cos_loss_mean": sum_cos / denom,
         "cos_sim_mean": sum_cos_sim / denom,
+        "dec_loss_mean": sum_dec_loss / denom,
+        "dec_mse_masks_mean": sum_dec_mse_masks / denom,
+        "dec_mse_iou_mean": sum_dec_mse_iou / denom,
+        "dec_mse_tokens_mean": sum_dec_mse_tokens / denom,
+        "dec_mse_obj_mean": sum_dec_mse_obj / denom,
         "mean_diff": sum_mean_diff / denom,
         "std_diff": sum_std_diff / denom,
         "samples": total_samples,
@@ -1363,6 +1639,22 @@ def distill(args):
     model_without_ddp = model
     print(f"Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
 
+    # ========== OPTIONAL: INIT SAM2 DECODER TEACHER + ATTACH STUDENT DECODER ==========
+    sam_prompt_encoder_teacher = None
+    sam_mask_decoder_teacher = None
+    if getattr(args, "distill_decoder", False):
+        print(f"[INFO] Initializing SAM2 MaskDecoder teacher from {SAM2_PATH}")
+        sam_prompt_encoder_teacher, sam_mask_decoder_teacher = load_sam2_teacher_prompt_and_decoder(
+            checkpoint_path=SAM2_PATH,
+            device=device,
+            embed_dim=256,
+            image_embedding_size=(64, 64),
+            input_image_size=(1024, 1024),
+        )
+        print("[INFO] Attaching SAM2 MaskDecoder student (from scratch) to MapAnything model")
+        # Student decoder matches SAM2 base hyperparams (see sam2_minimal.modeling.sam2_base.SAM2Base._build_sam_heads)
+        model.sam2_mask_decoder_student = _build_sam_mask_decoder(embed_dim=256)
+
     # ========== FREEZE STRATEGY ==========
     # 1. Freeze tutto inizialmente
     print("Freezing all parameters...")
@@ -1374,6 +1666,12 @@ def distill(args):
     for name, param in model.named_parameters():
         if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat"):
             param.requires_grad = True
+
+    # 2b. Unfreeze SAM2 mask decoder student (optional)
+    if getattr(args, "distill_decoder", False) and hasattr(model, "sam2_mask_decoder_student"):
+        print("Unfreezing sam2_mask_decoder_student...")
+        for p in model.sam2_mask_decoder_student.parameters():
+            p.requires_grad = True
 
     # 3. Unfreeze ultimi N blocchi di info_sharing.self_attention_blocks (opzionale)
     num_info_sharing_blocks = getattr(args, 'num_info_sharing_blocks_unfreeze', 0)
@@ -1544,6 +1842,7 @@ def distill(args):
     head_params = []
     transformer_params = []
     encoder_params = []
+    decoder_params = []
     other_params = []
 
     for name, p in model.named_parameters():
@@ -1551,6 +1850,8 @@ def distill(args):
             continue
         if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat"):
             head_params.append(p)
+        elif name.startswith("sam2_mask_decoder_student"):
+            decoder_params.append(p)
         elif name.startswith("info_sharing"):
             transformer_params.append(p)
         elif name.startswith("encoder") and hasattr(args, 'dino_unfrozen_indices') and args.dino_unfrozen_indices:
@@ -1566,12 +1867,16 @@ def distill(args):
     lr_head = args.lr
     lr_encoder = args.lr * args.lr_encoder_scale
     lr_transformer = args.lr * args.lr_transformer_scale
+    lr_decoder = getattr(args, "lr_decoder", None)
+    if lr_decoder is None:
+        lr_decoder = args.lr * float(getattr(args, "lr_decoder_scale", 1.0))
 
     optimizer = optim.AdamW(
         [
             {"params": head_params, "lr": lr_head},
             {"params": transformer_params, "lr": lr_transformer},
             {"params": encoder_params, "lr": lr_encoder},
+            {"params": decoder_params, "lr": lr_decoder},
         ],
         lr=args.lr,  # non usato per i gruppi espliciti, rimane come default
         weight_decay=args.weight_decay,
@@ -1579,7 +1884,8 @@ def distill(args):
     )
     print(f"[OPT] Groups: head={sum(p.numel() for p in head_params):,} params @ LR {lr_head}, "
           f"encoder={sum(p.numel() for p in encoder_params):,} params @ LR {lr_encoder}, "
-          f"transformer={sum(p.numel() for p in transformer_params):,} params @ LR {lr_transformer}")
+          f"transformer={sum(p.numel() for p in transformer_params):,} params @ LR {lr_transformer}, "
+          f"decoder={sum(p.numel() for p in decoder_params):,} params @ LR {lr_decoder}")
     
     # ========== WRAPPING IN DDP ==========
     if args.distributed.distributed:
@@ -1643,6 +1949,14 @@ def distill(args):
             print("[INFO] Loaded sam2_compat state from checkpoint")
         elif hasattr(model_without_ddp, "sam2_compat"):
             print("[WARN] sam2_compat exists on model but not found in checkpoint. Using random initialization.")
+
+        # Load SAM2 mask decoder student if present
+        if getattr(args, "distill_decoder", False) and hasattr(model_without_ddp, "sam2_mask_decoder_student"):
+            if "sam2_mask_decoder_student" in ckpt:
+                model_without_ddp.sam2_mask_decoder_student.load_state_dict(ckpt["sam2_mask_decoder_student"], strict=True)
+                print("[INFO] Loaded sam2_mask_decoder_student state from checkpoint")
+            else:
+                print("[WARN] distill_decoder=True but sam2_mask_decoder_student not found in checkpoint. Using random init.")
 
         # Restore unfrozen info_sharing blocks if present
         if "info_sharing_blocks" in ckpt and hasattr(model_without_ddp, "info_sharing"):
@@ -1781,6 +2095,8 @@ def distill(args):
             epoch=epoch,
             args=args,
             teacher_extractor=teacher_extractor,
+            sam_prompt_encoder_teacher=sam_prompt_encoder_teacher,
+            sam_mask_decoder_teacher=sam_mask_decoder_teacher,
         )
         
         # Validation
@@ -1794,6 +2110,8 @@ def distill(args):
                 epoch=epoch,
                 args=args,
                 teacher_extractor=teacher_extractor,
+                sam_prompt_encoder_teacher=sam_prompt_encoder_teacher,
+                sam_mask_decoder_teacher=sam_mask_decoder_teacher,
             )
             
             # Check for new best
@@ -1853,6 +2171,11 @@ def distill(args):
                 "train_mean_diff": train_stats.get("mean_diff", 0.0),
                 "train_std_diff": train_stats.get("std_diff", 0.0),
                 "train_cos_sim": train_stats.get("cos_sim_mean", 0.0),
+                "train_decoder_loss": train_stats.get("dec_loss_mean", 0.0),
+                "train_dec_mse_masks": train_stats.get("dec_mse_masks_mean", 0.0),
+                "train_dec_mse_iou": train_stats.get("dec_mse_iou_mean", 0.0),
+                "train_dec_mse_tokens": train_stats.get("dec_mse_tokens_mean", 0.0),
+                "train_dec_mse_obj": train_stats.get("dec_mse_obj_mean", 0.0),
                 "lr": optimizer.param_groups[0]["lr"],
                 "epoch_time_sec": epoch_time,
             }
@@ -1865,6 +2188,11 @@ def distill(args):
                     "val_mean_diff": val_stats.get("mean_diff", 0.0),
                     "val_std_diff": val_stats.get("std_diff", 0.0),
                     "val_cosine_similarity": val_stats.get("cos_sim_mean", 0.0),
+                    "val_decoder_loss": val_stats.get("dec_loss_mean", 0.0),
+                    "val_dec_mse_masks": val_stats.get("dec_mse_masks_mean", 0.0),
+                    "val_dec_mse_iou": val_stats.get("dec_mse_iou_mean", 0.0),
+                    "val_dec_mse_tokens": val_stats.get("dec_mse_tokens_mean", 0.0),
+                    "val_dec_mse_obj": val_stats.get("dec_mse_obj_mean", 0.0),
                 })
             else:
                 print(f"[DEBUG] val_stats is empty, skipping validation logging for epoch {epoch+1}")  # <--- DEBUG
@@ -1929,6 +2257,10 @@ def save_checkpoint_distillation(
     if hasattr(model_without_ddp, "sam2_compat"):
         state["sam2_compat"] = model_without_ddp.sam2_compat.state_dict()
         # print("[INFO] sam2_compat state added to checkpoint")
+
+    # Save SAM2 mask decoder student if present
+    if hasattr(model_without_ddp, "sam2_mask_decoder_student"):
+        state["sam2_mask_decoder_student"] = model_without_ddp.sam2_mask_decoder_student.state_dict()
 
     # Save unfrozen info_sharing blocks if any
     if args is not None and hasattr(model_without_ddp, "info_sharing") and getattr(args, "info_sharing_unfrozen_indices", []):
@@ -2096,6 +2428,18 @@ def get_args_parser():
     parser.add_argument("--num_dino_layers_unfreeze", type=int, default=0, help="Number of last DINOv2 encoder layers to unfreeze") # max 24
     parser.add_argument("--lr_encoder_scale", type=float, default=0.1, help="Scale factor for encoder LR relative to --lr")
     parser.add_argument("--lr_transformer_scale", type=float, default=1.0, help="Scale factor for transformer LR relative to --lr")
+
+    # SAM2 decoder distillation
+    parser.add_argument("--distill_decoder", action="store_true", help="Enable SAM2 MaskDecoder distillation (teacher SAM2 -> student from scratch)")
+    parser.add_argument("--decoder_loss_weight", type=float, default=1.0, help="Weight for decoder distillation loss added to total loss")
+    parser.add_argument("--lr_decoder", type=float, default=None, help="Absolute LR for decoder (overrides --lr_decoder_scale)")
+    parser.add_argument("--lr_decoder_scale", type=float, default=1.0, help="Scale factor for decoder LR relative to --lr")
+    parser.add_argument(
+        "--decoder_multimask_output",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="If true, distill multimask outputs (3 masks). If false, distill single-mask output.",
+    )
     
     # comando debug pc lab
     # python distillation_test_multi_view_gemini.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2
