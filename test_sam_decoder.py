@@ -3,9 +3,35 @@ from sam2_minimal.modeling.sam.mask_decoder import MaskDecoder
 from sam2_minimal.modeling.sam.transformer import TwoWayTransformer
 from sam2_minimal.modeling.sam.prompt_encoder import PromptEncoder
 
+# Parametri di configurazione
+embed_dim = 256
+image_embedding_size = (64, 64)  # Dimensione dell'embedding dell'immagine (H, W)
+input_image_size = (1024, 1024)  # Dimensione dell'immagine in input (H, W)
+mask_in_chans = 16  # Numero di canali nascosti per l'encoding delle maschere
+
 # Istanzia i componenti
-prompt_encoder = PromptEncoder(embed_dim=256, image_size=64)  # controlla i parametri reali nel file
-transformer = TwoWayTransformer(depth=2, embedding_dim=256)   # usa gli stessi default del repo
+# Instanziazione del PromptEncoder
+prompt_encoder = PromptEncoder(
+    embed_dim=embed_dim,
+    image_embedding_size=image_embedding_size,
+    input_image_size=input_image_size,
+    mask_in_chans=mask_in_chans,
+)
+
+# Parametri di configurazione
+depth = 2  # Numero di layer del transformer
+num_heads = 8  # Numero di head per multihead attention
+mlp_dim = 2048  # Dimensione interna del blocco MLP
+attention_downsample_rate = 2  # Fattore di downsampling dell'attenzione
+
+# Instanziazione del TwoWayTransformer
+transformer = TwoWayTransformer(
+    depth=depth,
+    embedding_dim=embed_dim,
+    num_heads=num_heads,
+    mlp_dim=mlp_dim,
+    attention_downsample_rate=attention_downsample_rate,
+)
 mask_decoder = MaskDecoder(transformer_dim=256, transformer=transformer, num_multimask_outputs=3)
 
 # Input
