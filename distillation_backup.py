@@ -311,7 +311,7 @@ class TeacherFeatureExtractor:
     che è un SAM2FeatureExtractor, che a sua volta wrappa un ImageEncoder composto da trunk=Hiera e neck=FpnNeck.
     """
     def __init__(self, checkpoint_path: str, device: str = "cuda", augment_cfg: Optional[dict] = None):
-        from feature_extractor import load_sam2_feature_extractor
+        from feature_extractor_chat import load_sam2_feature_extractor
         # extractor è un'istanza di SAM2FeatureExtractor che è a sua volta un wrapper che contiene image_encoder (trunk + neck)
         self.extractor = load_sam2_feature_extractor(checkpoint_path, device) 
         self.device = device

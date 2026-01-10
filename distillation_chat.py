@@ -29,6 +29,7 @@ import numpy as np
 import os
 import torch
 import torch.backends.cudnn as cudnn
+import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
@@ -53,6 +54,18 @@ from mapanything.models import MapAnything
 from mapanything.utils.image import load_images
 from mapanything.utils import train_tools
 from nico.utils import mean_std_difference, create_student_original_teacher_side_by_side
+
+
+def _pil_to_rgb_uint8_np(pil_img, resolution: int = 1024) -> np.ndarray:
+    """Convert PIL image to resized RGB uint8 numpy array (H,W,3)."""
+    # PIL is imported indirectly via load_images; avoid hard import here.
+    img = pil_img.convert("RGB")
+    if img.size != (resolution, resolution):
+        img = img.resize((resolution, resolution))
+    arr = np.array(img)
+    if arr.dtype != np.uint8:
+        arr = arr.astype(np.uint8)
+    return arr
 
 # Enable TF32 precision if supported
 if hasattr(torch.backends.cuda, "matmul") and hasattr(
@@ -191,8 +204,13 @@ class DistillationDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
     
-    def _load_single_feature(self, img_path: str) -> torch.Tensor:
-        """Helper per caricare la feature di una singola immagine"""
+    def _load_single_feature(self, img_path: str) -> Dict:
+        """Helper per caricare la feature teacher di una singola immagine.
+
+        Backward-compatible:
+        - vecchio formato: Tensor (C,H,W) o (1,C,H,W)
+        - nuovo formato: dict {"encoder": Tensor, "decoder": Dict[str, Tensor]}
+        """
         rel_path = Path(img_path).relative_to(self.image_dir)
         # La feature ha la stessa struttura di cartelle dell'immagine ma estensione .pt
         feat_path = self.features_dir / rel_path.with_suffix(".pt")
@@ -205,10 +223,21 @@ class DistillationDataset(Dataset):
                 raise FileNotFoundError(f"Teacher features not found: {feat_path}")
             feat_path = feat_path_flat
 
-        teacher_feat = torch.load(feat_path, map_location="cpu", weights_only=False)
-        if teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
+        teacher_obj = torch.load(feat_path, map_location="cpu", weights_only=False)
+
+        # New dict format
+        if isinstance(teacher_obj, dict) and "encoder" in teacher_obj:
+            enc = teacher_obj["encoder"]
+            if isinstance(enc, torch.Tensor) and enc.ndim == 4 and enc.shape[0] == 1:
+                enc = enc.squeeze(0)
+            dec = teacher_obj.get("decoder", None)
+            return {"encoder": enc, "decoder": dec}
+
+        # Old tensor format
+        teacher_feat = teacher_obj
+        if isinstance(teacher_feat, torch.Tensor) and teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
             teacher_feat = teacher_feat.squeeze(0)
-        return teacher_feat # (C, H, W)
+        return {"encoder": teacher_feat, "decoder": None}
 
     def __getitem__(self, idx: int) -> Dict:
         """
@@ -234,14 +263,32 @@ class DistillationDataset(Dataset):
         
         try:
             teacher_feats_list = []
+            teacher_dec_list = []
             pil_images_list = []
             
             if self.mode == "precomputed":
                 for p in img_paths:
-                    feat = self._load_single_feature(p)
-                    teacher_feats_list.append(feat)
+                    teacher_obj = self._load_single_feature(p)
+                    teacher_feats_list.append(teacher_obj["encoder"])
+                    teacher_dec_list.append(teacher_obj.get("decoder", None))
                 # Stack features: (N_views, C, H, W)
                 teacher_features = torch.stack(teacher_feats_list, dim=0)
+                teacher_decoder = None
+                if any(d is not None for d in teacher_dec_list):
+                    # Stack decoder outputs per view (only keys present on first non-None)
+                    first = next(d for d in teacher_dec_list if d is not None)
+                    teacher_decoder = {}
+                    for k in first.keys():
+                        vals = []
+                        for d in teacher_dec_list:
+                            if d is None or k not in d:
+                                raise ValueError(f"Missing decoder key '{k}' in precomputed teacher file")
+                            v = d[k]
+                            # squeeze possible leading batch dim
+                            if isinstance(v, torch.Tensor) and v.ndim >= 1 and v.shape[0] == 1:
+                                v = v.squeeze(0)
+                            vals.append(v)
+                        teacher_decoder[k] = torch.stack(vals, dim=0)
                 pil_images = None
             else:
                 # Online mode: carica immagini PIL
@@ -249,11 +296,13 @@ class DistillationDataset(Dataset):
                 for p in img_paths:
                     pil_images_list.append(Image.open(p).convert("RGB"))
                 teacher_features = None
+                teacher_decoder = None
                 pil_images = pil_images_list
 
             return {
                 "image_paths": img_paths,          # List[str] (1 o N)
                 "teacher_features": teacher_features, # Tensor (N,C,H,W) o None
+                "teacher_decoder": teacher_decoder, # Dict[str, Tensor] o None
                 "pil_images": pil_images,          # List[PIL] o None
             }
 
@@ -274,9 +323,11 @@ def collate_fn_distillation(batch: List[Dict]) -> Dict:
     
     all_image_paths = []
     all_teacher_feats = []
+    all_teacher_dec = []
     all_pil_images = []
     
     has_features = batch[0]["teacher_features"] is not None
+    has_decoder = batch[0].get("teacher_decoder", None) is not None
     has_pil = batch[0]["pil_images"] is not None
     
     for item in batch:
@@ -286,6 +337,9 @@ def collate_fn_distillation(batch: List[Dict]) -> Dict:
         
         if has_features:
             all_teacher_feats.append(item["teacher_features"])
+
+        if has_decoder:
+            all_teacher_dec.append(item["teacher_decoder"])
         
         if has_pil:
             all_pil_images.extend(item["pil_images"])
@@ -297,23 +351,29 @@ def collate_fn_distillation(batch: List[Dict]) -> Dict:
         teacher_feats_tensor = torch.cat(all_teacher_feats, dim=0)
     else:
         teacher_feats_tensor = None
+
+    teacher_dec = None
+    if has_decoder:
+        # cat along views for each key
+        keys = list(all_teacher_dec[0].keys())
+        teacher_dec = {}
+        for k in keys:
+            teacher_dec[k] = torch.cat([d[k] for d in all_teacher_dec], dim=0)
         
     return {
         "image_paths": all_image_paths,       # Lista piatta di tutte le view nel batch
         "teacher_features": teacher_feats_tensor,
+        "teacher_decoder": teacher_dec,
         "pil_images": all_pil_images if has_pil else None,
     }
 
 class TeacherFeatureExtractor:
     """
     Wrapper per estrazione feature SAM2 con gestione memoria efficiente.
-    TeacherFeatureExtractor è un wrapper “di alto livello” che contiene self.extractor,
-    che è un SAM2FeatureExtractor, che a sua volta wrappa un ImageEncoder composto da trunk=Hiera e neck=FpnNeck.
     """
     def __init__(self, checkpoint_path: str, device: str = "cuda", augment_cfg: Optional[dict] = None):
-        from feature_extractor import load_sam2_feature_extractor
-        # extractor è un'istanza di SAM2FeatureExtractor che è a sua volta un wrapper che contiene image_encoder (trunk + neck)
-        self.extractor = load_sam2_feature_extractor(checkpoint_path, device) 
+        from feature_extractor_chat import load_sam2_feature_extractor
+        self.extractor = load_sam2_feature_extractor(checkpoint_path, device)
         self.device = device
         self.augment_cfg = augment_cfg or {}
         self._build_augment_pipelines()
@@ -338,7 +398,6 @@ class TeacherFeatureExtractor:
                 saturation=0.2,
                 hue=0.1
             )
-        
         def _gaussian_blur():
             return transforms.GaussianBlur(
                 kernel_size=5,
@@ -430,6 +489,276 @@ class TeacherFeatureExtractor:
         if hasattr(self.extractor, "to"):
             self.extractor.to(device)
         return self
+
+
+class TeacherFullSAM2Extractor:
+    """Teacher wrapper for full SAM2 (encoder + decoder).
+
+    - __call__ returns dict with keys: {"encoder": Tensor(B,256,64,64), "decoder": optional dict}
+    - decode runs frozen SAM2 decoder on given embeddings (keeps grad for inputs)
+    """
+
+    def __init__(self, checkpoint_path: str, device: str = "cuda", augment_cfg: Optional[dict] = None):
+        from feature_extractor_chat import load_sam2_full_teacher
+
+        self.teacher = load_sam2_full_teacher(checkpoint_path, device)
+        self.device = device
+        self.augment_cfg = augment_cfg or {}
+        self._build_augment_pipelines()
+        print(f"[Teacher] Loaded FULL SAM2 teacher (encoder+decoder) on {device}")
+
+    def _build_augment_pipelines(self):
+        # Reuse same augmentation policy as TeacherFeatureExtractor
+        if not self.augment_cfg.get("enabled", False):
+            self.augment_single = None
+            self.augment_shared = None
+            return
+
+        p_color = 0.75
+        p_blur = 0.05
+        p_gray = 0.05
+
+        def _color_jitter():
+            return transforms.ColorJitter(
+                brightness=0.3,
+                contrast=0.4,
+                saturation=0.2,
+                hue=0.1,
+            )
+
+        def _gaussian_blur():
+            return transforms.GaussianBlur(kernel_size=5, sigma=(0.1, 1.0))
+
+        def _make_pipeline():
+            ops = []
+            ops.append(transforms.RandomApply([_color_jitter()], p=p_color))
+            ops.append(transforms.RandomGrayscale(p=p_gray))
+            ops.append(transforms.RandomApply([_gaussian_blur()], p=p_blur))
+            return transforms.Compose(ops)
+
+        self.augment_shared = _make_pipeline()
+        self.augment_single = _make_pipeline()
+
+    def decode(self, image_embeddings: torch.Tensor, multimask_output: bool = False) -> Dict[str, torch.Tensor]:
+        return self.teacher.decode(image_embeddings, multimask_output=multimask_output)
+
+    @torch.no_grad()
+    def __call__(
+        self,
+        pil_images: List,
+        multi_view: bool = False,
+        debug_visualize: bool = False,
+        return_decoder: bool = False,
+        multimask_output: bool = False,
+    ) -> Dict:
+        import matplotlib.pyplot as plt
+        from datetime import datetime
+
+        use_aug = self.augment_cfg.get("enabled", False)
+
+        if debug_visualize and use_aug:
+            debug_dir = Path("debug_augmentation")
+            debug_dir.mkdir(exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            for idx, pil_img in enumerate(pil_images):
+                pil_img.save(debug_dir / f"{timestamp}_before_{idx:02d}.png")
+
+        if use_aug and multi_view and self.augment_shared is not None:
+            scene_seed = random.randint(0, 2**31 - 1)
+            augmented_imgs = []
+            for pil_img in pil_images:
+                torch.manual_seed(scene_seed)
+                random.seed(scene_seed)
+                augmented_imgs.append(self.augment_shared(pil_img))
+        else:
+            augmented_imgs = []
+            for pil_img in pil_images:
+                if use_aug and self.augment_single is not None:
+                    augmented_imgs.append(self.augment_single(pil_img))
+                else:
+                    augmented_imgs.append(pil_img)
+
+        if debug_visualize and use_aug:
+            for idx, aug_img in enumerate(augmented_imgs):
+                aug_img.save(debug_dir / f"{timestamp}_after_{idx:02d}.png")
+            n = len(pil_images)
+            fig, axes = plt.subplots(2, n, figsize=(4 * n, 8))
+            if n == 1:
+                axes = axes.reshape(2, 1)
+            for idx in range(n):
+                axes[0, idx].imshow(pil_images[idx])
+                axes[0, idx].set_title(f"Before #{idx}")
+                axes[0, idx].axis("off")
+                axes[1, idx].imshow(augmented_imgs[idx])
+                axes[1, idx].set_title(f"After #{idx}")
+                axes[1, idx].axis("off")
+            plt.tight_layout()
+            plt.savefig(debug_dir / f"{timestamp}_comparison.png", dpi=150)
+            plt.close()
+            print(f"[DEBUG] Salvate immagini in {debug_dir}/")
+
+        out = self.teacher(
+            augmented_imgs,
+            return_decoder=return_decoder,
+            multimask_output=multimask_output,
+        )
+        return out
+
+    def to(self, device):
+        self.device = device
+        if hasattr(self.teacher, "to"):
+            self.teacher.to(device)
+        return self
+
+
+class StudentSAM2Decoder(nn.Module):
+    """Trainable SAM-style prompt encoder + mask decoder to run on student embeddings."""
+
+    def __init__(self, prompt_encoder: nn.Module, mask_decoder: nn.Module):
+        super().__init__()
+        self.prompt_encoder = prompt_encoder
+        self.mask_decoder = mask_decoder
+
+    def forward(
+        self,
+        image_embeddings: torch.Tensor,
+        point_coords: torch.Tensor,
+        point_labels: torch.Tensor,
+        multimask_output: bool = False,
+    ) -> Dict[str, torch.Tensor]:
+        # point_coords: (B, N, 2) in input image pixel coords (0..image_size)
+        # point_labels: (B, N)
+        sparse_embeddings, dense_embeddings = self.prompt_encoder(
+            points=(point_coords, point_labels),
+            boxes=None,
+            masks=None,
+        )
+        low_res_masks, iou_pred, sam_tokens, obj_scores = self.mask_decoder(
+            image_embeddings=image_embeddings,
+            image_pe=self.prompt_encoder.get_dense_pe(),
+            sparse_prompt_embeddings=sparse_embeddings,
+            dense_prompt_embeddings=dense_embeddings,
+            multimask_output=multimask_output,
+            repeat_image=False,
+            high_res_features=None,
+        )
+        return {
+            "low_res_masks": low_res_masks,
+            "iou_pred": iou_pred,
+            "sam_tokens": sam_tokens,
+            "obj_scores": obj_scores,
+        }
+
+    @torch.no_grad()
+    def init_from_teacher(self, teacher_amg_model) -> None:
+        """Initialize weights from a teacher model exposing sam_prompt_encoder/sam_mask_decoder."""
+        self.prompt_encoder.load_state_dict(teacher_amg_model.sam_prompt_encoder.state_dict(), strict=True)
+        self.mask_decoder.load_state_dict(teacher_amg_model.sam_mask_decoder.state_dict(), strict=True)
+
+
+def _sample_amg_prompts_per_image(
+    amg,
+    pil_images: List,
+    device: torch.device,
+    points_per_image: int = 1,
+    image_size: int = 1024,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Generate foreground point prompts using SAM2AutomaticMaskGenerator.
+
+    Returns:
+      point_coords: (B, N, 2) float32
+      point_labels: (B, N) int64 (1=fg)
+
+    Note: for now N is fixed to points_per_image and points are selected by predicted_iou.
+    """
+    coords_out: List[np.ndarray] = []
+    labels_out: List[np.ndarray] = []
+
+    for pil in pil_images:
+        img_np = _pil_to_rgb_uint8_np(pil, resolution=image_size)
+        anns = amg.generate(img_np)
+        if len(anns) == 0:
+            # Fallback: center point
+            cx = image_size * 0.5
+            cy = image_size * 0.5
+            sel = [[cx, cy]]
+        else:
+            # Prefer high predicted_iou
+            anns_sorted = sorted(anns, key=lambda a: float(a.get("predicted_iou", 0.0)), reverse=True)
+            sel = []
+            for a in anns_sorted[: max(1, points_per_image)]:
+                # automatic_mask_generator stores a single point per mask in point_coords
+                pc = a.get("point_coords", None)
+                if pc is None or len(pc) == 0:
+                    continue
+                sel.append(pc[0])
+            if len(sel) == 0:
+                cx = image_size * 0.5
+                cy = image_size * 0.5
+                sel = [[cx, cy]]
+
+        # pad/truncate to points_per_image
+        while len(sel) < points_per_image:
+            sel.append(sel[-1])
+        sel = sel[:points_per_image]
+
+        coords_out.append(np.array(sel, dtype=np.float32))
+        labels_out.append(np.ones((points_per_image,), dtype=np.int64))
+
+    point_coords = torch.as_tensor(np.stack(coords_out, axis=0), device=device, dtype=torch.float32)
+    point_labels = torch.as_tensor(np.stack(labels_out, axis=0), device=device, dtype=torch.int64)
+    return point_coords, point_labels
+
+
+def decoder_distillation_loss(
+    student_dec: Dict[str, torch.Tensor],
+    teacher_dec: Dict[str, torch.Tensor],
+    tokens_weight: float = 1.0,
+    masks_weight: float = 0.0,
+    iou_weight: float = 0.0,
+    obj_weight: float = 0.0,
+    clamp_masks: bool = True,
+):
+    """Compute distillation loss between decoder outputs.
+
+    Shapes expected:
+    - sam_tokens: (B,1,256)
+    - low_res_masks: (B,M,256,256) where M is 1 or 3
+    - iou_pred: (B,M)
+    - obj_scores: (B,1)
+    """
+    loss = 0.0
+    details = {}
+
+    if tokens_weight > 0:
+        l = F.mse_loss(student_dec["sam_tokens"], teacher_dec["sam_tokens"])
+        loss = loss + tokens_weight * l
+        details["dec_tokens_mse"] = float(l.detach().cpu().item())
+
+    if masks_weight > 0:
+        s = student_dec["low_res_masks"]
+        t = teacher_dec["low_res_masks"]
+        if clamp_masks:
+            s = torch.clamp(s, -32.0, 32.0)
+            t = torch.clamp(t, -32.0, 32.0)
+        l = F.mse_loss(s, t)
+        loss = loss + masks_weight * l
+        details["dec_masks_mse"] = float(l.detach().cpu().item())
+
+    if iou_weight > 0:
+        l = F.mse_loss(student_dec["iou_pred"], teacher_dec["iou_pred"])
+        loss = loss + iou_weight * l
+        details["dec_iou_mse"] = float(l.detach().cpu().item())
+
+    if obj_weight > 0:
+        l = F.mse_loss(student_dec["obj_scores"], teacher_dec["obj_scores"])
+        loss = loss + obj_weight * l
+        details["dec_obj_mse"] = float(l.detach().cpu().item())
+
+    if isinstance(loss, float):
+        # no component enabled
+        loss = torch.zeros((), device=teacher_dec["sam_tokens"].device)
+    return loss, details
 
 # ==================== Loss Functions ====================
 class DistillationLoss(torch.nn.Module):
@@ -780,6 +1109,8 @@ def train_one_epoch_distillation(
     epoch: int,
     args,
     teacher_extractor: Optional[TeacherFeatureExtractor] = None,
+    teacher_amg_model: Optional[object] = None,
+    amg_generator: Optional[object] = None,
 ) -> Dict:
     """
     Train the model for one epoch on distillation task.
@@ -832,19 +1163,32 @@ def train_one_epoch_distillation(
         # Extract or load teacher features
         if mode == "precomputed":
             teacher_features = batch["teacher_features"].to(device, non_blocking=True)
+            teacher_decoder = batch.get("teacher_decoder", None)
+            if teacher_decoder is not None:
+                teacher_decoder = {k: v.to(device, non_blocking=True) for k, v in teacher_decoder.items()}
         else:  # online
             if teacher_extractor is None:
                 raise ValueError("teacher_extractor required for online mode but not provided")
             
             pil_images = batch["pil_images"]
             with torch.no_grad():
-                # PASSA multi_view per coerenza intra-scena
-                # teacher_features = teacher_extractor(pil_images, multi_view=args.multi_view_mode).to(device, non_blocking=True)
-                teacher_features = teacher_extractor(
-                    pil_images, 
-                    multi_view=args.multi_view_mode,
-                    # debug_visualize=(data_iter_step < 3 and epoch == 0)  # ← Primi 3 batch
-                ).to(device, non_blocking=True)
+                if getattr(args, "distill_decoder", False):
+                    teacher_out = teacher_extractor(
+                        pil_images,
+                        multi_view=args.multi_view_mode,
+                        return_decoder=True,
+                        multimask_output=getattr(args, "decoder_multimask_output", False),
+                    )
+                    teacher_features = teacher_out["encoder"].to(device, non_blocking=True)
+                    teacher_decoder = teacher_out.get("decoder", None)
+                    if teacher_decoder is not None:
+                        teacher_decoder = {k: v.to(device, non_blocking=True) for k, v in teacher_decoder.items()}
+                else:
+                    teacher_features = teacher_extractor(
+                        pil_images,
+                        multi_view=args.multi_view_mode,
+                    ).to(device, non_blocking=True)
+                    teacher_decoder = None
         
         # Forward pass to get student features
         student_features = forward_pass_distillation_unified(
@@ -869,6 +1213,102 @@ def train_one_epoch_distillation(
 
         # Compute loss
         loss, loss_details = criterion(student_features, teacher_features, mse_type=args.mse_type)
+
+        # Decoder distillation with a TRAINABLE student decoder + automatic prompts (AMG)
+        if getattr(args, "train_student_decoder", False):
+            base_model = model.module if hasattr(model, "module") else model
+            if not hasattr(base_model, "student_sam_decoder"):
+                raise ValueError("train_student_decoder=True but model has no student_sam_decoder")
+            if teacher_amg_model is None or amg_generator is None:
+                raise ValueError("train_student_decoder requires teacher_amg_model and amg_generator")
+
+            # We need images to generate prompts even in precomputed mode
+            pil_images = batch.get("pil_images", None)
+            if pil_images is None:
+                pil_images = load_images(image_paths)
+
+            point_coords, point_labels = _sample_amg_prompts_per_image(
+                amg=amg_generator,
+                pil_images=pil_images,
+                device=device,
+                points_per_image=getattr(args, "amg_points_per_image", 1),
+                image_size=getattr(args, "amg_image_size", 1024),
+            )
+
+            def _decode(prompt_encoder, mask_decoder, image_embeddings):
+                sparse_embeddings, dense_embeddings = prompt_encoder(
+                    points=(point_coords, point_labels),
+                    boxes=None,
+                    masks=None,
+                )
+                low_res_masks, iou_pred, sam_tokens, obj_scores = mask_decoder(
+                    image_embeddings=image_embeddings,
+                    image_pe=prompt_encoder.get_dense_pe(),
+                    sparse_prompt_embeddings=sparse_embeddings,
+                    dense_prompt_embeddings=dense_embeddings,
+                    multimask_output=getattr(args, "decoder_multimask_output", False),
+                    repeat_image=False,
+                    high_res_features=None,
+                )
+                return {
+                    "low_res_masks": low_res_masks,
+                    "iou_pred": iou_pred,
+                    "sam_tokens": sam_tokens,
+                    "obj_scores": obj_scores,
+                }
+
+            with torch.no_grad():
+                teacher_dec = _decode(
+                    teacher_amg_model.sam_prompt_encoder,
+                    teacher_amg_model.sam_mask_decoder,
+                    teacher_features,
+                )
+
+            student_dec = base_model.student_sam_decoder(
+                student_features,
+                point_coords=point_coords,
+                point_labels=point_labels,
+                multimask_output=getattr(args, "decoder_multimask_output", False),
+            )
+
+            dec_loss, dec_details = decoder_distillation_loss(
+                student_dec,
+                teacher_dec,
+                tokens_weight=getattr(args, "decoder_tokens_weight", 1.0),
+                masks_weight=getattr(args, "decoder_masks_weight", 0.0),
+                iou_weight=getattr(args, "decoder_iou_weight", 0.0),
+                obj_weight=getattr(args, "decoder_obj_weight", 0.0),
+            )
+            loss = loss + getattr(args, "decoder_loss_weight", 1.0) * dec_loss
+            loss_details.update({f"{k}": v for k, v in dec_details.items()})
+
+        # Legacy: decoder distillation by running the frozen TEACHER decoder on both embeddings
+        # (kept for backward-compat; disabled when training a student decoder)
+        if (not getattr(args, "train_student_decoder", False)) and getattr(args, "distill_decoder", False):
+            if not hasattr(teacher_extractor, "decode"):
+                raise ValueError("distill_decoder requires TeacherFullSAM2Extractor in online mode")
+
+            with torch.no_grad():
+                if teacher_decoder is None:
+                    teacher_decoder = teacher_extractor.decode(
+                        teacher_features,
+                        multimask_output=getattr(args, "decoder_multimask_output", False),
+                    )
+
+            student_decoder = teacher_extractor.decode(
+                student_features,
+                multimask_output=getattr(args, "decoder_multimask_output", False),
+            )
+            dec_loss, dec_details = decoder_distillation_loss(
+                student_decoder,
+                teacher_decoder,
+                tokens_weight=getattr(args, "decoder_tokens_weight", 1.0),
+                masks_weight=getattr(args, "decoder_masks_weight", 0.0),
+                iou_weight=getattr(args, "decoder_iou_weight", 0.0),
+                obj_weight=getattr(args, "decoder_obj_weight", 0.0),
+            )
+            loss = loss + getattr(args, "decoder_loss_weight", 1.0) * dec_loss
+            loss_details.update({f"{k}": v for k, v in dec_details.items()})
         mse_value = float(loss_details.get("mse_loss", 0.0))
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
@@ -935,6 +1375,16 @@ def train_one_epoch_distillation(
 
         # Clean up
         del loss, student_features, teacher_features
+        if getattr(args, "train_student_decoder", False):
+            try:
+                del student_dec, teacher_dec, point_coords, point_labels
+            except Exception:
+                pass
+        elif getattr(args, "distill_decoder", False):
+            try:
+                del student_decoder
+            except Exception:
+                pass
         
         # Update metrics
         metric_logger.update(epoch=epoch_f)
@@ -964,6 +1414,8 @@ def validate_one_epoch_distillation(
     epoch: int,
     args,
     teacher_extractor: Optional[TeacherFeatureExtractor] = None,
+    teacher_amg_model: Optional[object] = None,
+    amg_generator: Optional[object] = None,
 ) -> Dict:
     """
     Validate the model for one epoch on distillation task.
@@ -1007,9 +1459,25 @@ def validate_one_epoch_distillation(
         # Extract or load teacher features
         if mode == "precomputed":
             teacher_features = batch["teacher_features"].to(device, non_blocking=True)
+            teacher_decoder = batch.get("teacher_decoder", None)
+            if teacher_decoder is not None:
+                teacher_decoder = {k: v.to(device, non_blocking=True) for k, v in teacher_decoder.items()}
         else:
             pil_images = batch["pil_images"]
-            teacher_features = teacher_extractor(pil_images, multi_view=args.multi_view_mode).to(device, non_blocking=True)
+            if (not getattr(args, "train_student_decoder", False)) and getattr(args, "distill_decoder", False):
+                teacher_out = teacher_extractor(
+                    pil_images,
+                    multi_view=args.multi_view_mode,
+                    return_decoder=True,
+                    multimask_output=getattr(args, "decoder_multimask_output", False),
+                )
+                teacher_features = teacher_out["encoder"].to(device, non_blocking=True)
+                teacher_decoder = teacher_out.get("decoder", None)
+                if teacher_decoder is not None:
+                    teacher_decoder = {k: v.to(device, non_blocking=True) for k, v in teacher_decoder.items()}
+            else:
+                teacher_features = teacher_extractor(pil_images, multi_view=args.multi_view_mode).to(device, non_blocking=True)
+                teacher_decoder = None
         
         # Forward pass
         student_features = forward_pass_distillation_unified(
@@ -1034,6 +1502,91 @@ def validate_one_epoch_distillation(
         
         # Compute loss
         loss, loss_details = criterion(student_features, teacher_features, mse_type=args.mse_type)
+
+        if getattr(args, "train_student_decoder", False):
+            base_model = model.module if hasattr(model, "module") else model
+            if not hasattr(base_model, "student_sam_decoder"):
+                raise ValueError("train_student_decoder=True but model has no student_sam_decoder")
+            if teacher_amg_model is None or amg_generator is None:
+                raise ValueError("train_student_decoder requires teacher_amg_model and amg_generator")
+
+            pil_images_val = batch.get("pil_images", None)
+            if pil_images_val is None:
+                pil_images_val = load_images(image_paths)
+
+            point_coords, point_labels = _sample_amg_prompts_per_image(
+                amg=amg_generator,
+                pil_images=pil_images_val,
+                device=device,
+                points_per_image=getattr(args, "amg_points_per_image", 1),
+                image_size=getattr(args, "amg_image_size", 1024),
+            )
+
+            def _decode(prompt_encoder, mask_decoder, image_embeddings):
+                sparse_embeddings, dense_embeddings = prompt_encoder(
+                    points=(point_coords, point_labels),
+                    boxes=None,
+                    masks=None,
+                )
+                low_res_masks, iou_pred, sam_tokens, obj_scores = mask_decoder(
+                    image_embeddings=image_embeddings,
+                    image_pe=prompt_encoder.get_dense_pe(),
+                    sparse_prompt_embeddings=sparse_embeddings,
+                    dense_prompt_embeddings=dense_embeddings,
+                    multimask_output=getattr(args, "decoder_multimask_output", False),
+                    repeat_image=False,
+                    high_res_features=None,
+                )
+                return {
+                    "low_res_masks": low_res_masks,
+                    "iou_pred": iou_pred,
+                    "sam_tokens": sam_tokens,
+                    "obj_scores": obj_scores,
+                }
+
+            teacher_dec = _decode(
+                teacher_amg_model.sam_prompt_encoder,
+                teacher_amg_model.sam_mask_decoder,
+                teacher_features,
+            )
+            student_dec = base_model.student_sam_decoder(
+                student_features,
+                point_coords=point_coords,
+                point_labels=point_labels,
+                multimask_output=getattr(args, "decoder_multimask_output", False),
+            )
+            dec_loss, dec_details = decoder_distillation_loss(
+                student_dec,
+                teacher_dec,
+                tokens_weight=getattr(args, "decoder_tokens_weight", 1.0),
+                masks_weight=getattr(args, "decoder_masks_weight", 0.0),
+                iou_weight=getattr(args, "decoder_iou_weight", 0.0),
+                obj_weight=getattr(args, "decoder_obj_weight", 0.0),
+            )
+            loss = loss + getattr(args, "decoder_loss_weight", 1.0) * dec_loss
+            loss_details.update({f"{k}": v for k, v in dec_details.items()})
+
+        if (not getattr(args, "train_student_decoder", False)) and getattr(args, "distill_decoder", False) and hasattr(teacher_extractor, "decode"):
+            with torch.no_grad():
+                if teacher_decoder is None:
+                    teacher_decoder = teacher_extractor.decode(
+                        teacher_features,
+                        multimask_output=getattr(args, "decoder_multimask_output", False),
+                    )
+                student_decoder = teacher_extractor.decode(
+                    student_features,
+                    multimask_output=getattr(args, "decoder_multimask_output", False),
+                )
+                dec_loss, dec_details = decoder_distillation_loss(
+                    student_decoder,
+                    teacher_decoder,
+                    tokens_weight=getattr(args, "decoder_tokens_weight", 1.0),
+                    masks_weight=getattr(args, "decoder_masks_weight", 0.0),
+                    iou_weight=getattr(args, "decoder_iou_weight", 0.0),
+                    obj_weight=getattr(args, "decoder_obj_weight", 0.0),
+                )
+                loss = loss + getattr(args, "decoder_loss_weight", 1.0) * dec_loss
+                loss_details.update({f"{k}": v for k, v in dec_details.items()})
         loss_value = loss.detach().cpu().item()
         mse_value = float(loss_details.get("mse_loss", 0.0))
         cos_value = float(loss_details.get("cos_loss", 0.0))
@@ -1196,6 +1749,33 @@ def distill(args):
     print("{}".format(args).replace(", ", ",\n"))
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # ========== OPTIONAL: TEACHER MODEL FOR AMG PROMPTS ==========
+    teacher_amg_model = None
+    amg_generator = None
+    if getattr(args, "use_amg_prompts", False) or getattr(args, "train_student_decoder", False):
+        from feature_extractor_chat import load_sam2_amg_model
+        from sam2_minimal.automatic_mask_generator import SAM2AutomaticMaskGenerator
+
+        amg_image_size = getattr(args, "amg_image_size", 1024)
+        print(f"[INFO] Initializing SAM2 AMG teacher model from {SAM2_PATH} (image_size={amg_image_size})")
+        teacher_amg_model = load_sam2_amg_model(
+            checkpoint_path=SAM2_PATH,
+            device=str(device),
+            resolution=amg_image_size,
+        )
+        amg_generator = SAM2AutomaticMaskGenerator(
+            model=teacher_amg_model,
+            points_per_side=getattr(args, "amg_points_per_side", 16),
+            points_per_batch=getattr(args, "amg_points_per_batch", 64),
+            pred_iou_thresh=getattr(args, "amg_pred_iou_thresh", 0.8),
+            stability_score_thresh=getattr(args, "amg_stability_score_thresh", 0.95),
+            stability_score_offset=getattr(args, "amg_stability_score_offset", 1.0),
+            box_nms_thresh=getattr(args, "amg_box_nms_thresh", 0.7),
+            crop_n_layers=getattr(args, "amg_crop_n_layers", 0),
+            crop_nms_thresh=getattr(args, "amg_crop_nms_thresh", 0.7),
+            multimask_output=getattr(args, "decoder_multimask_output", False),
+        )
     
     seed = args.seed + global_rank
     torch.manual_seed(seed)
@@ -1217,11 +1797,19 @@ def distill(args):
             "p_grayscale": 0.05,         # 5% probabilità (UFFICIALE, era 0.2!)
             # NOTA: MapAnything NON usa RandomResizedCrop, rimosso da pipeline
         }
-        teacher_extractor = TeacherFeatureExtractor(
-            checkpoint_path=SAM2_PATH,
-            device=str(device),
-            augment_cfg=augment_cfg,
-        )
+        # If we're training a student decoder, we don't need TeacherFullSAM2Extractor here.
+        if (not getattr(args, "train_student_decoder", False)) and getattr(args, "distill_decoder", False):
+            teacher_extractor = TeacherFullSAM2Extractor(
+                checkpoint_path=SAM2_PATH,
+                device=str(device),
+                augment_cfg=augment_cfg,
+            )
+        else:
+            teacher_extractor = TeacherFeatureExtractor(
+                checkpoint_path=SAM2_PATH,
+                device=str(device),
+                augment_cfg=augment_cfg,
+            )
         teacher_extractor.to(device)
     
     # ========== BUILD DATALOADERS ==========
@@ -1363,6 +1951,35 @@ def distill(args):
     model_without_ddp = model
     print(f"Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
 
+    # ========== OPTIONAL: ADD TRAINABLE STUDENT SAM2 DECODER ==========
+    if getattr(args, "train_student_decoder", False):
+        from feature_extractor_chat import build_sam2_prompt_encoder, build_sam2_mask_decoder
+
+        if teacher_amg_model is None and getattr(args, "init_student_decoder_from_teacher", True):
+            raise ValueError("init_student_decoder_from_teacher=True requires teacher_amg_model")
+
+        amg_image_size = getattr(args, "amg_image_size", 1024)
+        prompt_encoder = build_sam2_prompt_encoder(
+            image_size=amg_image_size,
+            backbone_stride=16,
+            embed_dim=256,
+            mask_in_chans=16,
+        )
+        mask_decoder = build_sam2_mask_decoder(embed_dim=256)
+
+        student_sam_decoder = StudentSAM2Decoder(prompt_encoder=prompt_encoder, mask_decoder=mask_decoder).to(device)
+        if getattr(args, "init_student_decoder_from_teacher", True):
+            student_sam_decoder.init_from_teacher(teacher_amg_model)
+        model.student_sam_decoder = student_sam_decoder
+
+        # By default we train ONLY the mask decoder (prompt encoder frozen)
+        if not getattr(args, "train_student_prompt_encoder", False):
+            for p in model.student_sam_decoder.prompt_encoder.parameters():
+                p.requires_grad = False
+        print(
+            f"[INFO] Added student_sam_decoder to model (train_prompt_encoder={getattr(args, 'train_student_prompt_encoder', False)})"
+        )
+
     # ========== FREEZE STRATEGY ==========
     # 1. Freeze tutto inizialmente
     print("Freezing all parameters...")
@@ -1374,6 +1991,17 @@ def distill(args):
     for name, param in model.named_parameters():
         if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat"):
             param.requires_grad = True
+
+    # 2b. Unfreeze student decoder (optionally prompt encoder)
+    if getattr(args, "train_student_decoder", False):
+        print("Unfreezing student_sam_decoder...")
+        train_prompt = getattr(args, "train_student_prompt_encoder", False)
+        for name, param in model.named_parameters():
+            if name.startswith("student_sam_decoder."):
+                if (not train_prompt) and name.startswith("student_sam_decoder.prompt_encoder"):
+                    param.requires_grad = False
+                else:
+                    param.requires_grad = True
 
     # 3. Unfreeze ultimi N blocchi di info_sharing.self_attention_blocks (opzionale)
     num_info_sharing_blocks = getattr(args, 'num_info_sharing_blocks_unfreeze', 0)
@@ -1544,6 +2172,7 @@ def distill(args):
     head_params = []
     transformer_params = []
     encoder_params = []
+    decoder_params = []
     other_params = []
 
     for name, p in model.named_parameters():
@@ -1551,6 +2180,8 @@ def distill(args):
             continue
         if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat"):
             head_params.append(p)
+        elif name.startswith("student_sam_decoder"):
+            decoder_params.append(p)
         elif name.startswith("info_sharing"):
             transformer_params.append(p)
         elif name.startswith("encoder") and hasattr(args, 'dino_unfrozen_indices') and args.dino_unfrozen_indices:
@@ -1566,10 +2197,14 @@ def distill(args):
     lr_head = args.lr
     lr_encoder = args.lr * args.lr_encoder_scale
     lr_transformer = args.lr * args.lr_transformer_scale
+    lr_decoder = getattr(args, "lr_decoder", None)
+    if lr_decoder is None:
+        lr_decoder = args.lr * getattr(args, "lr_decoder_scale", 1.0)
 
     optimizer = optim.AdamW(
         [
             {"params": head_params, "lr": lr_head},
+            {"params": decoder_params, "lr": lr_decoder},
             {"params": transformer_params, "lr": lr_transformer},
             {"params": encoder_params, "lr": lr_encoder},
         ],
@@ -1578,6 +2213,7 @@ def distill(args):
         betas=(0.9, 0.95),
     )
     print(f"[OPT] Groups: head={sum(p.numel() for p in head_params):,} params @ LR {lr_head}, "
+          f"decoder={sum(p.numel() for p in decoder_params):,} params @ LR {lr_decoder}, "
           f"encoder={sum(p.numel() for p in encoder_params):,} params @ LR {lr_encoder}, "
           f"transformer={sum(p.numel() for p in transformer_params):,} params @ LR {lr_transformer}")
     
@@ -1643,6 +2279,16 @@ def distill(args):
             print("[INFO] Loaded sam2_compat state from checkpoint")
         elif hasattr(model_without_ddp, "sam2_compat"):
             print("[WARN] sam2_compat exists on model but not found in checkpoint. Using random initialization.")
+
+        # Load student_sam_decoder if present
+        if "student_sam_decoder" in ckpt and hasattr(model_without_ddp, "student_sam_decoder"):
+            try:
+                model_without_ddp.student_sam_decoder.load_state_dict(ckpt["student_sam_decoder"])
+                print("[INFO] Loaded student_sam_decoder state from checkpoint")
+            except Exception as e:
+                print(f"[WARN] Failed loading student_sam_decoder from checkpoint: {e}")
+        elif getattr(args, "train_student_decoder", False) and hasattr(model_without_ddp, "student_sam_decoder"):
+            print("[WARN] train_student_decoder=True but checkpoint has no student_sam_decoder. Using current initialization.")
 
         # Restore unfrozen info_sharing blocks if present
         if "info_sharing_blocks" in ckpt and hasattr(model_without_ddp, "info_sharing"):
@@ -1781,6 +2427,8 @@ def distill(args):
             epoch=epoch,
             args=args,
             teacher_extractor=teacher_extractor,
+            teacher_amg_model=teacher_amg_model,
+            amg_generator=amg_generator,
         )
         
         # Validation
@@ -1794,6 +2442,8 @@ def distill(args):
                 epoch=epoch,
                 args=args,
                 teacher_extractor=teacher_extractor,
+                teacher_amg_model=teacher_amg_model,
+                amg_generator=amg_generator,
             )
             
             # Check for new best
@@ -1929,6 +2579,10 @@ def save_checkpoint_distillation(
     if hasattr(model_without_ddp, "sam2_compat"):
         state["sam2_compat"] = model_without_ddp.sam2_compat.state_dict()
         # print("[INFO] sam2_compat state added to checkpoint")
+
+    # Save student SAM2 decoder if present
+    if hasattr(model_without_ddp, "student_sam_decoder"):
+        state["student_sam_decoder"] = model_without_ddp.student_sam_decoder.state_dict()
 
     # Save unfrozen info_sharing blocks if any
     if args is not None and hasattr(model_without_ddp, "info_sharing") and getattr(args, "info_sharing_unfrozen_indices", []):
@@ -2067,6 +2721,40 @@ def get_args_parser():
     parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
     parser.add_argument("--precomputed_features", action="store_true", help="Use precomputed features from disk")
     parser.add_argument("--no_augmentation", action="store_true", help="Disable data augmentation in online mode")
+
+    # SAM2 decoder distillation (optional; defaults keep current behavior)
+    parser.add_argument("--distill_decoder", action="store_true", help="Enable SAM2 decoder distillation by running frozen SAM2 decoder on teacher+student embeddings")
+    parser.add_argument("--decoder_multimask_output", action="store_true", help="Use multimask_output=True for SAM2 decoder (produces 3 masks)")
+    parser.add_argument("--decoder_loss_weight", type=float, default=1.0, help="Global weight for decoder distillation loss")
+    parser.add_argument("--decoder_tokens_weight", type=float, default=1.0, help="Weight for SAM2 decoder token MSE loss")
+    parser.add_argument("--decoder_masks_weight", type=float, default=0.0, help="Weight for SAM2 decoder low-res masks MSE loss")
+    parser.add_argument("--decoder_iou_weight", type=float, default=0.0, help="Weight for SAM2 decoder IoU prediction MSE loss")
+    parser.add_argument("--decoder_obj_weight", type=float, default=0.0, help="Weight for SAM2 decoder object-score logits MSE loss")
+
+    # Trainable student decoder + automatic prompts (SAM2AutomaticMaskGenerator)
+    parser.add_argument("--train_student_decoder", action="store_true", help="Add a trainable SAM2-style decoder to the student and distill it from the teacher")
+    parser.add_argument(
+        "--init_student_decoder_from_teacher",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Initialize student decoder weights from teacher checkpoint (default: True)",
+    )
+    parser.add_argument("--train_student_prompt_encoder", action="store_true", help="Also train the student prompt encoder (default: only train mask decoder)")
+
+    parser.add_argument("--use_amg_prompts", action="store_true", help="Use SAM2AutomaticMaskGenerator to generate point prompts for decoder distillation")
+    parser.add_argument("--amg_image_size", type=int, default=1024, help="Image size used for AMG + prompt coordinate frame")
+    parser.add_argument("--amg_points_per_image", type=int, default=1, help="How many AMG point prompts to sample per image")
+    parser.add_argument("--amg_points_per_side", type=int, default=16, help="AMG grid resolution (points per side)")
+    parser.add_argument("--amg_points_per_batch", type=int, default=64, help="AMG points per batch")
+    parser.add_argument("--amg_pred_iou_thresh", type=float, default=0.8, help="AMG predicted IoU threshold")
+    parser.add_argument("--amg_stability_score_thresh", type=float, default=0.95, help="AMG stability score threshold")
+    parser.add_argument("--amg_stability_score_offset", type=float, default=1.0, help="AMG stability score offset")
+    parser.add_argument("--amg_box_nms_thresh", type=float, default=0.7, help="AMG box NMS threshold")
+    parser.add_argument("--amg_crop_n_layers", type=int, default=0, help="AMG crop layers (0 disables cropping)")
+    parser.add_argument("--amg_crop_nms_thresh", type=float, default=0.7, help="AMG crop NMS threshold")
+
+    parser.add_argument("--lr_decoder", type=float, default=None, help="Absolute LR for student decoder params (overrides --lr_decoder_scale)")
+    parser.add_argument("--lr_decoder_scale", type=float, default=1.0, help="Scale factor for decoder LR relative to --lr")
     
     # Multi-view
     parser.add_argument("--multi_view_mode", action="store_true", help="Enable multi-view mode (cross-attention between views)")
