@@ -617,7 +617,6 @@ def forward_pass_distillation_unified(
         ... )
         >>> features.shape  # (2, 256, 64, 64) - CON cross-attention
     """
-    from mapanything.utils.image import load_images
     
     amp_dtype_torch = torch.bfloat16 if amp_dtype == "bf16" else torch.float16
     
