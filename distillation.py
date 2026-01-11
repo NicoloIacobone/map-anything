@@ -802,7 +802,7 @@ def train_one_epoch_distillation(
         if getattr(args, 'distill_decoder', False) and sam_prompt_encoder_teacher is not None:
             # Generate point prompts for decoder
             point_coords, point_labels = _generate_point_prompts_grid(
-                batch_size=student_features.shape[0],
+                batch_size=teacher_features.shape[0],
                 image_size=1024,
                 points_per_side=getattr(args, 'amg_points_per_side', 3),
                 device=device,
@@ -816,13 +816,13 @@ def train_one_epoch_distillation(
                     masks=None,
                 )
                 image_pe = sam_prompt_encoder_teacher.get_dense_pe().to(
-                    device=student_features.device,
-                    dtype=student_features.dtype
+                    device=teacher_features.device,
+                    dtype=teacher_features.dtype
                 )
                 
                 # Teacher decoder forward (frozen)
                 t_masks, t_iou, t_tokens, t_obj = sam_mask_decoder_teacher(
-                    image_embeddings=student_features,  # Use student features!
+                    image_embeddings=teacher_features,
                     image_pe=image_pe,
                     sparse_prompt_embeddings=sparse_emb,
                     dense_prompt_embeddings=dense_emb,
