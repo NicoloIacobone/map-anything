@@ -73,8 +73,8 @@ def setup_runtime_paths(args):
     import torch.hub as _torch_hub
     global OUT_DIR, BASE_DIR, DATASET, SAM2_PATH, CONFIG_JSON_PATH
     global TRAIN_SPLIT, VAL_SPLIT
-    global IMAGES_DIRNAME, FEATURES_DIRNAME
-    global TRAIN_IMAGES_DIR, VAL_IMAGES_DIR, TRAIN_FEATURES_DIR, VAL_FEATURES_DIR
+    global IMAGES_DIRNAME
+    global TRAIN_IMAGES_DIR, VAL_IMAGES_DIR
     global run_cluster
 
     run_cluster = not sys.stdout.isatty()
@@ -90,15 +90,11 @@ def setup_runtime_paths(args):
         BASE_DIR = "/cluster/scratch/niacobone/distillation/dataset"
         SAM2_PATH = "/cluster/scratch/niacobone/sam2/checkpoints/sam2.1_hiera_large.pt"
         CONFIG_JSON_PATH = "/cluster/scratch/niacobone/.cache/huggingface/hub/models--facebook--map-anything/snapshots/562de9ff7077addd5780415661c5fb031eb8003e"
-        # CONFIG_JSON_PATH = f"/cluster/scratch/niacobone/.cache/huggingface/hub/models--facebook--map-anything/snapshots/{STABLE_REV}"
     else:
         OUT_DIR = "/scratch2/nico/distillation/output"
         BASE_DIR = "/scratch2/nico/distillation/dataset"
         SAM2_PATH = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
         CONFIG_JSON_PATH = "/scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/562de9ff7077addd5780415661c5fb031eb8003e"
-        # CONFIG_JSON_PATH = f"/cluster/scratch/niacobone/.cache/huggingface/hub/models--facebook--map-anything/snapshots/{STABLE_REV}"
-    
-    # CONFIG_JSON_PATH = os.path.join(CONFIG_JSON_PATH, "config.json")
 
     # Usa args.dataset
     DATASET = args.dataset  # "coco2017" o "ETH3D"
@@ -111,19 +107,14 @@ def setup_runtime_paths(args):
         VAL_SPLIT = "val"
 
     IMAGES_DIRNAME = "images"
-    FEATURES_DIRNAME = "features"
 
     BASE_DIR = BASE_DIR + f"/{DATASET}"
     TRAIN_IMAGES_DIR = os.path.join(BASE_DIR, IMAGES_DIRNAME, TRAIN_SPLIT)
     VAL_IMAGES_DIR = os.path.join(BASE_DIR, IMAGES_DIRNAME, VAL_SPLIT)
-    TRAIN_FEATURES_DIR = os.path.join(BASE_DIR, FEATURES_DIRNAME, TRAIN_SPLIT)
-    VAL_FEATURES_DIR = os.path.join(BASE_DIR, FEATURES_DIRNAME, VAL_SPLIT)
     CONFIG_JSON_PATH = os.path.join(CONFIG_JSON_PATH, "config.json")
 
     print(f"[INFO] Using TRAIN_IMAGES_DIR: {TRAIN_IMAGES_DIR}")
     print(f"[INFO] Using VAL_IMAGES_DIR: {VAL_IMAGES_DIR}")
-    print(f"[INFO] Using TRAIN_FEATURES_DIR: {TRAIN_FEATURES_DIR}")
-    print(f"[INFO] Using VAL_FEATURES_DIR: {VAL_FEATURES_DIR}")
 
 # ==================== Dataset Classes ====================
 class DistillationDataset(Dataset):
@@ -134,7 +125,6 @@ class DistillationDataset(Dataset):
     def __init__(
         self,
         image_dir: str,
-        features_dir: Optional[str] = None,
         teacher_extractor: Optional[callable] = None,
         image_paths: Optional[List[str]] = None,
         transform=None,
@@ -143,7 +133,6 @@ class DistillationDataset(Dataset):
         split: str = "train",
     ):
         self.image_dir = Path(image_dir)
-        self.features_dir = Path(features_dir) if features_dir else None
         self.teacher_extractor = teacher_extractor
         self.transform = transform
         self.multi_view_mode = multi_view_mode
@@ -151,10 +140,8 @@ class DistillationDataset(Dataset):
         self.is_train = "train" in split.lower()
         
         # Validation
-        if self.features_dir is None and self.teacher_extractor is None:
-            raise ValueError("Either features_dir or teacher_extractor must be provided")
-        
-        self.mode = "precomputed" if self.features_dir else "online"
+        if self.teacher_extractor is None:
+            raise ValueError("Teacher_extractor must be provided")
         
         # Discovery dei samples
         self.samples = [] 
@@ -187,10 +174,7 @@ class DistillationDataset(Dataset):
                 print(f"[Dataset] Mode: SINGLE-VIEW (Images)")
                 print(f"[Dataset] Found {len(self.samples)} images in {image_dir}")
 
-        if self.mode == "precomputed":
-            print(f"[Dataset] Using pre-computed features from {self.features_dir}")
-        else:
-            print(f"[Dataset] Using online feature extraction with teacher model")
+        print(f"[Dataset] Using online feature extraction with teacher model")
     
     @staticmethod
     def _is_image_file(name: str) -> bool:
@@ -198,25 +182,6 @@ class DistillationDataset(Dataset):
     
     def __len__(self) -> int:
         return len(self.samples)
-    
-    def _load_single_feature(self, img_path: str) -> torch.Tensor:
-        """Helper per caricare la feature di una singola immagine"""
-        rel_path = Path(img_path).relative_to(self.image_dir)
-        # La feature ha la stessa struttura di cartelle dell'immagine ma estensione .pt
-        feat_path = self.features_dir / rel_path.with_suffix(".pt")
-        
-        if not feat_path.exists():
-             # Fallback: prova flat se non trova struttura ricorsiva
-            feat_path_flat = self.features_dir / Path(img_path).stem
-            feat_path_flat = feat_path_flat.with_suffix(".pt")
-            if not feat_path_flat.exists():
-                raise FileNotFoundError(f"Teacher features not found: {feat_path}")
-            feat_path = feat_path_flat
-
-        teacher_feat = torch.load(feat_path, map_location="cpu", weights_only=False)
-        if teacher_feat.ndim == 4 and teacher_feat.shape[0] == 1:
-            teacher_feat = teacher_feat.squeeze(0)
-        return teacher_feat # (C, H, W)
 
     def __getitem__(self, idx: int) -> Dict:
         """
@@ -241,23 +206,14 @@ class DistillationDataset(Dataset):
         # -----------------------------------
         
         try:
-            teacher_feats_list = []
+            # Online mode: carica immagini PIL
             pil_images_list = []
-            
-            if self.mode == "precomputed":
-                for p in img_paths:
-                    feat = self._load_single_feature(p)
-                    teacher_feats_list.append(feat)
-                # Stack features: (N_views, C, H, W)
-                teacher_features = torch.stack(teacher_feats_list, dim=0)
-                pil_images = None
-            else:
-                # Online mode: carica immagini PIL
-                from PIL import Image
-                for p in img_paths:
-                    pil_images_list.append(Image.open(p).convert("RGB"))
-                teacher_features = None
-                pil_images = pil_images_list
+
+            from PIL import Image
+            for p in img_paths:
+                pil_images_list.append(Image.open(p).convert("RGB"))
+            teacher_features = None
+            pil_images = pil_images_list
 
             return {
                 "image_paths": img_paths,          # List[str] (1 o N)
@@ -523,7 +479,6 @@ class DistillationLoss(torch.nn.Module):
 # ==================== Data Loaders ====================
 def build_distillation_dataloader(
     image_dir: str,
-    features_dir: Optional[str] = None,
     teacher_extractor: Optional[TeacherFeatureExtractor] = None,
     batch_size: int = 1,
     num_workers: int = 4,
@@ -540,8 +495,7 @@ def build_distillation_dataloader(
     
     Args:
         image_dir: Directory containing images
-        features_dir: Directory containing teacher features (None for online mode)
-        teacher_extractor: TeacherFeatureExtractor instance (required if features_dir=None)
+        teacher_extractor: TeacherFeatureExtractor instance
         batch_size: Batch size per GPU
         num_workers: Number of worker processes
         shuffle: Whether to shuffle the dataset (ignored if distributed=True)
@@ -550,11 +504,10 @@ def build_distillation_dataloader(
         distributed: Whether to use DistributedSampler for multi-GPU training
     
     Returns:
-        DataLoader per distillazione con supporto pre-computed/online
+        DataLoader per distillazione
     """
     dataset = DistillationDataset(
         image_dir=image_dir,
-        features_dir=features_dir,
         teacher_extractor=teacher_extractor,
         image_paths=image_paths,
         multi_view_mode=multi_view_mode,
@@ -654,85 +607,6 @@ def forward_pass_distillation_unified(
             base_model = model.module if hasattr(model, "module") else model
             student_features_single = getattr(base_model, "_last_feat2_8x", None)
 
-            ############## DEBUG VISUALIZZAZIONE PCA ##############
-            # encoder_features = getattr(base_model, "_last_encoder_features", None)
-            # print(f"[DEBUG] student_features_single shape: {student_features_single.shape if student_features_single is not None else 'None'}")
-            # print(f"[DEBUG] encoder_features shape: {encoder_features.shape if encoder_features is not None else 'None'}")
-            # # Resize encoder features to match student spatial resolution
-            # encoder_resized = F.interpolate(
-            #     encoder_features,
-            #     size=student_features_single.shape[-2:],  # (64, 64)
-            #     mode="bilinear",
-            #     align_corners=False
-            # )
-
-            # self_dense_input = getattr(base_model, "_nico_dense_head_inputs", None)
-
-            # self_dense_input[0] = F.interpolate(
-            #     self_dense_input[0],
-            #     size=student_features_single.shape[-2:],  # (64, 64)
-            #     mode="bilinear",
-            #     align_corners=False
-            # )
-            # self_dense_input[1] = F.interpolate(
-            #     self_dense_input[1],
-            #     size=student_features_single.shape[-2:],  # (64, 64)
-            #     mode="bilinear",
-            #     align_corners=False
-            # )
-            # self_dense_input[2] = F.interpolate(
-            #     self_dense_input[2],
-            #     size=student_features_single.shape[-2:],  # (64, 64)
-            #     mode="bilinear",
-            #     align_corners=False
-            # )
-            # self_dense_input[3] = F.interpolate(
-            #     self_dense_input[3],
-            #     size=student_features_single.shape[-2:],  # (64, 64)
-            #     mode="bilinear",
-            #     align_corners=False
-            # )
-            
-            # Project encoder channels (1024) to student channels (256)
-            # Simple average pooling over channel groups
-            # B, C_enc, H, W = encoder_resized.shape
-            # C_student = student_features_single.shape[1]
-            # group_size = C_enc // C_student  # 1024 // 256 = 4
-            
-            # encoder_projected = encoder_resized.reshape(B, C_student, group_size, H, W).mean(dim=2)
-            # dense_0 = self_dense_input[0].reshape(B, C_student, group_size, H, W).mean(dim=2)
-            # dense_1 = self_dense_input[1].reshape(B, C_student, group_size, H, W).mean(dim=2)
-            # dense_2 = self_dense_input[2].reshape(B, C_student, group_size, H, W).mean(dim=2)
-            # dense_3 = self_dense_input[3].reshape(B, C_student, group_size, H, W).mean(dim=2)
-
-            # Now encoder_projected is (1, 256, 64, 64) - same shape as student
-            # save_pca_visualizations(
-            #         student_features=student_features_single,
-            #         teacher_features=encoder_projected,
-            #         image_paths=image_paths,
-            #         epoch=1,
-            #         output_dir="/scratch2/nico/distillation/output/test_dino",
-            #     )
-            # print("fatto 1")
-            # save_pca_visualizations(
-            #         student_features=dense_0,
-            #         teacher_features=dense_1,
-            #         image_paths=image_paths,
-            #         epoch=2,
-            #         output_dir="/scratch2/nico/distillation/output/test_dino",
-            #     )
-            # print("fatto 2")
-            # save_pca_visualizations(
-            #         student_features=dense_2,
-            #         teacher_features=dense_3,
-            #         image_paths=image_paths,
-            #         epoch=3,
-            #         output_dir="/scratch2/nico/distillation/output/test_dino",
-            #     )
-            # print("fatto 3")
-
-            ######################################################
-
             if student_features_single is None:
                 raise KeyError(
                     "Student features not found on model (_last_feat2_8x). "
@@ -799,7 +673,7 @@ def train_one_epoch_distillation(
         device: Device to run on
         epoch: Current epoch number
         args: Configuration namespace
-        teacher_extractor: TeacherFeatureExtractor for online mode (None if precomputed)
+        teacher_extractor: TeacherFeatureExtractor instance
     
     Returns:
         Dictionary of averaged training metrics
@@ -811,9 +685,6 @@ def train_one_epoch_distillation(
     
     accum_iter = args.accum_iter
     optimizer.zero_grad()
-
-    # Detect mode from first batch
-    mode = None
     
     total_samples = 0
     sum_loss = 0.0
@@ -826,32 +697,24 @@ def train_one_epoch_distillation(
     for data_iter_step, batch in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, header)
     ):
-        # Auto-detect mode from first batch
-        if mode is None:
-            mode = "precomputed" if batch["teacher_features"] is not None else "online"
-            print(f"[Train] Feature extraction mode: {mode.upper()}")
         
         epoch_f = epoch + data_iter_step / max(1, len(data_loader))
         
         # Get data
         image_paths = batch["image_paths"]
         
-        # Extract or load teacher features
-        if mode == "precomputed":
-            teacher_features = batch["teacher_features"].to(device, non_blocking=True)
-        else:  # online
-            if teacher_extractor is None:
-                raise ValueError("teacher_extractor required for online mode but not provided")
-            
-            pil_images = batch["pil_images"]
-            with torch.no_grad():
-                # PASSA multi_view per coerenza intra-scena
-                # teacher_features = teacher_extractor(pil_images, multi_view=args.multi_view_mode).to(device, non_blocking=True)
-                teacher_features = teacher_extractor(
-                    pil_images, 
-                    multi_view=args.multi_view_mode,
-                    # debug_visualize=(data_iter_step < 3 and epoch == 0)  # ← Primi 3 batch
-                ).to(device, non_blocking=True)
+        if teacher_extractor is None:
+            raise ValueError("teacher_extractor required but not provided")
+        
+        pil_images = batch["pil_images"]
+        with torch.no_grad():
+            # PASSA multi_view per coerenza intra-scena
+            # teacher_features = teacher_extractor(pil_images, multi_view=args.multi_view_mode).to(device, non_blocking=True)
+            teacher_features = teacher_extractor(
+                pil_images, 
+                multi_view=args.multi_view_mode,
+                # debug_visualize=(data_iter_step < 3 and epoch == 0)  # ← Primi 3 batch
+            ).to(device, non_blocking=True)
         
         # Forward pass to get student features
         student_features = forward_pass_distillation_unified(
@@ -982,7 +845,7 @@ def validate_one_epoch_distillation(
         device: Device to run on
         epoch: Current epoch number
         args: Configuration namespace
-        teacher_extractor: TeacherFeatureExtractor for online mode
+        teacher_extractor: TeacherFeatureExtractor instance
     
     Returns:
         Dictionary of validation metrics
@@ -992,7 +855,6 @@ def validate_one_epoch_distillation(
     metric_logger.meters = defaultdict(lambda: train_tools.SmoothedValue(window_size=int(1e6)))
     header = f"Distillation Validation: [{epoch}]"
     
-    mode = None
     total_samples = 0
     sum_loss = 0.0
     sum_mse = 0.0
@@ -1004,20 +866,12 @@ def validate_one_epoch_distillation(
     for batch_idx, batch in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, header)
     ):
-        # Auto-detect mode
-        if mode is None:
-            mode = "precomputed" if batch["teacher_features"] is not None else "online"
-            print(f"[Val] Feature extraction mode: {mode.upper()}")
         
         image_paths = batch["image_paths"]
         
-        # Extract or load teacher features
-        if mode == "precomputed":
-            teacher_features = batch["teacher_features"].to(device, non_blocking=True)
-        else:
-            pil_images = batch["pil_images"]
-            teacher_features = teacher_extractor(pil_images, multi_view=args.multi_view_mode).to(device, non_blocking=True)
-        
+        pil_images = batch["pil_images"]
+        teacher_features = teacher_extractor(pil_images, multi_view=args.multi_view_mode).to(device, non_blocking=True)
+    
         # Forward pass
         student_features = forward_pass_distillation_unified(
             model=model,
@@ -1213,23 +1067,23 @@ def distill(args):
     if run_cluster and getattr(args, "print_freq", 10) < 200:
         args.print_freq = 200
 
-    # ========== INITIALIZE TEACHER EXTRACTOR (if online mode) ==========
+    # ========== INITIALIZE TEACHER EXTRACTOR ==========
     teacher_extractor = None
-    if not args.precomputed_features:
-        print(f"[INFO] Initializing online teacher feature extractor from {SAM2_PATH}")
-        augment_cfg = {
-            "enabled": not getattr(args, "no_augmentation", False),
-            "p_color_jitter": 0.75,     # 75% probabilità (UFFICIALE MapAnything)
-            "p_blur": 0.05,              # 5% probabilità (UFFICIALE, era 0.5!)
-            "p_grayscale": 0.05,         # 5% probabilità (UFFICIALE, era 0.2!)
-            # NOTA: MapAnything NON usa RandomResizedCrop, rimosso da pipeline
-        }
-        teacher_extractor = TeacherFeatureExtractor(
-            checkpoint_path=SAM2_PATH,
-            device=str(device),
-            augment_cfg=augment_cfg,
-        )
-        teacher_extractor.to(device)
+
+    print(f"[INFO] Initializing online teacher feature extractor from {SAM2_PATH}")
+    augment_cfg = {
+        "enabled": not getattr(args, "no_augmentation", False),
+        "p_color_jitter": 0.75,     # 75% probabilità (UFFICIALE MapAnything)
+        "p_blur": 0.05,              # 5% probabilità (UFFICIALE, era 0.5!)
+        "p_grayscale": 0.05,         # 5% probabilità (UFFICIALE, era 0.2!)
+        # NOTA: MapAnything NON usa RandomResizedCrop, rimosso da pipeline
+    }
+    teacher_extractor = TeacherFeatureExtractor(
+        checkpoint_path=SAM2_PATH,
+        device=str(device),
+        augment_cfg=augment_cfg,
+    )
+    teacher_extractor.to(device)
     
     # ========== BUILD DATALOADERS ==========
     
@@ -1249,7 +1103,6 @@ def distill(args):
     
     data_loader_train = build_distillation_dataloader(
         image_dir=TRAIN_IMAGES_DIR,
-        features_dir=TRAIN_FEATURES_DIR if args.precomputed_features else None,
         teacher_extractor=teacher_extractor,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
@@ -1285,7 +1138,6 @@ def distill(args):
     
     data_loader_val = build_distillation_dataloader(
         image_dir=VAL_IMAGES_DIR,
-        features_dir=VAL_FEATURES_DIR if args.precomputed_features else None,
         teacher_extractor=teacher_extractor,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
@@ -1342,14 +1194,7 @@ def distill(args):
             #     config_after = json.load(f)
             # print("[DEBUG] Config content (after save, read back):")
             # print(json.dumps(config_after, indent=2))
-
-    # if global_rank == 0:
-    #     model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
-    # if torch.distributed.is_initialized():
-    #     torch.distributed.barrier()
-    # if global_rank != 0:
-    #     model = MapAnything.from_pretrained(args.model_name, strict=False).to(device)
-
+            
     if global_rank == 0:
         model = MapAnything.from_pretrained(
             args.model_name,
@@ -2072,8 +1917,7 @@ def get_args_parser():
     parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
     parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging")
     parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
-    parser.add_argument("--precomputed_features", action="store_true", help="Use precomputed features from disk")
-    parser.add_argument("--no_augmentation", action="store_true", help="Disable data augmentation in online mode")
+    parser.add_argument("--no_augmentation", action="store_true", help="Disable data augmentation")
     
     # Multi-view
     parser.add_argument("--multi_view_mode", action="store_true", help="Enable multi-view mode (cross-attention between views)")
