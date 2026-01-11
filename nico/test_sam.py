@@ -1,6 +1,6 @@
 import numpy as np
 import os
-from feature_extractor import load_sam2_feature_extractor
+from sam2_builder import load_sam2_feature_extractor
 import torch
 
 from PIL import Image

@@ -301,7 +301,7 @@ class TeacherFeatureExtractor:
     Wrapper per estrazione feature SAM2 con gestione memoria efficiente.
     """
     def __init__(self, checkpoint_path: str, device: str = "cuda", augment_cfg: Optional[dict] = None):
-        from feature_extractor import load_sam2_feature_extractor
+        from sam2_builder import load_sam2_feature_extractor
         self.extractor = load_sam2_feature_extractor(checkpoint_path, device)
         self.device = device
         self.augment_cfg = augment_cfg or {}

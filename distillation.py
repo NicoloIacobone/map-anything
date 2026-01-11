@@ -54,6 +54,14 @@ from mapanything.utils.image import load_images
 from mapanything.utils import train_tools
 from nico.utils import mean_std_difference, create_student_original_teacher_side_by_side
 
+from sam2_minimal.modeling.sam.prompt_encoder import PromptEncoder
+from sam2_minimal.modeling.sam.mask_decoder import MaskDecoder
+from sam2_builder import (
+    load_sam2_feature_extractor,
+    load_sam2_teacher_prompt_and_decoder,
+    build_sam_mask_decoder,
+)
+
 # Enable TF32 precision if supported
 if hasattr(torch.backends.cuda, "matmul") and hasattr(
     torch.backends.cuda.matmul, "allow_tf32"
@@ -311,7 +319,6 @@ class TeacherFeatureExtractor:
     che è un SAM2FeatureExtractor, che a sua volta wrappa un ImageEncoder composto da trunk=Hiera e neck=FpnNeck.
     """
     def __init__(self, checkpoint_path: str, device: str = "cuda", augment_cfg: Optional[dict] = None):
-        from feature_extractor import load_sam2_feature_extractor
         # extractor è un'istanza di SAM2FeatureExtractor che è a sua volta un wrapper che contiene image_encoder (trunk + neck)
         self.extractor = load_sam2_feature_extractor(checkpoint_path, device) 
         self.device = device
