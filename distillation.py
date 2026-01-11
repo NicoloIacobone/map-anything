@@ -26,12 +26,14 @@ from typing import Dict, List, Optional, Tuple
 from torchvision import transforms
 
 import numpy as np
-import os
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 import torch.optim as optim
+import json
+import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset
+from PIL import Image
 
 # Optional: psutil for CPU memory monitoring
 try:
@@ -209,7 +211,6 @@ class DistillationDataset(Dataset):
             # Online mode: carica immagini PIL
             pil_images_list = []
 
-            from PIL import Image
             for p in img_paths:
                 pil_images_list.append(Image.open(p).convert("RGB"))
             teacher_features = None
@@ -321,8 +322,6 @@ class TeacherFeatureExtractor:
     @torch.no_grad()
     def __call__(self, pil_images: List, multi_view: bool = False, debug_visualize: bool = False) -> torch.Tensor:
         """Estrae feature con augmentation e opzionale debug visualizzazione."""
-        import matplotlib.pyplot as plt
-        from datetime import datetime
         
         features = []
         use_aug = self.augment_cfg.get("enabled", False)
@@ -637,16 +636,7 @@ def forward_pass_distillation_unified(
         # Estrai feature (già tutte in un batch)
         base_model = model.module if hasattr(model, "module") else model
         student_features = getattr(base_model, "_last_feat2_8x", None)
-        ############## DEBUG VISUALIZZAZIONE PCA ##############
-        # encoder_features = getattr(base_model, "_last_encoder_features", None)
-        # save_pca_visualizations(
-        #         student_features=student_features,
-        #         teacher_features=encoder_features,
-        #         image_paths=image_paths,
-        #         epoch=1,
-        #         output_dir="/scratch2/nico/distillation/output/test_dino",
-        #     )
-        ######################################################
+
         if student_features is None:
             raise KeyError("Student features not found (_last_feat2_8x)")
         
@@ -709,7 +699,6 @@ def train_one_epoch_distillation(
         pil_images = batch["pil_images"]
         with torch.no_grad():
             # PASSA multi_view per coerenza intra-scena
-            # teacher_features = teacher_extractor(pil_images, multi_view=args.multi_view_mode).to(device, non_blocking=True)
             teacher_features = teacher_extractor(
                 pil_images, 
                 multi_view=args.multi_view_mode,
@@ -787,10 +776,6 @@ def train_one_epoch_distillation(
             if args.clip_grad > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
             optimizer.step()
-            # Optional: interactive LR inspection with pdb (halts execution)
-            # if getattr(args, "debug_pdb_lr", False):
-            #     import pdb
-            #     pdb.set_trace()
             optimizer.zero_grad()
 
         # Accumulate weighted sums
@@ -1073,10 +1058,9 @@ def distill(args):
     print(f"[INFO] Initializing online teacher feature extractor from {SAM2_PATH}")
     augment_cfg = {
         "enabled": not getattr(args, "no_augmentation", False),
-        "p_color_jitter": 0.75,     # 75% probabilità (UFFICIALE MapAnything)
-        "p_blur": 0.05,              # 5% probabilità (UFFICIALE, era 0.5!)
-        "p_grayscale": 0.05,         # 5% probabilità (UFFICIALE, era 0.2!)
-        # NOTA: MapAnything NON usa RandomResizedCrop, rimosso da pipeline
+        "p_color_jitter": 0.75,     # 75% probabilità
+        "p_blur": 0.05,              # 5% probabilità
+        "p_grayscale": 0.05,         # 5% probabilità
     }
     teacher_extractor = TeacherFeatureExtractor(
         checkpoint_path=SAM2_PATH,
@@ -1161,13 +1145,8 @@ def distill(args):
 
     # Patch config file based on use_encoder_features
     if CONFIG_JSON_PATH and os.path.exists(CONFIG_JSON_PATH):
-        import json
         with open(CONFIG_JSON_PATH, 'r') as f:
             config = json.load(f)
-        
-        # # DEBUG: Print original config
-        # print("[DEBUG] Original config content:")
-        # print(json.dumps(config, indent=2))
         
         # Modify input_feature_dims in feature_head_2 based on use_encoder_features
         if args.use_encoder_features:
@@ -1180,21 +1159,11 @@ def distill(args):
         if "pred_head_config" in config and "feature_head_2" in config["pred_head_config"]:
             config["pred_head_config"]["feature_head_2"]["input_feature_dims"] = new_dims
             
-            # # DEBUG: Print modified config before save
-            # print("[DEBUG] Modified config content (before save):")
-            # print(json.dumps(config, indent=2))
-            
             # Save modified config back to original location to overwrite
             with open(CONFIG_JSON_PATH, 'w') as f:
                 json.dump(config, f, indent=2)
             print(f"[INFO] Overwritten config file: {CONFIG_JSON_PATH}")
-            
-            # # DEBUG: Print config after save (read it back)
-            # with open(CONFIG_JSON_PATH, 'r') as f:
-            #     config_after = json.load(f)
-            # print("[DEBUG] Config content (after save, read back):")
-            # print(json.dumps(config_after, indent=2))
-            
+
     if global_rank == 0:
         model = MapAnything.from_pretrained(
             args.model_name,
@@ -1324,26 +1293,6 @@ def distill(args):
             args.dino_unfrozen_indices = []
     else:
         args.dino_unfrozen_indices = []
-
-    # ========== DEBUG: Print DINOv2 encoder layer names ==========
-    # dino_encoder = None
-    # if hasattr(model, "encoder"):
-    #     dino_encoder = model.encoder
-    # elif hasattr(model, "dinov2_encoder"):
-    #     dino_encoder = model.dinov2_encoder
-    # elif hasattr(model, "backbone"):
-    #     dino_encoder = model.backbone
-    
-    # if dino_encoder is not None:
-    #     print("\n" + "="*80)
-    #     print("DINOv2 ENCODER LAYER NAMES")
-    #     print("="*80)
-    #     for name, module in dino_encoder.named_modules():
-    #         if name and ("block" in name.lower() or "layer" in name.lower()):
-    #             print(f"  {name}")
-    #     print("="*80 + "\n")
-    # else:
-    #     print("[WARN] DINOv2 encoder not found on model for debugging")
 
     # ========== VERIFY TRAINABLE PARAMETERS ==========
     trainable_params = [p for p in model.parameters() if p.requires_grad]
@@ -1876,7 +1825,6 @@ def get_args_parser():
     # Model
     # Config file path: /scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a/config.json
     parser.add_argument("--model_name", type=str, default="facebook/map-anything", help="MapAnything model name or path")
-    # parser.add_argument("--model_revision", type=str, default="6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a", help="HF snapshot hash to pin")
     
     # Training hyperparameters
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
