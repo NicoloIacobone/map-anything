@@ -54,7 +54,7 @@ except ImportError:
 from mapanything.models import MapAnything
 from mapanything.utils.image import load_images
 from mapanything.utils import train_tools
-from nico.utils import mean_std_difference, create_student_original_teacher_side_by_side
+from nico.utils import *
 
 from sam2_minimal.modeling.sam.prompt_encoder import PromptEncoder
 from sam2_minimal.modeling.sam.mask_decoder import MaskDecoder
@@ -475,41 +475,59 @@ class DistillationLoss(torch.nn.Module):
         
         return total_loss, loss_details
 
-def decoder_distillation_loss(
-    student_masks: torch.Tensor,
-    student_iou: torch.Tensor,
-    student_tokens: torch.Tensor,
-    teacher_masks: torch.Tensor,
-    teacher_iou: torch.Tensor,
-    teacher_tokens: torch.Tensor,
-    weight_masks: float = 0.5,
-    weight_iou: float = 0.3,
-    weight_tokens: float = 1.0,
-) -> Tuple[torch.Tensor, Dict]:
+class DecoderDistillationLoss(torch.nn.Module):
     """
-    Calcola loss di distillazione per il decoder SAM2.
-    
-    Args:
-        student_*: Output del student decoder
-        teacher_*: Output del teacher decoder (detached)
-        weight_*: Pesi per le diverse componenti
-    
-    Returns:
-        total_loss: Loss scalare
-        loss_dict: Dizionario con componenti individuali
+    Loss MSE per distillazione decoder SAM2.
+    Applica MSE su masks, IoU predictions, e output tokens.
     """
-    loss_masks = F.mse_loss(student_masks, teacher_masks)
-    loss_iou = F.mse_loss(student_iou, teacher_iou)
-    loss_tokens = F.mse_loss(student_tokens, teacher_tokens)
     
-    total_loss = weight_masks * loss_masks + weight_iou * loss_iou + weight_tokens * loss_tokens
+    def __init__(
+        self,
+        weight_masks: float = 0.5,
+        weight_iou: float = 0.3,
+        weight_tokens: float = 1.0,
+    ):
+        super().__init__()
+        self.weight_masks = weight_masks
+        self.weight_iou = weight_iou
+        self.weight_tokens = weight_tokens
     
-    return total_loss, {
-        "decoder_loss_masks": loss_masks.item(),
-        "decoder_loss_iou": loss_iou.item(),
-        "decoder_loss_tokens": loss_tokens.item(),
-        "decoder_loss_total": total_loss.item(),
-    }
+    def forward(
+        self,
+        student_masks: torch.Tensor,
+        student_iou: torch.Tensor,
+        student_tokens: torch.Tensor,
+        teacher_masks: torch.Tensor,
+        teacher_iou: torch.Tensor,
+        teacher_tokens: torch.Tensor,
+    ) -> Tuple[torch.Tensor, Dict]:
+        """
+        Calcola loss MSE di distillazione decoder.
+        
+        Returns:
+            total_loss: Loss scalare totale
+            loss_dict: Dizionario con componenti individuali
+        """
+        # MSE per ogni componente
+        loss_masks = F.mse_loss(student_masks, teacher_masks)
+        loss_iou = F.mse_loss(student_iou, teacher_iou)
+        loss_tokens = F.mse_loss(student_tokens, teacher_tokens)
+        
+        # Combinazione pesata
+        total_loss = (
+            self.weight_masks * loss_masks +
+            self.weight_iou * loss_iou +
+            self.weight_tokens * loss_tokens
+        )
+        
+        loss_dict = {
+            "decoder_loss_masks": loss_masks.item(),
+            "decoder_loss_iou": loss_iou.item(),
+            "decoder_loss_tokens": loss_tokens.item(),
+            "decoder_loss_total": total_loss.item(),
+        }
+        
+        return total_loss, loss_dict
 
 # ==================== Data Loaders ====================
 def build_distillation_dataloader(
@@ -711,6 +729,7 @@ def _generate_point_prompts_grid(batch_size: int, image_size: int = 1024, points
 def train_one_epoch_distillation(
     model: torch.nn.Module,
     criterion: torch.nn.Module,
+    decoder_criterion: torch.nn.Module,
     data_loader: DataLoader,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
@@ -726,13 +745,17 @@ def train_one_epoch_distillation(
     
     Args:
         model: MapAnything model with dpt_feature_head_2
-        criterion: DistillationLoss instance
+        criterion: DistillationLoss instance for encoder
+        decoder_criterion: DecoderDistillationLoss instance for decoder
         data_loader: DataLoader providing image paths and teacher features
         optimizer: Optimizer
         device: Device to run on
         epoch: Current epoch number
         args: Configuration namespace
         teacher_extractor: TeacherFeatureExtractor instance
+        sam_prompt_encoder_teacher: Teacher prompt encoder (frozen)
+        sam_mask_decoder_teacher: Teacher mask decoder (frozen)
+        sam_mask_decoder_student: Student mask decoder (trainable)
     
     Returns:
         Dictionary of averaged training metrics
@@ -745,6 +768,7 @@ def train_one_epoch_distillation(
     accum_iter = args.accum_iter
     optimizer.zero_grad()
     
+    # Accumulatori per encoder metrics
     total_samples = 0
     sum_loss = 0.0
     sum_mse = 0.0
@@ -752,6 +776,12 @@ def train_one_epoch_distillation(
     sum_cos_sim = 0.0
     sum_mean_diff = 0.0
     sum_std_diff = 0.0
+    
+    # Accumulatori per decoder metrics
+    sum_decoder_loss_total = 0.0
+    sum_decoder_loss_masks = 0.0
+    sum_decoder_loss_iou = 0.0
+    sum_decoder_loss_tokens = 0.0
     
     for data_iter_step, batch in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, header)
@@ -771,7 +801,6 @@ def train_one_epoch_distillation(
             teacher_features = teacher_extractor(
                 pil_images, 
                 multi_view=args.multi_view_mode,
-                # debug_visualize=(data_iter_step < 3 and epoch == 0)  # ← Primi 3 batch
             ).to(device, non_blocking=True)
         
         # Forward pass to get student features
@@ -795,11 +824,11 @@ def train_one_epoch_distillation(
                 align_corners=False,
             )
 
-        # Compute loss
+        # Compute encoder loss
         loss, loss_details = criterion(student_features, teacher_features, mse_type=args.mse_type)
 
-        # ===== DECODER DISTILLATION (optional) =====
-        if getattr(args, 'distill_decoder', False) and sam_prompt_encoder_teacher is not None:
+        # ===== DECODER DISTILLATION =====
+        if sam_prompt_encoder_teacher is not None:
             # Generate point prompts for decoder
             point_coords, point_labels = _generate_point_prompts_grid(
                 batch_size=teacher_features.shape[0],
@@ -843,16 +872,13 @@ def train_one_epoch_distillation(
             )
             
             # Compute decoder losses
-            decoder_loss, decoder_loss_details = decoder_distillation_loss(
+            decoder_loss, decoder_loss_details = decoder_criterion(
                 student_masks=s_masks,
                 student_iou=s_iou,
                 student_tokens=s_tokens,
                 teacher_masks=t_masks,
                 teacher_iou=t_iou,
                 teacher_tokens=t_tokens,
-                weight_masks=getattr(args, 'decoder_masks_weight', 0.5),
-                weight_iou=getattr(args, 'decoder_iou_weight', 0.3),
-                weight_tokens=getattr(args, 'decoder_tokens_weight', 1.0),
             )
             
             # Combine losses
@@ -860,9 +886,16 @@ def train_one_epoch_distillation(
             loss = loss + decoder_weight * decoder_loss
             loss_details.update(decoder_loss_details)
 
+        # Extract metrics
         mse_value = float(loss_details.get("mse_loss", 0.0))
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
+        
+        # Decoder metrics (0.0 se decoder non attivo)
+        decoder_loss_total = float(loss_details.get("decoder_loss_total", 0.0))
+        decoder_loss_masks = float(loss_details.get("decoder_loss_masks", 0.0))
+        decoder_loss_iou = float(loss_details.get("decoder_loss_iou", 0.0))
+        decoder_loss_tokens = float(loss_details.get("decoder_loss_tokens", 0.0))
 
         try:
             md, sd, cs = mean_std_difference(student_features, teacher_features)
@@ -889,16 +922,23 @@ def train_one_epoch_distillation(
             and (getattr(wandb, "run", None) is not None)
         ):
             if data_iter_step % getattr(args, "log_freq", 100) == 0:
-                wandb.log(
-                    {
-                        "train/loss": float(loss_value),
-                        "train/mse_loss": float(mse_value),
-                        "train/cos_loss": float(cos_value),
-                        "train/cos_sim": float(cos_sim_value),
-                        "train/lr": float(optimizer.param_groups[0]["lr"]),
-                        "epoch_progress": epoch_f,
-                    }
-                )
+                log_dict = {
+                    "train/loss": float(loss_value),
+                    "train/mse_loss": float(mse_value),
+                    "train/cos_loss": float(cos_value),
+                    "train/cos_sim": float(cos_sim_value),
+                    "train/lr": float(optimizer.param_groups[0]["lr"]),
+                    "epoch_progress": epoch_f,
+                }
+                # Aggiungi metriche decoder se presenti
+                if decoder_loss_total > 0:
+                    log_dict.update({
+                        "train/decoder_loss_total": float(decoder_loss_total),
+                        "train/decoder_loss_masks": float(decoder_loss_masks),
+                        "train/decoder_loss_iou": float(decoder_loss_iou),
+                        "train/decoder_loss_tokens": float(decoder_loss_tokens),
+                    })
+                wandb.log(log_dict)
         
         # Gradient Accumulation
         loss /= accum_iter
@@ -919,6 +959,12 @@ def train_one_epoch_distillation(
         sum_cos_sim += cos_sim_value * batch_size
         sum_mean_diff += md * batch_size
         sum_std_diff += sd * batch_size
+        
+        # Accumulate decoder metrics
+        sum_decoder_loss_total += decoder_loss_total * batch_size
+        sum_decoder_loss_masks += decoder_loss_masks * batch_size
+        sum_decoder_loss_iou += decoder_loss_iou * batch_size
+        sum_decoder_loss_tokens += decoder_loss_tokens * batch_size
 
         # Clean up
         del loss, student_features, teacher_features
@@ -937,6 +983,10 @@ def train_one_epoch_distillation(
         "cos_sim_mean": sum_cos_sim / denom,
         "mean_diff": sum_mean_diff / denom,
         "std_diff": sum_std_diff / denom,
+        "decoder_loss_total_mean": sum_decoder_loss_total / denom,
+        "decoder_loss_masks_mean": sum_decoder_loss_masks / denom,
+        "decoder_loss_iou_mean": sum_decoder_loss_iou / denom,
+        "decoder_loss_tokens_mean": sum_decoder_loss_tokens / denom,
         "lr": optimizer.param_groups[0]["lr"],
         "samples": total_samples,
     }
@@ -946,6 +996,7 @@ def train_one_epoch_distillation(
 def validate_one_epoch_distillation(
     model: torch.nn.Module,
     criterion: torch.nn.Module,
+    decoder_criterion: torch.nn.Module,
     data_loader: DataLoader,
     device: torch.device,
     epoch: int,
@@ -960,12 +1011,16 @@ def validate_one_epoch_distillation(
     
     Args:
         model: MapAnything model with dpt_feature_head_2
-        criterion: DistillationLoss instance
+        criterion: DistillationLoss instance for encoder
+        decoder_criterion: DecoderDistillationLoss instance for decoder
         data_loader: DataLoader providing validation data
         device: Device to run on
         epoch: Current epoch number
         args: Configuration namespace
         teacher_extractor: TeacherFeatureExtractor instance
+        sam_prompt_encoder_teacher: Teacher prompt encoder (frozen)
+        sam_mask_decoder_teacher: Teacher mask decoder (frozen)
+        sam_mask_decoder_student: Student mask decoder (trainable)
     
     Returns:
         Dictionary of validation metrics
@@ -975,6 +1030,7 @@ def validate_one_epoch_distillation(
     metric_logger.meters = defaultdict(lambda: train_tools.SmoothedValue(window_size=int(1e6)))
     header = f"Distillation Validation: [{epoch}]"
     
+    # Accumulatori encoder
     total_samples = 0
     sum_loss = 0.0
     sum_mse = 0.0
@@ -982,6 +1038,12 @@ def validate_one_epoch_distillation(
     sum_cos_sim = 0.0
     sum_mean_diff = 0.0
     sum_std_diff = 0.0
+    
+    # Accumulatori decoder
+    sum_decoder_loss_total = 0.0
+    sum_decoder_loss_masks = 0.0
+    sum_decoder_loss_iou = 0.0
+    sum_decoder_loss_tokens = 0.0
 
     for batch_idx, batch in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, header)
@@ -1013,10 +1075,11 @@ def validate_one_epoch_distillation(
                 align_corners=False,
             )
         
-        # Compute loss
+        # Compute encoder loss
         loss, loss_details = criterion(student_features, teacher_features, mse_type=args.mse_type)
-        # ===== DECODER DISTILLATION (optional) =====
-        if getattr(args, 'distill_decoder', False) and sam_prompt_encoder_teacher is not None:
+        
+        # ===== DECODER DISTILLATION =====
+        if sam_prompt_encoder_teacher is not None:
             # Generate point prompts for decoder
             point_coords, point_labels = _generate_point_prompts_grid(
                 batch_size=student_features.shape[0],
@@ -1026,61 +1089,65 @@ def validate_one_epoch_distillation(
             )
             
             # Get prompt embeddings from teacher (frozen)
-            with torch.no_grad():
-                sparse_emb, dense_emb = sam_prompt_encoder_teacher(
-                    points=(point_coords, point_labels),
-                    boxes=None,
-                    masks=None,
-                )
-                image_pe = sam_prompt_encoder_teacher.get_dense_pe().to(
-                    device=student_features.device,
-                    dtype=student_features.dtype
-                )
-                
-                # Teacher decoder forward (frozen)
-                t_masks, t_iou, t_tokens, t_obj = sam_mask_decoder_teacher(
-                    image_embeddings=student_features,
-                    image_pe=image_pe,
-                    sparse_prompt_embeddings=sparse_emb,
-                    dense_prompt_embeddings=dense_emb,
-                    multimask_output=False,
-                    repeat_image=False,
-                    high_res_features=None,
-                )
-                
-                # Student decoder forward (no grad in validation)
-                s_masks, s_iou, s_tokens, s_obj = sam_mask_decoder_student(
-                    image_embeddings=student_features,
-                    image_pe=image_pe,
-                    sparse_prompt_embeddings=sparse_emb,
-                    dense_prompt_embeddings=dense_emb,
-                    multimask_output=False,
-                    repeat_image=False,
-                    high_res_features=None,
-                )
-                
-                # Compute decoder losses (MSE only)
-                loss_tokens = F.mse_loss(s_tokens, t_tokens)
-                loss_masks = F.mse_loss(s_masks, t_masks)
-                loss_iou = F.mse_loss(s_iou, t_iou)
-                
-                decoder_loss = (
-                    getattr(args, 'decoder_tokens_weight', 1.0) * loss_tokens +
-                    getattr(args, 'decoder_masks_weight', 0.5) * loss_masks +
-                    getattr(args, 'decoder_iou_weight', 0.3) * loss_iou
-                )
-                
-                loss_details["decoder_loss_tokens"] = loss_tokens.item()
-                loss_details["decoder_loss_masks"] = loss_masks.item()
-                loss_details["decoder_loss_iou"] = loss_iou.item()
-                
-                # Combine losses
-                decoder_weight = getattr(args, 'decoder_loss_weight', 1.0)
-                loss = loss + decoder_weight * decoder_loss
+            sparse_emb, dense_emb = sam_prompt_encoder_teacher(
+                points=(point_coords, point_labels),
+                boxes=None,
+                masks=None,
+            )
+            image_pe = sam_prompt_encoder_teacher.get_dense_pe().to(
+                device=teacher_features.device,
+                dtype=teacher_features.dtype
+            )
+            
+            # Teacher decoder forward (frozen)
+            t_masks, t_iou, t_tokens, t_obj = sam_mask_decoder_teacher(
+                image_embeddings=teacher_features,
+                image_pe=image_pe,
+                sparse_prompt_embeddings=sparse_emb,
+                dense_prompt_embeddings=dense_emb,
+                multimask_output=False,
+                repeat_image=False,
+                high_res_features=None,
+            )
+            
+            # Student decoder forward (no grad in validation)
+            s_masks, s_iou, s_tokens, s_obj = sam_mask_decoder_student(
+                image_embeddings=student_features,
+                image_pe=image_pe,
+                sparse_prompt_embeddings=sparse_emb,
+                dense_prompt_embeddings=dense_emb,
+                multimask_output=False,
+                repeat_image=False,
+                high_res_features=None,
+            )
+            
+            # Compute decoder losses usando decoder_criterion
+            decoder_loss, decoder_loss_details = decoder_criterion(
+                student_masks=s_masks,
+                student_iou=s_iou,
+                student_tokens=s_tokens,
+                teacher_masks=t_masks,
+                teacher_iou=t_iou,
+                teacher_tokens=t_tokens,
+            )
+
+            loss_details.update(decoder_loss_details)
+
+            # Combine losses
+            decoder_weight = getattr(args, 'decoder_loss_weight', 1.0)
+            loss = loss + decoder_weight * decoder_loss
+        
+        # Extract metrics
         loss_value = loss.detach().cpu().item()
         mse_value = float(loss_details.get("mse_loss", 0.0))
         cos_value = float(loss_details.get("cos_loss", 0.0))
         cos_sim_value = float(loss_details.get("cos_sim", 0.0))
+        
+        # Decoder metrics
+        decoder_loss_total = float(loss_details.get("decoder_loss_total", 0.0))
+        decoder_loss_masks = float(loss_details.get("decoder_loss_masks", 0.0))
+        decoder_loss_iou = float(loss_details.get("decoder_loss_iou", 0.0))
+        decoder_loss_tokens = float(loss_details.get("decoder_loss_tokens", 0.0))
 
         try:
             md, sd, cs = mean_std_difference(student_features, teacher_features)
@@ -1091,7 +1158,7 @@ def validate_one_epoch_distillation(
             md = sd = 0.0
             cs = cos_sim_value
 
-        metric_logger.update(loss=loss_value, mse_loss=mse_value, cos_loss=cos_value, cos_sim=cos_sim_value)
+        metric_logger.update(loss=loss_value, **loss_details)
         
         # Salva visualizzazioni se richiesto
         if args.save_visualizations and batch_idx == 0:
@@ -1112,6 +1179,12 @@ def validate_one_epoch_distillation(
         sum_cos_sim += cos_sim_value * batch_size
         sum_mean_diff += md * batch_size
         sum_std_diff += sd * batch_size
+        
+        # Accumulate decoder metrics
+        sum_decoder_loss_total += decoder_loss_total * batch_size
+        sum_decoder_loss_masks += decoder_loss_masks * batch_size
+        sum_decoder_loss_iou += decoder_loss_iou * batch_size
+        sum_decoder_loss_tokens += decoder_loss_tokens * batch_size
 
         del student_features, teacher_features
 
@@ -1123,6 +1196,10 @@ def validate_one_epoch_distillation(
         "cos_sim_mean": sum_cos_sim / denom,
         "mean_diff": sum_mean_diff / denom,
         "std_diff": sum_std_diff / denom,
+        "decoder_loss_total_mean": sum_decoder_loss_total / denom,
+        "decoder_loss_masks_mean": sum_decoder_loss_masks / denom,
+        "decoder_loss_iou_mean": sum_decoder_loss_iou / denom,
+        "decoder_loss_tokens_mean": sum_decoder_loss_tokens / denom,
         "samples": total_samples,
         "loss_avg": sum_loss / denom,
     }
@@ -1198,29 +1275,6 @@ def save_pca_visualizations(
     
     print(f"[VIZ] Saved {B} PCA visualizations to {viz_dir}")
 
-def log_param_status(model, max_print=None):
-    trainable, frozen = [], []
-    for name, p in model.named_parameters():
-        (trainable if p.requires_grad else frozen).append(name)
-
-    print("\n" + "="*80)
-    print("DETAILED PARAMETER STATUS")
-    print("="*80)
-    print(f"Trainable entries: {len(trainable)}")
-    print(f"Frozen entries:    {len(frozen)}")
-
-    def _dump(title, items):
-        print(title)
-        limit = len(items) if max_print is None else min(len(items), max_print)
-        for n in sorted(items)[:limit]:
-            print(f"  {n}")
-        if limit < len(items):
-            print(f"  ... and {len(items) - limit} more")
-
-    _dump("[TRAINABLE]", trainable)
-    _dump("[FROZEN]", frozen)
-    print("="*80)
-
 # ==================== Main Training Loop ====================
 def distill(args):
     """
@@ -1235,8 +1289,9 @@ def distill(args):
         args.output_dir = os.path.join(OUT_DIR, default_run_name)
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     
-    print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
-    print("{}".format(args).replace(", ", ",\n"))
+    if args.print_args:
+        print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
+        print("{}".format(args).replace(", ", ",\n"))
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -1249,119 +1304,6 @@ def distill(args):
     if run_cluster and getattr(args, "print_freq", 10) < 200:
         args.print_freq = 200
 
-    # ========== INITIALIZE TEACHER EXTRACTOR ==========
-    teacher_extractor = None
-
-    print(f"[INFO] Initializing online teacher feature extractor from {SAM2_PATH}")
-    augment_cfg = {
-        "enabled": not getattr(args, "no_augmentation", False),
-        "p_color_jitter": 0.75,     # 75% probabilità
-        "p_blur": 0.05,              # 5% probabilità
-        "p_grayscale": 0.05,         # 5% probabilità
-    }
-    teacher_extractor = TeacherFeatureExtractor(
-        checkpoint_path=SAM2_PATH,
-        device=str(device),
-        augment_cfg=augment_cfg,
-    )
-    teacher_extractor.to(device)
-
-    # ========== INITIALIZE TEACHER DECODER COMPONENTS ==========
-    print(f"[INFO] Loading teacher PromptEncoder and MaskDecoder from {SAM2_PATH}")
-    sam_prompt_encoder_teacher, sam_mask_decoder_teacher = load_sam2_teacher_prompt_and_decoder(
-        checkpoint_path=SAM2_PATH,
-        device=str(device),
-        image_size=1024,
-        backbone_stride=16,
-        embed_dim=256,
-    )
-    print(f"[INFO] Teacher decoder components loaded and frozen")
-
-    # Build student MaskDecoder (trainable)
-    sam_mask_decoder_student = build_sam_mask_decoder(
-        embed_dim=256,
-        num_multimask_outputs=3,
-        use_high_res_features=False,
-        pred_obj_scores=False,
-        pred_obj_scores_mlp=False,
-        iou_prediction_use_sigmoid=False,
-    ).to(device)
-    print(f"[INFO] Student MaskDecoder built: {sum(p.numel() for p in sam_mask_decoder_student.parameters()):,} params")
-
-    # Attach student decoder to model
-    model_without_ddp.sam2_mask_decoder_student = sam_mask_decoder_student
-    
-    # ========== BUILD DATALOADERS ==========
-    
-    # --- 1. TRAIN DATALOADER ---
-    print(f"Building train dataloader from {TRAIN_IMAGES_DIR}")
-    train_image_paths = None
-    
-    # Logica Debug per SINGLE-VIEW: filtriamo la lista delle immagini PRIMA di creare il loader
-    if args.debug_max_train_images and not args.multi_view_mode:
-        all_imgs = sorted([
-            os.path.join(TRAIN_IMAGES_DIR, f)
-            for f in os.listdir(TRAIN_IMAGES_DIR)
-            if DistillationDataset._is_image_file(f)
-        ])
-        train_image_paths = random.sample(all_imgs, min(args.debug_max_train_images, len(all_imgs)))
-        print(f"[DEBUG] Single-View: Limited train to {len(train_image_paths)} IMAGES")
-    
-    data_loader_train = build_distillation_dataloader(
-        image_dir=TRAIN_IMAGES_DIR,
-        teacher_extractor=teacher_extractor,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        shuffle=True,
-        image_paths=train_image_paths, # Sarà None in multi-view mode
-        distributed=args.distributed.distributed,
-        multi_view_mode=args.multi_view_mode,
-        split=TRAIN_SPLIT,             # "train": attiva Random Sampling delle view
-        max_views_per_scene=args.max_views,
-    )
-
-    # Logica Debug per MULTI-VIEW: tagliamo la lista delle scene DOPO aver creato il dataset
-    if args.multi_view_mode and args.debug_max_train_images:
-        original_len = len(data_loader_train.dataset.samples)
-        limit = min(args.debug_max_train_images, original_len)
-        data_loader_train.dataset.samples = data_loader_train.dataset.samples[:limit]
-        print(f"[DEBUG] Multi-View: Limited train to first {limit} SCENES (was {original_len})")
-
-    
-    # --- 2. VAL DATALOADER ---
-    print(f"Building val dataloader from {VAL_IMAGES_DIR}")
-    val_image_paths = None
-    
-    # Logica Debug per SINGLE-VIEW
-    if args.debug_max_val_images and not args.multi_view_mode:
-        all_val_imgs = sorted([
-            os.path.join(VAL_IMAGES_DIR, f)
-            for f in os.listdir(VAL_IMAGES_DIR)
-            if DistillationDataset._is_image_file(f)
-        ])
-        val_image_paths = all_val_imgs[:args.debug_max_val_images]
-        print(f"[DEBUG] Single-View: Limited val to {len(val_image_paths)} IMAGES")
-    
-    data_loader_val = build_distillation_dataloader(
-        image_dir=VAL_IMAGES_DIR,
-        teacher_extractor=teacher_extractor,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        shuffle=False,
-        image_paths=val_image_paths, # Sarà None in multi-view mode
-        distributed=args.distributed.distributed,
-        multi_view_mode=args.multi_view_mode,
-        split=VAL_SPLIT,               # "val": attiva Deterministic Slicing (prime N views)
-        max_views_per_scene=args.max_views,
-    )
-
-    # Logica Debug per MULTI-VIEW
-    if args.multi_view_mode and args.debug_max_val_images:
-        original_len = len(data_loader_val.dataset.samples)
-        limit = min(args.debug_max_val_images, original_len)
-        data_loader_val.dataset.samples = data_loader_val.dataset.samples[:limit]
-        print(f"[DEBUG] Multi-View: Limited val to first {limit} SCENES (was {original_len})")
-    
     # ========== LOAD MODEL ==========
     print("Loading MapAnything model...")
 
@@ -1406,16 +1348,128 @@ def distill(args):
     model_without_ddp = model
     print(f"Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
 
+    # ========== INITIALIZE STUDENT DECODER ==========
+    sam_mask_decoder_student = build_sam_mask_decoder(
+        embed_dim=256,
+        num_multimask_outputs=3,
+        use_high_res_features=False,
+        pred_obj_scores=False,
+        pred_obj_scores_mlp=False,
+        iou_prediction_use_sigmoid=False,
+    ).to(device)
+    print(f"[INFO] Student MaskDecoder built: {sum(p.numel() for p in sam_mask_decoder_student.parameters()):,} params")
+
+    # Attach student decoder to model
+    model_without_ddp.sam2_mask_decoder_student = sam_mask_decoder_student
+
+    # ========== INITIALIZE TEACHER ENCODER ==========
+    teacher_extractor = None
+
+    print(f"[INFO] Initializing online teacher feature extractor from {SAM2_PATH}")
+    augment_cfg = {
+        "enabled": getattr(args, "use_data_augmentation", True),
+        "p_color_jitter": 0.75,     # 75% probabilità
+        "p_blur": 0.05,              # 5% probabilità
+        "p_grayscale": 0.05,         # 5% probabilità
+    }
+    teacher_extractor = TeacherFeatureExtractor(
+        checkpoint_path=SAM2_PATH,
+        device=str(device),
+        augment_cfg=augment_cfg,
+    )
+    teacher_extractor.to(device)
+
+    # ========== INITIALIZE TEACHER DECODER ==========
+    print(f"[INFO] Loading teacher PromptEncoder and MaskDecoder from {SAM2_PATH}")
+    sam_prompt_encoder_teacher, sam_mask_decoder_teacher = load_sam2_teacher_prompt_and_decoder(
+        checkpoint_path=SAM2_PATH,
+        device=str(device),
+        image_size=1024,
+        backbone_stride=16,
+        embed_dim=256,
+    )
+    print(f"[INFO] Teacher decoder components loaded and frozen")
+
+    # ========== BUILD DATALOADERS ==========
+    
+    # --- 1. TRAIN DATALOADER ---
+    print(f"Building train dataloader from {TRAIN_IMAGES_DIR}")
+    train_image_paths = None
+    
+    # Logica Debug per SINGLE-VIEW: filtriamo la lista delle immagini PRIMA di creare il loader
+    if args.debug_max_train_images and not args.multi_view_mode:
+        all_imgs = sorted([
+            os.path.join(TRAIN_IMAGES_DIR, f)
+            for f in os.listdir(TRAIN_IMAGES_DIR)
+            if DistillationDataset._is_image_file(f)
+        ])
+        train_image_paths = random.sample(all_imgs, min(args.debug_max_train_images, len(all_imgs)))
+        print(f"[DEBUG] Single-View: Limited train to {len(train_image_paths)} IMAGES")
+    
+    data_loader_train = build_distillation_dataloader(
+        image_dir=TRAIN_IMAGES_DIR,
+        teacher_extractor=teacher_extractor,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        shuffle=True,
+        image_paths=train_image_paths, # Sarà None in multi-view mode
+        distributed=args.distributed.distributed,
+        multi_view_mode=args.multi_view_mode,
+        split=TRAIN_SPLIT,             # "train": attiva Random Sampling delle view
+        max_views_per_scene=args.max_views,
+    )
+
+    # Logica Debug per MULTI-VIEW: tagliamo la lista delle scene DOPO aver creato il dataset
+    if args.multi_view_mode and args.debug_max_train_images:
+        original_len = len(data_loader_train.dataset.samples)
+        limit = min(args.debug_max_train_images, original_len)
+        data_loader_train.dataset.samples = data_loader_train.dataset.samples[:limit]
+        print(f"[DEBUG] Multi-View: Limited train to first {limit} SCENES (was {original_len})")
+
+    # --- 2. VAL DATALOADER ---
+    print(f"Building val dataloader from {VAL_IMAGES_DIR}")
+    val_image_paths = None
+    
+    # Logica Debug per SINGLE-VIEW
+    if args.debug_max_val_images and not args.multi_view_mode:
+        all_val_imgs = sorted([
+            os.path.join(VAL_IMAGES_DIR, f)
+            for f in os.listdir(VAL_IMAGES_DIR)
+            if DistillationDataset._is_image_file(f)
+        ])
+        val_image_paths = all_val_imgs[:args.debug_max_val_images]
+        print(f"[DEBUG] Single-View: Limited val to {len(val_image_paths)} IMAGES")
+    
+    data_loader_val = build_distillation_dataloader(
+        image_dir=VAL_IMAGES_DIR,
+        teacher_extractor=teacher_extractor,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        shuffle=False,
+        image_paths=val_image_paths, # Sarà None in multi-view mode
+        distributed=args.distributed.distributed,
+        multi_view_mode=args.multi_view_mode,
+        split=VAL_SPLIT,               # "val": attiva Deterministic Slicing (prime N views)
+        max_views_per_scene=args.max_views,
+    )
+
+    # Logica Debug per MULTI-VIEW
+    if args.multi_view_mode and args.debug_max_val_images:
+        original_len = len(data_loader_val.dataset.samples)
+        limit = min(args.debug_max_val_images, original_len)
+        data_loader_val.dataset.samples = data_loader_val.dataset.samples[:limit]
+        print(f"[DEBUG] Multi-View: Limited val to first {limit} SCENES (was {original_len})")
+
     # ========== FREEZE STRATEGY ==========
     # 1. Freeze tutto inizialmente
     print("Freezing all parameters...")
     for param in model.parameters():
         param.requires_grad = False
     
-    # 2. Unfreeze dpt_feature_head_2 e sam2_compat (sempre trainable)
+    # 2. Unfreeze dpt_feature_head_2 e sam2_compat (sempre trainable) e student MaskDecoder STUDENT ENCODER + DECODER
     print("Unfreezing dpt_feature_head_2 and sam2_compat...")
     for name, param in model.named_parameters():
-        if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat"):
+        if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat") or name.startswith("sam2_mask_decoder_student"):
             param.requires_grad = True
 
     # 3. Unfreeze ultimi N blocchi di info_sharing.self_attention_blocks (opzionale)
@@ -1426,14 +1480,8 @@ def distill(args):
         # Trova i blocchi (self_attention_blocks per MapAnything)
         if hasattr(info_sharing, "self_attention_blocks"):
             blocks = info_sharing.self_attention_blocks
-        elif hasattr(info_sharing, "blocks"):
-            blocks = info_sharing.blocks
-        elif hasattr(info_sharing, "layers"):
-            blocks = info_sharing.layers
-        else:
-            print("[WARN] info_sharing has no 'self_attention_blocks', 'blocks', or 'layers'. Skipping unfreezing.")
-            blocks = []
         
+        # Unfreeze gli ultimi N blocchi
         if len(blocks) > 0:
             start_idx = max(0, len(blocks) - num_info_sharing_blocks)
             unfrozen_count = 0
@@ -1450,6 +1498,12 @@ def distill(args):
             args.info_sharing_unfrozen_indices = unfrozen_indices
             print(f"[INFO] Unfroze last {num_info_sharing_blocks} info_sharing blocks (indices {unfrozen_indices})")
             print(f"[INFO] Unfroze {unfrozen_count:,} parameters in info_sharing")
+            
+            _ = verify_frozen_blocks(
+                blocks, 
+                block_name="Multi-View Transformer blocks",
+                unfrozen_indices=unfrozen_indices
+            )
         else:
             args.info_sharing_unfrozen_indices = []
     else:
@@ -1461,30 +1515,17 @@ def distill(args):
         # Trova l'encoder DINOv2
         dino_encoder = None
         if hasattr(model, "encoder"):
+            print("[DEBUG] Found 'encoder' in model")
             dino_encoder = model.encoder
-        elif hasattr(model, "dinov2_encoder"):
-            dino_encoder = model.dinov2_encoder
-        elif hasattr(model, "backbone"):
-            dino_encoder = model.backbone
         
         if dino_encoder is not None:
             # Cerca i blocchi transformer dell'encoder
             blocks = None
-            if hasattr(dino_encoder, "blocks"):
-                blocks = dino_encoder.blocks
-            elif hasattr(dino_encoder, "layers"):
-                blocks = dino_encoder.layers
-            elif hasattr(dino_encoder, "transformer"):
-                if hasattr(dino_encoder.transformer, "blocks"):
-                    blocks = dino_encoder.transformer.blocks
-                elif hasattr(dino_encoder.transformer, "layers"):
-                    blocks = dino_encoder.transformer.layers
-            elif hasattr(dino_encoder, "model"):
+            if hasattr(dino_encoder, "model"):
                 if hasattr(dino_encoder.model, "blocks"):
                     blocks = dino_encoder.model.blocks
-                elif hasattr(dino_encoder.model, "layers"):
-                    blocks = dino_encoder.model.layers
             
+            # Unfreeze gli ultimi N blocchi
             if blocks is not None and len(blocks) > 0:
                 start_idx = max(0, len(blocks) - num_dino_layers_unfreeze)
                 unfrozen_count = 0
@@ -1494,6 +1535,7 @@ def distill(args):
                         param.requires_grad = True
                         unfrozen_count += param.numel()
                     unfrozen_dino_indices.append(i)
+                # There are some additional layers wrt the 24 blocks that we have to unfreeze
                 if num_dino_layers_unfreeze == 24:
                     for name, p in model.named_parameters():
                         if name.startswith((
@@ -1507,6 +1549,12 @@ def distill(args):
                 args.dino_unfrozen_indices = unfrozen_dino_indices
                 print(f"[INFO] Unfroze last {num_dino_layers_unfreeze} DINOv2 encoder blocks (indices {unfrozen_dino_indices})")
                 print(f"[INFO] Unfroze {unfrozen_count:,} parameters in DINOv2 encoder")
+
+                _ = verify_frozen_blocks(
+                    blocks, 
+                    block_name="DINOv2 encoder blocks",
+                    unfrozen_indices=unfrozen_dino_indices
+                )
             else:
                 print("[WARN] DINOv2 encoder has no 'blocks' or 'layers' attribute. Skipping unfreezing.")
                 args.dino_unfrozen_indices = []
@@ -1517,91 +1565,67 @@ def distill(args):
         args.dino_unfrozen_indices = []
 
     # ========== VERIFY TRAINABLE PARAMETERS ==========
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
-    frozen_params = [p for p in model.parameters() if not p.requires_grad]
+    if args.print_trainable:
+        print_trainable_summary(model, detailed=True)
     
-    trainable_count = sum(p.numel() for p in trainable_params)
-    frozen_count = sum(p.numel() for p in frozen_params)
-    total_count = trainable_count + frozen_count
-    
-    print("\n" + "="*80)
-    print("TRAINABLE PARAMETERS SUMMARY")
-    print("="*80)
-    print(f"Trainable params: {trainable_count:,} ({100*trainable_count/total_count:.2f}%)")
-    print(f"Frozen params:    {frozen_count:,} ({100*frozen_count/total_count:.2f}%)")
-    print(f"Total params:     {total_count:,}")
-    
-    # Lista dei gruppi trainable
-    trainable_groups = {}
-    for name, param in model.named_parameters():
-        if param.requires_grad:
-            # Estrai il gruppo (es. "info_sharing.self_attention_blocks.10")
-            parts = name.split(".")
-            if len(parts) >= 4 and parts[0] == "info_sharing" and parts[1] == "self_attention_blocks":
-                # info_sharing.self_attention_blocks.10.attn.qkv.weight -> info_sharing.self_attention_blocks.10
-                group = ".".join(parts[:3])
-            elif len(parts) >= 3:
-                group = ".".join(parts[:3])
-            else:
-                group = ".".join(parts[:2])
-            
-            if group not in trainable_groups:
-                trainable_groups[group] = 0
-            trainable_groups[group] += param.numel()
-    
-    print("\n📦 Trainable parameter groups:")
-    for group, count in sorted(trainable_groups.items()):
-        print(f"   - {group}: {count:,} params")
-    print("="*80 + "\n")
-
-    log_param_status(model, max_print=None)
-    
-    # Initialize criterion
+    # Initialize criterion for STUDENT ENCODER distillation
     criterion = DistillationLoss(
         mse_weight=args.mse_weight,
         cosine_weight=args.cosine_weight,
         normalize=args.normalize_features,
     ).to(device)
 
+    # Initialize criterion for STUDENT DECODER distillation
+    decoder_criterion = DecoderDistillationLoss(
+        weight_masks=args.decoder_masks_weight,
+        weight_iou=args.decoder_iou_weight,
+        weight_tokens=args.decoder_tokens_weight,
+    ).to(device)
+
     # ========== OPTIMIZER con LR differenziati ==========
-    head_params = []
-    transformer_params = []
-    encoder_params = []
-    other_params = []
+    encoder_params = [] # STUDENT ENCODER (dpt_head_2 + sam2_compat)
+    decoder_params = []  # STUDENT DECODER (MaskDecoder)
+    transformer_params = [] # MULTI VIEW TRANSFORMER (info_sharing)
+    dino_params = [] # DINOv2 ENCODER (encoder)
+    other_params = [] # Fallback
 
     for name, p in model.named_parameters():
-        if not p.requires_grad:
+        if not p.requires_grad: # if frozen, skip
             continue
-        if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat") or name.startswith("sam2_mask_decoder_student"):
-            head_params.append(p)
+        if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat"):
+            encoder_params.append(p)
+        elif name.startswith("sam2_mask_decoder_student"):
+            decoder_params.append(p)
         elif name.startswith("info_sharing"):
             transformer_params.append(p)
         elif name.startswith("encoder") and hasattr(args, 'dino_unfrozen_indices') and args.dino_unfrozen_indices:
-            encoder_params.append(p)
+            dino_params.append(p)
         else:
             other_params.append(p)
 
-    # Fallback: se alcuni parametri trainabili non rientrano nelle categorie, mettili nel gruppo head
+    # Fallback: se alcuni parametri trainabili non rientrano nelle categorie stampa un warning
     if other_params:
-        print(f"[WARN] {sum(op.numel() for op in other_params):,} trainable params not matched; assigning to HEAD LR group.")
-        head_params.extend(other_params)
+        print(f"[WARN] Found {len(other_params)} trainable parameters not matched to any group.")
 
-    lr_head = args.lr
     lr_encoder = args.lr * args.lr_encoder_scale
+    lr_decoder = args.lr * args.lr_decoder_scale
+    lr_dino = args.lr * args.lr_dino_scale
     lr_transformer = args.lr * args.lr_transformer_scale
 
     optimizer = optim.AdamW(
         [
-            {"params": head_params, "lr": lr_head},
-            {"params": transformer_params, "lr": lr_transformer},
             {"params": encoder_params, "lr": lr_encoder},
+            {"params": decoder_params, "lr": lr_decoder},
+            {"params": transformer_params, "lr": lr_transformer},
+            {"params": dino_params, "lr": lr_dino},
         ],
         lr=args.lr,  # non usato per i gruppi espliciti, rimane come default
         weight_decay=args.weight_decay,
         betas=(0.9, 0.95),
     )
-    print(f"[OPT] Groups: head={sum(p.numel() for p in head_params):,} params @ LR {lr_head}, "
-          f"encoder={sum(p.numel() for p in encoder_params):,} params @ LR {lr_encoder}, "
+    print(f"[OPT] Groups: encoder={sum(p.numel() for p in encoder_params):,} params @ LR {lr_encoder}, "
+          f"decoder={sum(p.numel() for p in decoder_params):,} params @ LR {lr_decoder}, "
+          f"dino={sum(p.numel() for p in dino_params):,} params @ LR {lr_dino}, "
           f"transformer={sum(p.numel() for p in transformer_params):,} params @ LR {lr_transformer}")
     
     # ========== WRAPPING IN DDP ==========
@@ -1621,7 +1645,7 @@ def distill(args):
         except Exception:
             pass
     
-    # Scheduler LR: Cosine annealing per epoca, coerente con distillation.py
+    # ========== LEARNING RATE SCHEDULER ==========
     scheduler = None
     if args.lr_scheduler == "cosine":
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -1650,9 +1674,9 @@ def distill(args):
         )
         print(f"[INFO] Using ReduceLROnPlateau (factor=0.5, patience={args.plateau_patience}, threshold=1e-3 abs, cooldown=1)")
     else:
-        print(f"[INFO] Learning rate scheduler disabled. LR will remain constant at {args.lr}")
+        print(f"[INFO] Learning rate scheduler disabled. Base LR will remain constant at {args.lr}")
     
-    # Resume: ricarica head 2 + optimizer + scheduler; riparte dall'epoca successiva
+    # ========= RESUME FROM CHECKPOINT (IF SPECIFIED) ==========
     start_epoch = 0
     best_val_loss = float("inf")
     if args.resume_ckpt:
@@ -1670,14 +1694,11 @@ def distill(args):
         # Restore unfrozen info_sharing blocks if present
         if "info_sharing_blocks" in ckpt and hasattr(model_without_ddp, "info_sharing"):
             info = model_without_ddp.info_sharing
-            if hasattr(info, "self_attention_blocks"):
-                blocks = info.self_attention_blocks
-            elif hasattr(info, "blocks"):
-                blocks = info.blocks
-            elif hasattr(info, "layers"):
-                blocks = info.layers
-            else:
+            blocks = getattr(info, "self_attention_blocks", None)
+            if blocks is None:
+                print("[WARN] info_sharing has no self_attention_blocks. Skipping restore.")
                 blocks = []
+
             saved_indices = ckpt.get("info_sharing_unfrozen_indices", [])
             missing = []
             for idx, state_dict in ckpt["info_sharing_blocks"].items():
@@ -1703,18 +1724,12 @@ def distill(args):
         # Restore unfrozen DINOv2 blocks
         if "dino_encoder_blocks" in ckpt and hasattr(model_without_ddp, "encoder"):
             dino_encoder = model_without_ddp.encoder
-            if hasattr(dino_encoder, "blocks"):
-                blocks = dino_encoder.blocks
-            elif hasattr(dino_encoder, "transformer") and hasattr(dino_encoder.transformer, "blocks"):
-                blocks = dino_encoder.transformer.blocks
-            elif hasattr(dino_encoder, "model"):
-                if hasattr(dino_encoder.model, "blocks"):
-                    blocks = dino_encoder.model.blocks
-                elif hasattr(dino_encoder.model, "layers"):
-                    blocks = dino_encoder.model.layers
-            else:
+            dino_model = dino_encoder.model if hasattr(dino_encoder, "model") else dino_encoder
+            blocks = getattr(dino_model, "blocks", None)
+            if blocks is None:
+                print("[WARN] DINO model has no .blocks. Skipping restore.")
                 blocks = []
-            
+
             for idx, state_dict in ckpt["dino_encoder_blocks"].items():
                 if idx < len(blocks):
                     try:
@@ -1725,7 +1740,6 @@ def distill(args):
             args.dino_unfrozen_indices = list(ckpt["dino_encoder_blocks"].keys())
 
             if "dino_encoder_wrappers" in ckpt:
-                dino_model = dino_encoder.model if hasattr(dino_encoder, "model") else dino_encoder
                 for name, data in ckpt["dino_encoder_wrappers"].items():
                     param = dict(dino_model.named_parameters())[name]
                     param.data.copy_(data)
@@ -1736,16 +1750,27 @@ def distill(args):
         if "sam2_mask_decoder_student" in ckpt and hasattr(model_without_ddp, "sam2_mask_decoder_student"):
             model_without_ddp.sam2_mask_decoder_student.load_state_dict(ckpt["sam2_mask_decoder_student"])
             print("[INFO] Loaded sam2_mask_decoder_student state from checkpoint")
+        elif hasattr(model_without_ddp, "sam2_mask_decoder_student"):
+            print("[WARN] sam2_mask_decoder_student exists on model but not found in checkpoint. Using random initialization.")
 
         optimizer.load_state_dict(ckpt["optimizer"])
 
         if args.lr_scheduler == "none" or args.override_lr:
-            # Rispetta i gruppi differenziati: head, transformer, encoder
-            optimizer.param_groups[0]['lr'] = args.lr                          # head
-            optimizer.param_groups[1]['lr'] = args.lr * args.lr_transformer_scale  # transformer
-            optimizer.param_groups[2]['lr'] = args.lr * args.lr_encoder_scale      # encoder
-            print(f"[INFO] Overriding optimizer LR: head={optimizer.param_groups[0]['lr']}, "
-                f"transformer={optimizer.param_groups[1]['lr']}, encoder={optimizer.param_groups[2]['lr']}")
+            # Rispetta i gruppi differenziati: encoder, decoder, transformer, dino
+            if len(optimizer.param_groups) >= 4:
+                optimizer.param_groups[0]["lr"] = args.lr * args.lr_encoder_scale
+                optimizer.param_groups[1]["lr"] = args.lr * args.lr_decoder_scale
+                optimizer.param_groups[2]["lr"] = args.lr * args.lr_transformer_scale
+                optimizer.param_groups[3]["lr"] = args.lr * args.lr_dino_scale
+                print(
+                    "[INFO] Overriding optimizer LR: "
+                    f"encoder={optimizer.param_groups[0]['lr']}, "
+                    f"decoder={optimizer.param_groups[1]['lr']}, "
+                    f"transformer={optimizer.param_groups[2]['lr']}, "
+                    f"dino={optimizer.param_groups[3]['lr']}"
+                )
+            else:
+                print(f"[WARN] Unexpected optimizer.param_groups={len(optimizer.param_groups)}; cannot override scaled LRs safely.")
 
         # Scheduler resume logic
         if args.lr_scheduler != "none" and "scheduler" in ckpt and not args.override_scheduler:
@@ -1778,7 +1803,7 @@ def distill(args):
         best_val_loss = ckpt.get("best_val_loss", float("inf"))
         print(f"Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
     
-    # Inizializzazione opzionale di W&B (solo rank 0): salva anche config e gestisce resume
+    # ========== INITIALIZE WANDB (only if rank == 0) ==========
     if args.use_wandb and WANDB_AVAILABLE and global_rank == 0:
         wandb_kwargs = {
             "project": args.wandb_project,
@@ -1803,6 +1828,7 @@ def distill(args):
         train_stats = train_one_epoch_distillation(
             model=model,
             criterion=criterion,
+            decoder_criterion=decoder_criterion,
             data_loader=data_loader_train,
             optimizer=optimizer,
             device=device,
@@ -1820,6 +1846,7 @@ def distill(args):
             val_stats = validate_one_epoch_distillation(
             model=model,
             criterion=criterion,
+            decoder_criterion=decoder_criterion,
             data_loader=data_loader_val,
             device=device,
             epoch=epoch,
@@ -1877,36 +1904,53 @@ def distill(args):
         
         epoch_time = time.time() - epoch_start
 
-        # Log to wandb (match distillation.py keys)
+        # Log to wandb
         if args.use_wandb and WANDB_AVAILABLE and global_rank == 0:
             log_dict = {
                 "epoch": epoch + 1,
+                # Encoder metrics (train)
                 "train_loss": train_stats.get("loss_mean", 0.0),
                 "train_mse_loss": train_stats.get("mse_loss_mean", 0.0),
                 "train_cos_loss": train_stats.get("cos_loss_mean", 0.0),
                 "train_mean_diff": train_stats.get("mean_diff", 0.0),
                 "train_std_diff": train_stats.get("std_diff", 0.0),
                 "train_cos_sim": train_stats.get("cos_sim_mean", 0.0),
+                # Decoder metrics (train)
+                "train_decoder_loss_total": train_stats.get("decoder_loss_total_mean", 0.0),
+                "train_decoder_loss_masks": train_stats.get("decoder_loss_masks_mean", 0.0),
+                "train_decoder_loss_iou": train_stats.get("decoder_loss_iou_mean", 0.0),
+                "train_decoder_loss_tokens": train_stats.get("decoder_loss_tokens_mean", 0.0),
+                # Learning rate & time
                 "lr": optimizer.param_groups[0]["lr"],
                 "epoch_time_sec": epoch_time,
             }
             if val_stats:
-                print(f"[DEBUG] Logging validation stats to W&B: {val_stats}")  # <--- DEBUG
                 log_dict.update({
+                    # Encoder metrics (val)
                     "val_loss": val_stats.get("loss_mean", 0.0),
                     "val_mse_loss": val_stats.get("mse_loss_mean", 0.0),
                     "val_cos_loss": val_stats.get("cos_loss_mean", 0.0),
                     "val_mean_diff": val_stats.get("mean_diff", 0.0),
                     "val_std_diff": val_stats.get("std_diff", 0.0),
                     "val_cosine_similarity": val_stats.get("cos_sim_mean", 0.0),
+                    # Decoder metrics (val)
+                    "val_decoder_loss_total": val_stats.get("decoder_loss_total_mean", 0.0),
+                    "val_decoder_loss_masks": val_stats.get("decoder_loss_masks_mean", 0.0),
+                    "val_decoder_loss_iou": val_stats.get("decoder_loss_iou_mean", 0.0),
+                    "val_decoder_loss_tokens": val_stats.get("decoder_loss_tokens_mean", 0.0),
                 })
-            else:
-                print(f"[DEBUG] val_stats is empty, skipping validation logging for epoch {epoch+1}")  # <--- DEBUG
             wandb.log(log_dict)
+        
+        # Console print con decoder loss
+        decoder_train_loss = train_stats.get("decoder_loss_total_mean", 0.0)
+        decoder_val_loss = val_stats.get("decoder_loss_total_mean", 0.0) if val_stats else 0.0
+        
         print(
             f"Epoch {epoch+1}/{args.epochs} | "
-            f"Train Loss: {train_stats.get('loss_mean', 0):.6f} | "
-            f"Val Loss: {val_stats.get('loss_mean', 0):.6f} | "
+            f"Train Loss: {train_stats.get('loss_mean', 0):.6f} "
+            f"(Enc: {train_stats.get('mse_loss_mean', 0):.4f}, Dec: {decoder_train_loss:.4f}) | "
+            f"Val Loss: {val_stats.get('loss_mean', 0):.6f} "
+            f"(Enc: {val_stats.get('mse_loss_mean', 0) if val_stats else 0:.4f}, Dec: {decoder_val_loss:.4f}) | "
             f"Time: {epoch_time:.2f}s"
         )
     
@@ -1941,7 +1985,17 @@ def save_checkpoint_distillation(
     args=None,
 ):
     """
-    Save checkpoint containing only dpt_feature_head_2 and optimizer state.
+    Save checkpoint containing trainable components for distillation.
+    
+    Saves:
+        - dpt_feature_head_2 (student encoder)
+        - sam2_compat (student encoder compatibility layer)
+        - sam2_mask_decoder_student (student decoder)
+        - unfrozen info_sharing blocks (multi-view transformer)
+        - unfrozen DINOv2 encoder blocks
+        - optimizer state
+        - scheduler state
+        - training metadata (epoch, best_val_loss, wandb_run_id)
     
     Args:
         model_without_ddp: Model without DDP wrapper
@@ -1951,6 +2005,7 @@ def save_checkpoint_distillation(
         best_val_loss: Best validation loss so far
         output_dir: Directory to save checkpoint
         tag: Tag for checkpoint filename (e.g., "best", "last", "epoch10")
+        args: Training arguments with unfrozen indices info
     """
     state = {
         "dpt_feature_head_2": model_without_ddp.dpt_feature_head_2.state_dict(),
@@ -1962,18 +2017,13 @@ def save_checkpoint_distillation(
     # Save sam2_compat if present
     if hasattr(model_without_ddp, "sam2_compat"):
         state["sam2_compat"] = model_without_ddp.sam2_compat.state_dict()
-        # print("[INFO] sam2_compat state added to checkpoint")
+        print("[INFO] Added sam2_compat to checkpoint")
 
     # Save unfrozen info_sharing blocks if any
     if args is not None and hasattr(model_without_ddp, "info_sharing") and getattr(args, "info_sharing_unfrozen_indices", []):
         info = model_without_ddp.info_sharing
-        if hasattr(info, "self_attention_blocks"):
-            blocks = info.self_attention_blocks
-        elif hasattr(info, "blocks"):
-            blocks = info.blocks
-        elif hasattr(info, "layers"):
-            blocks = info.layers
-        else:
+        blocks = getattr(info, "self_attention_blocks", None)
+        if blocks is None:
             blocks = []
         indices = [i for i in getattr(args, "info_sharing_unfrozen_indices", []) if i < len(blocks)]
         state["info_sharing_unfrozen_indices"] = indices
@@ -1992,20 +2042,13 @@ def save_checkpoint_distillation(
     # Save unfrozen DINOv2 blocks
     if args is not None and hasattr(args, 'dino_unfrozen_indices') and args.dino_unfrozen_indices:
         dino_encoder = model_without_ddp.encoder
-        if hasattr(dino_encoder, "blocks"):
-            blocks = dino_encoder.blocks
-        elif hasattr(dino_encoder, "transformer") and hasattr(dino_encoder.transformer, "blocks"):
-            blocks = dino_encoder.transformer.blocks
-        elif hasattr(dino_encoder, "model"):
-            if hasattr(dino_encoder.model, "blocks"):
-                blocks = dino_encoder.model.blocks
-            elif hasattr(dino_encoder.model, "layers"):
-                blocks = dino_encoder.model.layers
-        else:
+        dino_model = dino_encoder.model if hasattr(dino_encoder, "model") else dino_encoder
+        blocks = getattr(dino_model, "blocks", None)
+        if blocks is None:
             blocks = []
         
+        state["dino_encoder_blocks"] = {}
         if blocks:
-            state["dino_encoder_blocks"] = {}
             for idx in args.dino_unfrozen_indices:
                 if idx < len(blocks):
                     state["dino_encoder_blocks"][idx] = blocks[idx].state_dict()
@@ -2026,6 +2069,7 @@ def save_checkpoint_distillation(
     # Save student mask decoder if present
     if hasattr(model_without_ddp, "sam2_mask_decoder_student"):
         state["sam2_mask_decoder_student"] = model_without_ddp.sam2_mask_decoder_student.state_dict()
+        print("[INFO] Added sam2_mask_decoder_student to checkpoint")
 
     if scheduler is not None:
         state["scheduler"] = scheduler.state_dict()
@@ -2038,7 +2082,7 @@ def save_checkpoint_distillation(
     ckpt_dir = Path(output_dir) / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     
-    ckpt_path = ckpt_dir / f"checkpoint_{tag}.pth"  # Ora salva in checkpoints/
+    ckpt_path = ckpt_dir / f"checkpoint_{tag}.pth"
     torch.save(state, ckpt_path)
     print(f"[SAVE] Checkpoint saved: {ckpt_path}")
 
@@ -2102,7 +2146,7 @@ def get_args_parser():
     parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
     parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging")
     parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
-    parser.add_argument("--no_augmentation", action="store_true", help="Disable data augmentation")
+    parser.add_argument("--use_data_augmentation", action="store_true", help="Enable data augmentation")
     
     # Multi-view
     parser.add_argument("--multi_view_mode", action="store_true", help="Enable multi-view mode (cross-attention between views)")
@@ -2115,12 +2159,14 @@ def get_args_parser():
     
     # Logging
     parser.add_argument("--print_freq", type=int, default=10, help="Print frequency (iterations)")
+    parser.add_argument("--print_trainable", action="store_true", help="Print detailed trainable parameters and exit")
     parser.add_argument("--use_wandb", action="store_true", help="Use Weights & Biases logging")
     parser.add_argument("--wandb_project", type=str, default="mapanything-distillation", help="W&B project name")
     parser.add_argument("--wandb_name", type=str, default=None, help="W&B run name")
     parser.add_argument("--wandb_resume_id", type=str, default=None, help="W&B run ID to resume")
     parser.add_argument("--save_visualizations", action="store_true", help="Save PCA visualizations during validation")
     parser.add_argument("--log_freq", type=int, default=100, help="Log to W&B every N batches")
+    parser.add_argument("--print_args", action="store_true", help="Print all arguments before starting distillation")
     
     # Distributed (opzionale): abilita DDP; dist_url di solito 'env://' con torchrun; local_rank impostato da torchrun
     parser.add_argument("--distributed", action="store_true", help="Enable distributed training")
@@ -2130,11 +2176,14 @@ def get_args_parser():
     # Unfreeze strategy
     parser.add_argument("--num_info_sharing_blocks_unfreeze", type=int, default=0, help="Number of last info_sharing transformer blocks to unfreeze") # max 24
     parser.add_argument("--num_dino_layers_unfreeze", type=int, default=0, help="Number of last DINOv2 encoder layers to unfreeze") # max 24
-    parser.add_argument("--lr_encoder_scale", type=float, default=0.1, help="Scale factor for encoder LR relative to --lr")
-    parser.add_argument("--lr_transformer_scale", type=float, default=1.0, help="Scale factor for transformer LR relative to --lr")
+
+    # Learning rates for different parts
+    parser.add_argument("--lr_encoder_scale", type=float, default=1.0, help="Scale factor for STUDENT ENCODER LR")
+    parser.add_argument("--lr_decoder_scale", type=float, default=1.0, help="Scale factor for STUDENT DECODER LR")
+    parser.add_argument("--lr_dino_scale", type=float, default=0.1, help="Scale factor for DINOv2 encoder LR")
+    parser.add_argument("--lr_transformer_scale", type=float, default=1.0, help="Scale factor MULTI-VIEW TRANSFORMER LR")
 
     # Decoder distillation
-    parser.add_argument("--distill_decoder", action="store_true", help="Enable SAM2 decoder distillation")
     parser.add_argument("--decoder_loss_weight", type=float, default=1.0, help="Weight for total decoder loss")
     parser.add_argument("--decoder_tokens_weight", type=float, default=1.0, help="Weight for tokens loss component")
     parser.add_argument("--decoder_masks_weight", type=float, default=0.5, help="Weight for masks loss component")

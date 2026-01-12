@@ -507,3 +507,100 @@ def heatmap_sanity_check_avg_all_channels(student_embeddings, teacher_embeddings
         plt.close(fig)
 
         print(f"[DEBUG] Saved heatmap for batch {batch_idx} (avg all channels) to {output_path}")
+
+def log_param_status(model, max_print=None):
+    trainable, frozen = [], []
+    for name, p in model.named_parameters():
+        (trainable if p.requires_grad else frozen).append(name)
+
+    print("\n" + "="*80)
+    print("DETAILED PARAMETER STATUS")
+    print("="*80)
+    print(f"Trainable entries: {len(trainable)}")
+    print(f"Frozen entries:    {len(frozen)}")
+
+    def _dump(title, items):
+        print(title)
+        limit = len(items) if max_print is None else min(len(items), max_print)
+        for n in sorted(items)[:limit]:
+            print(f"  {n}")
+        if limit < len(items):
+            print(f"  ... and {len(items) - limit} more")
+
+    _dump("[TRAINABLE]", trainable)
+    _dump("[FROZEN]", frozen)
+    print("="*80)
+
+def verify_frozen_blocks(blocks, block_name="blocks", unfrozen_indices=None):
+    """Verifica e stampa i blocchi ancora frozen."""
+    frozen_indices = []
+    for i in range(len(blocks)):
+        is_frozen = any(not p.requires_grad for p in blocks[i].parameters())
+        if is_frozen:
+            frozen_indices.append(i)
+    
+    if frozen_indices:
+        print(f"[VERIFY] ⚠️  {block_name} still FROZEN: {frozen_indices}")
+    else:
+        print(f"[VERIFY] ✅ All {len(blocks)} {block_name} are UNFROZEN")
+    
+    return frozen_indices
+
+def print_trainable_summary(model, detailed=False, max_print=None):
+    """
+    Stampa un summary dettagliato dei parametri trainable raggruppati per modulo.
+    
+    Args:
+        model: PyTorch model
+        
+    Returns:
+        Dict con statistiche (trainable_count, frozen_count, trainable_groups)
+    """
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    frozen_params = [p for p in model.parameters() if not p.requires_grad]
+    
+    trainable_count = sum(p.numel() for p in trainable_params)
+    frozen_count = sum(p.numel() for p in frozen_params)
+    total_count = trainable_count + frozen_count
+    
+    print("\n" + "="*80)
+    print("TRAINABLE PARAMETERS SUMMARY")
+    print("="*80)
+    print(f"Trainable params: {trainable_count:,} ({100*trainable_count/total_count:.2f}%)")
+    print(f"Frozen params:    {frozen_count:,} ({100*frozen_count/total_count:.2f}%)")
+    print(f"Total params:     {total_count:,}")
+    
+    # Lista dei gruppi trainable
+    trainable_groups = {}
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            # Estrai il gruppo (es. "info_sharing.self_attention_blocks.10")
+            parts = name.split(".")
+            if len(parts) >= 4 and parts[0] == "info_sharing" and parts[1] == "self_attention_blocks":
+                # info_sharing.self_attention_blocks.10.attn.qkv.weight -> info_sharing.self_attention_blocks.10
+                group = ".".join(parts[:3])
+            elif len(parts) >= 3:
+                group = ".".join(parts[:3])
+            else:
+                group = ".".join(parts[:2])
+            
+            if group not in trainable_groups:
+                trainable_groups[group] = 0
+            trainable_groups[group] += param.numel()
+    
+    print("\n📦 Trainable parameter groups:")
+    for group, count in sorted(trainable_groups.items()):
+        print(f"   - {group}: {count:,} params")
+    print("="*80 + "\n")
+    
+    stats = {
+        "trainable_count": trainable_count,
+        "frozen_count": frozen_count,
+        "total_count": total_count,
+        "trainable_groups": trainable_groups,
+    }
+
+    if detailed:
+        log_param_status(model, max_print=max_print)
+    
+    return stats
