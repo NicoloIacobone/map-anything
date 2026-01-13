@@ -67,7 +67,7 @@ fi
 echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 
 # Usa automaticamente tutte le GPU disponibili
-python distillation.py --epochs 5 --num_workers 1 --debug_max_train_images 5 --debug_max_val_images 5 --print_freq 1 --log_freq 1 --lr 1e-3 --lr_encoder_scale 1.0 --lr_decoder_scale 0.5 --lr_transformer_scale 0.1 --lr_dino_scale 0.01 --mse_weight 0.6 --cosine_weight 0.4 --decoder_masks_weight 0.5 --decoder_iou_weight 0.3 --decoder_tokens_weight 0.2 --num_info_sharing_blocks_unfreeze 12 --num_dino_layers_unfreeze 24 --save_freq 1
+python distillation.py --epochs 10 --num_workers 1 --debug_max_train_images 5 --debug_max_val_images 5 --print_freq 1 --log_freq 1 --lr 1e-3 --lr_encoder_scale 1.0 --lr_decoder_scale 0.5 --lr_transformer_scale 0.1 --lr_dino_scale 0.01 --mse_weight 0.6 --cosine_weight 0.4 --decoder_masks_weight 0.5 --decoder_iou_weight 0.3 --decoder_tokens_weight 0.2 --num_info_sharing_blocks_unfreeze 12 --num_dino_layers_unfreeze 24 --save_freq 1 --resume_ckpt /cluster/work/igp_psr/niacobone/distillation/output/distill_20260113_171342/checkpoints/checkpoint_epoch5.pth
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
