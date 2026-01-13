@@ -1,19 +1,19 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=distillation_full_SV
+#SBATCH --job-name=SV_full_0
 #
 # Specify output file.
-#SBATCH --output=distillation_full_SV_%j.log
+#SBATCH --output=SV_full_0_%j.log
 #
 # Specify error file.
-#SBATCH --error=distillation_full_SV_%j.err
+#SBATCH --error=SV_full_0_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=00:30:00
+#SBATCH --time=02:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -72,29 +72,29 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --num_workers 8 \
   --dataset coco2017 \
-  --wandb_name "test_1" \
-  --epochs 10 \
+  --wandb_name "SV_full_0" \
+  --epochs 100 \
   --lr 5e-4 \
-  --lr_encoder_scale 1.0 \
-  --lr_decoder_scale 0.5 \
-  --lr_transformer_scale 0.1 \
-  --lr_dino_scale 0.01 \
-  --mse_weight 0.6 \
-  --cosine_weight 0.4 \
-  --decoder_masks_weight 0.5 \
-  --decoder_iou_weight 0.3 \
-  --decoder_tokens_weight 0.2 \
-  --num_info_sharing_blocks_unfreeze 12 \
-  --num_dino_layers_unfreeze 24 \
   --batch_size 8 \
+  --lr_encoder_scale 0.1 \
+  --lr_decoder_scale 1.0 \
+  --mse_weight 0.5 \
+  --cosine_weight 0.5 \
+  --decoder_masks_weight 1.0 \
+  --decoder_iou_weight 0.0 \
+  --decoder_tokens_weight 0.0 \
   --eval_freq 1 \
-  --save_freq 5 \
+  --save_freq 100 \
   --print_freq 250 \
   --lr_scheduler none \
   --amp \
-  --debug_max_train_images 100 \
-  --debug_max_val_images 50 \
+  --debug_max_train_images 5000 \
+  --debug_max_val_images 500 \
   --save_visualizations \
+#   --num_info_sharing_blocks_unfreeze 12 \
+#   --num_dino_layers_unfreeze 24 \
+#   --lr_transformer_scale 0.1 \
+#   --lr_dino_scale 0.01 \
 #   --override_scheduler \
 #   --lr_decay_epochs 25 \
 #   --use_encoder_features \
