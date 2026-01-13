@@ -378,7 +378,7 @@ def init_distributed_mode(args):
         args.world_size = int(os.environ["WORLD_SIZE"])
         args.gpu = int(os.environ["LOCAL_RANK"])
     else:
-        print("Not using distributed mode")
+        print("[INFO] Not using distributed mode")
         setup_for_distributed(is_master=True)  # hack
         args.distributed = False
         return

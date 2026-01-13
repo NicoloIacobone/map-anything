@@ -164,7 +164,7 @@ class DistillationDataset(Dataset):
                     ])
                     if len(views) > 0:
                         self.samples.append(views) # List[str]
-                print(f"[Dataset] Mode: MULTI-VIEW (Scenes) | Split: {split} | Max Views: {self.max_views_per_scene}")
+                print(f"[INFO] Mode: MULTI-VIEW (Scenes) | Split: {split} | Max Views: {self.max_views_per_scene}")
             else:
                 # --- LOGICA SINGLE-VIEW ---
                 # Ogni "sample" è una stringa (path immagine)
@@ -173,10 +173,10 @@ class DistillationDataset(Dataset):
                     for f in os.listdir(self.image_dir)
                     if self._is_image_file(f)
                 ])
-                print(f"[Dataset] Mode: SINGLE-VIEW (Images)")
-                print(f"[Dataset] Found {len(self.samples)} images in {image_dir}")
+                print(f"[INFO] Mode: SINGLE-VIEW (Images)")
+                print(f"[INFO] Found {len(self.samples)} images in {image_dir}")
 
-        print(f"[Dataset] Using online feature extraction with teacher model")
+        print(f"[INFO] Using online feature extraction with teacher model")
     
     @staticmethod
     def _is_image_file(name: str) -> bool:
@@ -281,7 +281,7 @@ class TeacherFeatureExtractor:
         self.device = device
         self.augment_cfg = augment_cfg or {}
         self._build_augment_pipelines()
-        print(f"[Teacher] Loaded SAM2 feature extractor on {device}")
+        print(f"[INFO] Loaded SAM2 feature extractor on {device}")
 
     def _build_augment_pipelines(self):
         """Costruisce le pipeline di augmentation IDENTICHE a MapAnything ufficiale."""
@@ -1305,7 +1305,7 @@ def distill(args):
         args.print_freq = 200
 
     # ========== LOAD MODEL ==========
-    print("Loading MapAnything model...")
+    print("[INFO] Loading MapAnything model...")
 
     # Patch config file based on use_encoder_features
     if CONFIG_JSON_PATH and os.path.exists(CONFIG_JSON_PATH):
@@ -1326,7 +1326,7 @@ def distill(args):
             # Save modified config back to original location to overwrite
             with open(CONFIG_JSON_PATH, 'w') as f:
                 json.dump(config, f, indent=2)
-            print(f"[INFO] Overwritten config file: {CONFIG_JSON_PATH}")
+            print(f"[INFO] Overwritten config.json")
 
     if global_rank == 0:
         model = MapAnything.from_pretrained(
@@ -1346,9 +1346,10 @@ def distill(args):
         ).to(device)
     
     model_without_ddp = model
-    print(f"Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
+    print(f"[INFO] Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
 
     # ========== INITIALIZE STUDENT DECODER ==========
+    print(f"[INFO] Building student MaskDecoder...")
     sam_mask_decoder_student = build_sam_mask_decoder(
         embed_dim=256,
         num_multimask_outputs=3,
@@ -1363,9 +1364,9 @@ def distill(args):
     model_without_ddp.sam2_mask_decoder_student = sam_mask_decoder_student
 
     # ========== INITIALIZE TEACHER ENCODER ==========
+    print(f"[INFO] Preparing teacher feature extractor...")
     teacher_extractor = None
 
-    print(f"[INFO] Initializing online teacher feature extractor from {SAM2_PATH}")
     augment_cfg = {
         "enabled": getattr(args, "use_data_augmentation", True),
         "p_color_jitter": 0.75,     # 75% probabilità
@@ -1380,7 +1381,7 @@ def distill(args):
     teacher_extractor.to(device)
 
     # ========== INITIALIZE TEACHER DECODER ==========
-    print(f"[INFO] Loading teacher PromptEncoder and MaskDecoder from {SAM2_PATH}")
+    print(f"[INFO] Loading teacher PromptEncoder and MaskDecoder...")
     sam_prompt_encoder_teacher, sam_mask_decoder_teacher = load_sam2_teacher_prompt_and_decoder(
         checkpoint_path=SAM2_PATH,
         device=str(device),
@@ -1393,7 +1394,7 @@ def distill(args):
     # ========== BUILD DATALOADERS ==========
     
     # --- 1. TRAIN DATALOADER ---
-    print(f"Building train dataloader from {TRAIN_IMAGES_DIR}")
+    print(f"[INFO] Building train dataloader from {TRAIN_IMAGES_DIR}")
     train_image_paths = None
     
     # Logica Debug per SINGLE-VIEW: filtriamo la lista delle immagini PRIMA di creare il loader
@@ -1404,7 +1405,7 @@ def distill(args):
             if DistillationDataset._is_image_file(f)
         ])
         train_image_paths = random.sample(all_imgs, min(args.debug_max_train_images, len(all_imgs)))
-        print(f"[DEBUG] Single-View: Limited train to {len(train_image_paths)} IMAGES")
+        print(f"[INFO] Single-View: Limited train to {len(train_image_paths)} IMAGES")
     
     data_loader_train = build_distillation_dataloader(
         image_dir=TRAIN_IMAGES_DIR,
@@ -1427,7 +1428,7 @@ def distill(args):
         print(f"[DEBUG] Multi-View: Limited train to first {limit} SCENES (was {original_len})")
 
     # --- 2. VAL DATALOADER ---
-    print(f"Building val dataloader from {VAL_IMAGES_DIR}")
+    print(f"[INFO] Building val dataloader from {VAL_IMAGES_DIR}")
     val_image_paths = None
     
     # Logica Debug per SINGLE-VIEW
@@ -1462,12 +1463,12 @@ def distill(args):
 
     # ========== FREEZE STRATEGY ==========
     # 1. Freeze tutto inizialmente
-    print("Freezing all parameters...")
+    print("[INFO] Freezing all parameters...")
     for param in model.parameters():
         param.requires_grad = False
     
     # 2. Unfreeze dpt_feature_head_2 e sam2_compat (sempre trainable) e student MaskDecoder STUDENT ENCODER + DECODER
-    print("Unfreezing dpt_feature_head_2 and sam2_compat...")
+    print("[INFO] Unfreezing dpt_feature_head_2, sam2_compat, and sam2_mask_decoder_student...")
     for name, param in model.named_parameters():
         if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat") or name.startswith("sam2_mask_decoder_student"):
             param.requires_grad = True
@@ -1623,13 +1624,14 @@ def distill(args):
         weight_decay=args.weight_decay,
         betas=(0.9, 0.95),
     )
-    print(f"[OPT] Groups: encoder={sum(p.numel() for p in encoder_params):,} params @ LR {lr_encoder}, "
+    print(f"[INFO] Groups: encoder={sum(p.numel() for p in encoder_params):,} params @ LR {lr_encoder}, "
           f"decoder={sum(p.numel() for p in decoder_params):,} params @ LR {lr_decoder}, "
           f"dino={sum(p.numel() for p in dino_params):,} params @ LR {lr_dino}, "
           f"transformer={sum(p.numel() for p in transformer_params):,} params @ LR {lr_transformer}")
     
     # ========== WRAPPING IN DDP ==========
     if args.distributed.distributed:
+        print("[INFO] Wrapping model in DistributedDataParallel (DDP)...")
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[args.distributed.gpu],
@@ -1815,7 +1817,7 @@ def distill(args):
         wandb.init(**wandb_kwargs)
     
     # ========== TRAINING LOOP ==========
-    print(f"Start distillation training for {args.epochs} epochs from epoch {start_epoch}")
+    print(f"[INFO] Start distillation training for {args.epochs} epochs from epoch {start_epoch}")
     start_time = time.time()
     
     for epoch in range(start_epoch, args.epochs):

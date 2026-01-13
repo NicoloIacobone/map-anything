@@ -121,6 +121,8 @@ def _infer_teacher_decoder_flags_from_state_dict(
     keys = list(state_dict.keys())
     has_obj = any("object_score" in k or "obj_score" in k for k in keys)
     has_obj_mlp = any("pred_obj_scores_mlp" in k or "object_score_mlp" in k for k in keys)
+    # has_obj_mlp = any("pred_obj_score_head.layers" in k for k in keys)  # ← Fix: cerca .layers
+    # has_high_res = any("conv_s0" in k or "conv_s1" in k for k in keys)  # ← Fix: rileva conv
     return {
         "pred_obj_scores": has_obj,
         "pred_obj_scores_mlp": has_obj_mlp,
@@ -137,7 +139,7 @@ def load_sam2_teacher_prompt_and_decoder(
     embed_dim: int = 256,
 ) -> Tuple[PromptEncoder, MaskDecoder]:
     """Load SAM2 teacher PromptEncoder and MaskDecoder from checkpoint (both frozen)."""
-    print(f"[INFO] Loading SAM2 checkpoint from {checkpoint_path}")
+    print(f"[INFO] Loading SAM2 checkpoint for teacher PromptEncoder and MaskDecoder")
     ckpt = torch.load(checkpoint_path, map_location="cpu")
     sd = ckpt.get("model", ckpt)
 
@@ -176,6 +178,10 @@ def load_sam2_teacher_prompt_and_decoder(
         print(f"[WARN] PromptEncoder: missing={len(missing_pe)}, unexpected={len(unexpected_pe)}")
     if missing_md or unexpected_md:
         print(f"[WARN] MaskDecoder: missing={len(missing_md)}, unexpected={len(unexpected_md)}")
+        if missing_md:
+            print(f"  Missing keys: {missing_md[:5]}")  # Prime 5
+        if unexpected_md:
+            print(f"  Unexpected keys: {unexpected_md[:5]}")  # Prime 5
 
     prompt_encoder = prompt_encoder.to(device).eval()
     mask_decoder = mask_decoder.to(device).eval()
@@ -238,7 +244,7 @@ def load_sam2_feature_extractor(
     """Load SAM2 feature extractor from checkpoint."""
     image_encoder = build_sam2_image_encoder(model_size)
     
-    print(f"[INFO] Loading SAM2 checkpoint from {checkpoint_path}")
+    print(f"[INFO] Loading SAM2 checkpoint for teacher feature extractor")
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
     
     encoder_state = {}
