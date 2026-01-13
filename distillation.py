@@ -885,19 +885,19 @@ def train_one_epoch_distillation(
             decoder_weight = getattr(args, 'decoder_loss_weight', 1.0)
 
             # ========== PRINT DETTAGLIATO PRIMA ITERAZIONE ==========
-            if data_iter_step == 0 and epoch == 0:
-                print("\n" + "="*80)
-                print("FIRST BATCH LOSS BREAKDOWN")
-                print("="*80)
-                print(f"[ENCODER] MSE: {loss_details['mse_loss']:.6f}, Cosine: {loss_details['cos_loss']:.6f}, Total: {loss.item():.6f}")
-                print(f"[DECODER] Masks: {decoder_loss_details['decoder_loss_masks']:.6f}, "
-                    f"IoU: {decoder_loss_details['decoder_loss_iou']:.6f}, "
-                    f"Tokens: {decoder_loss_details['decoder_loss_tokens']:.6f}")
-                print(f"[DECODER] Total (before weight): {decoder_loss.item():.6f}")
-                print(f"[DECODER] Weight multiplier: {decoder_weight}")
-                print(f"[DECODER] Weighted total: {(decoder_weight * decoder_loss).item():.6f}")
-                print(f"[COMBINED] Final loss: {(loss + decoder_weight * decoder_loss).item():.6f}")
-                print("="*80 + "\n")
+            # if data_iter_step == 0 and epoch == 0:
+            #     print("\n" + "="*80)
+            #     print("FIRST BATCH LOSS BREAKDOWN")
+            #     print("="*80)
+            #     print(f"[ENCODER] MSE: {loss_details['mse_loss']:.6f}, Cosine: {loss_details['cos_loss']:.6f}, Total: {loss.item():.6f}")
+            #     print(f"[DECODER] Masks: {decoder_loss_details['decoder_loss_masks']:.6f}, "
+            #         f"IoU: {decoder_loss_details['decoder_loss_iou']:.6f}, "
+            #         f"Tokens: {decoder_loss_details['decoder_loss_tokens']:.6f}")
+            #     print(f"[DECODER] Total (before weight): {decoder_loss.item():.6f}")
+            #     print(f"[DECODER] Weight multiplier: {decoder_weight}")
+            #     print(f"[DECODER] Weighted total: {(decoder_weight * decoder_loss).item():.6f}")
+            #     print(f"[COMBINED] Final loss: {(loss + decoder_weight * decoder_loss).item():.6f}")
+            #     print("="*80 + "\n")
 
             loss = loss + decoder_weight * decoder_loss
             loss_details.update(decoder_loss_details)
@@ -961,32 +961,32 @@ def train_one_epoch_distillation(
         loss.backward()
 
         if (data_iter_step + 1) % accum_iter == 0:
-            print("\n" + "="*80)
-            print("GRAD CHECK - Sample gradient norms per group:")
-            for i, group in enumerate(optimizer.param_groups):
-                grad_squares = [p.grad**2 for p in group['params'] if p.grad is not None]
-                if len(grad_squares) > 0:
-                    grad_norm = torch.sqrt(sum((g.sum() for g in grad_squares)))
-                    group_name = ["encoder", "decoder", "transformer", "dino"][i] if i < 4 else f"group_{i}"
-                    print(f"  [{group_name}] Grad norm: {grad_norm.item():.6e}")
-                else:
-                    group_name = ["encoder", "decoder", "transformer", "dino"][i] if i < 4 else f"group_{i}"
-                    print(f"  [{group_name}] Grad norm: 0.0 (no gradients)")
-            print("="*80 + "\n")
+            # print("\n" + "="*80)
+            # print("GRAD CHECK - Sample gradient norms per group:")
+            # for i, group in enumerate(optimizer.param_groups):
+            #     grad_squares = [p.grad**2 for p in group['params'] if p.grad is not None]
+            #     if len(grad_squares) > 0:
+            #         grad_norm = torch.sqrt(sum((g.sum() for g in grad_squares)))
+            #         group_name = ["encoder", "decoder", "transformer", "dino"][i] if i < 4 else f"group_{i}"
+            #         print(f"  [{group_name}] Grad norm: {grad_norm.item():.6e}")
+            #     else:
+            #         group_name = ["encoder", "decoder", "transformer", "dino"][i] if i < 4 else f"group_{i}"
+            #         print(f"  [{group_name}] Grad norm: 0.0 (no gradients)")
+            # print("="*80 + "\n")
             if args.clip_grad > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
             optimizer.step()
             optimizer.zero_grad()
 
             # ========== PRINT LR DOPO PRIMO STEP ==========
-            if data_iter_step == 0 and epoch == 0:
-                print("\n" + "="*80)
-                print("LEARNING RATES AFTER FIRST OPTIMIZER STEP")
-                print("="*80)
-                for i, group in enumerate(optimizer.param_groups):
-                    group_name = ["encoder", "decoder", "transformer", "dino"][i] if i < 4 else f"group_{i}"
-                    print(f"  [{group_name}] Current LR: {group['lr']:.6e}")
-                print("="*80 + "\n")
+            # if data_iter_step == 0 and epoch == 0:
+            #     print("\n" + "="*80)
+            #     print("LEARNING RATES AFTER FIRST OPTIMIZER STEP")
+            #     print("="*80)
+            #     for i, group in enumerate(optimizer.param_groups):
+            #         group_name = ["encoder", "decoder", "transformer", "dino"][i] if i < 4 else f"group_{i}"
+            #         print(f"  [{group_name}] Current LR: {group['lr']:.6e}")
+            #     print("="*80 + "\n")
 
         # Accumulate weighted sums
         batch_size = student_features.shape[0]
@@ -1622,13 +1622,13 @@ def distill(args):
     ).to(device)
 
     # ========== VERIFICHE LOSS WEIGHTS ==========
-    print("\n" + "="*80)
-    print("LOSS WEIGHTS VERIFICATION")
-    print("="*80)
-    print(f"[ENCODER LOSS] MSE weight: {criterion.mse_weight}, Cosine weight: {criterion.cosine_weight}")
-    print(f"[DECODER LOSS] Masks: {decoder_criterion.weight_masks}, IoU: {decoder_criterion.weight_iou}, Tokens: {decoder_criterion.weight_tokens}")
-    print(f"[DECODER LOSS] Total weight multiplier: {getattr(args, 'decoder_loss_weight', 1.0)}")
-    print("="*80 + "\n")
+    # print("\n" + "="*80)
+    # print("LOSS WEIGHTS VERIFICATION")
+    # print("="*80)
+    # print(f"[ENCODER LOSS] MSE weight: {criterion.mse_weight}, Cosine weight: {criterion.cosine_weight}")
+    # print(f"[DECODER LOSS] Masks: {decoder_criterion.weight_masks}, IoU: {decoder_criterion.weight_iou}, Tokens: {decoder_criterion.weight_tokens}")
+    # print(f"[DECODER LOSS] Total weight multiplier: {getattr(args, 'decoder_loss_weight', 1.0)}")
+    # print("="*80 + "\n")
 
     # ========== OPTIMIZER con LR differenziati ==========
     encoder_params = [] # STUDENT ENCODER (dpt_head_2 + sam2_compat)
@@ -1677,18 +1677,18 @@ def distill(args):
           f"transformer={sum(p.numel() for p in transformer_params):,} params @ LR {lr_transformer}")
     
     # ========== VERIFICHE LEARNING RATES ==========
-    print("\n" + "="*80)
-    print("OPTIMIZER PARAM GROUPS VERIFICATION")
-    print("="*80)
-    print(f"Base LR: {args.lr}")
-    print(f"LR Scales: encoder={args.lr_encoder_scale}, decoder={args.lr_decoder_scale}, "
-        f"transformer={args.lr_transformer_scale}, dino={args.lr_dino_scale}")
-    print("\nActual param_groups in optimizer:")
-    for i, group in enumerate(optimizer.param_groups):
-        num_params = sum(p.numel() for p in group['params'])
-        group_name = ["encoder", "decoder", "transformer", "dino"][i] if i < 4 else f"group_{i}"
-        print(f"  [{group_name}] LR: {group['lr']:.6e}, Params: {num_params:,}, Weight decay: {group['weight_decay']}")
-    print("="*80 + "\n")
+    # print("\n" + "="*80)
+    # print("OPTIMIZER PARAM GROUPS VERIFICATION")
+    # print("="*80)
+    # print(f"Base LR: {args.lr}")
+    # print(f"LR Scales: encoder={args.lr_encoder_scale}, decoder={args.lr_decoder_scale}, "
+    #     f"transformer={args.lr_transformer_scale}, dino={args.lr_dino_scale}")
+    # print("\nActual param_groups in optimizer:")
+    # for i, group in enumerate(optimizer.param_groups):
+    #     num_params = sum(p.numel() for p in group['params'])
+    #     group_name = ["encoder", "decoder", "transformer", "dino"][i] if i < 4 else f"group_{i}"
+    #     print(f"  [{group_name}] LR: {group['lr']:.6e}, Params: {num_params:,}, Weight decay: {group['weight_decay']}")
+    # print("="*80 + "\n")
     
     # ========== WRAPPING IN DDP ==========
     if args.distributed.distributed:

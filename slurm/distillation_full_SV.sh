@@ -90,7 +90,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --amp \
   --debug_max_train_images 5000 \
   --debug_max_val_images 500 \
-  --save_visualizations \
+  --save_visualizations
 #   --num_info_sharing_blocks_unfreeze 12 \
 #   --num_dino_layers_unfreeze 24 \
 #   --lr_transformer_scale 0.1 \
