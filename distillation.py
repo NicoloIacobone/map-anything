@@ -1747,129 +1747,88 @@ def distill(args):
     # ========= RESUME FROM CHECKPOINT (IF SPECIFIED) ==========
     start_epoch = 0
     best_val_loss = float("inf")
+    
+    # Handle backward compatibility: if resume_ckpt is provided, load both encoder and decoder
     if args.resume_ckpt:
-        print(f"Resuming from checkpoint: {args.resume_ckpt}")
-        ckpt = torch.load(args.resume_ckpt, map_location=device, weights_only=False)
-        model_without_ddp.dpt_feature_head_2.load_state_dict(ckpt["dpt_feature_head_2"])
-
-        # Load sam2_compat if present in checkpoint
-        if "sam2_compat" in ckpt and hasattr(model_without_ddp, "sam2_compat"):
-            model_without_ddp.sam2_compat.load_state_dict(ckpt["sam2_compat"])
-            print("[INFO] Loaded sam2_compat state from checkpoint")
-        elif hasattr(model_without_ddp, "sam2_compat"):
-            print("[WARN] sam2_compat exists on model but not found in checkpoint. Using random initialization.")
-
-        # Restore unfrozen info_sharing blocks if present
-        if "info_sharing_blocks" in ckpt and hasattr(model_without_ddp, "info_sharing"):
-            info = model_without_ddp.info_sharing
-            blocks = getattr(info, "self_attention_blocks", None)
-            if blocks is None:
-                print("[WARN] info_sharing has no self_attention_blocks. Skipping restore.")
-                blocks = []
-
-            saved_indices = ckpt.get("info_sharing_unfrozen_indices", [])
-            missing = []
-            for idx, state_dict in ckpt["info_sharing_blocks"].items():
-                if idx < len(blocks):
-                    try:
-                        blocks[idx].load_state_dict(state_dict)
-                    except Exception as e:
-                        print(f"[WARN] Failed loading info_sharing block {idx}: {e}")
-                else:
-                    missing.append(idx)
-            print(f"[INFO] Restored unfrozen info_sharing blocks from checkpoint: {saved_indices}")
-            if missing:
-                print(f"[WARN] Saved block indices not present in current model: {missing}")
-            args.info_sharing_unfrozen_indices = saved_indices
-
-            if "info_sharing_wrappers" in ckpt:
-                for name, data in ckpt["info_sharing_wrappers"].items():
-                    param = dict(model_without_ddp.info_sharing.named_parameters())[name]
-                    param.data.copy_(data)
-                    param.requires_grad = True
-                print(f"[RESUME] Restored {len(ckpt['info_sharing_wrappers'])} info_sharing wrapper params")
-
-        # Restore unfrozen DINOv2 blocks
-        if "dino_encoder_blocks" in ckpt and hasattr(model_without_ddp, "encoder"):
-            dino_encoder = model_without_ddp.encoder
-            dino_model = dino_encoder.model if hasattr(dino_encoder, "model") else dino_encoder
-            blocks = getattr(dino_model, "blocks", None)
-            if blocks is None:
-                print("[WARN] DINO model has no .blocks. Skipping restore.")
-                blocks = []
-
-            for idx, state_dict in ckpt["dino_encoder_blocks"].items():
-                if idx < len(blocks):
-                    try:
-                        blocks[idx].load_state_dict(state_dict)
-                    except Exception as e:
-                        print(f"[WARN] Failed loading DINOv2 block {idx}: {e}")
-            print(f"[INFO] Restored unfrozen DINOv2 encoder blocks from checkpoint")
-            args.dino_unfrozen_indices = list(ckpt["dino_encoder_blocks"].keys())
-
-            if "dino_encoder_wrappers" in ckpt:
-                for name, data in ckpt["dino_encoder_wrappers"].items():
-                    param = dict(dino_model.named_parameters())[name]
-                    param.data.copy_(data)
-                    param.requires_grad = True
-                print(f"[RESUME] Restored {len(ckpt['dino_encoder_wrappers'])} DINOv2 wrapper params")
-
-        # Load student mask decoder if present
-        if "sam2_mask_decoder_student" in ckpt and hasattr(model_without_ddp, "sam2_mask_decoder_student"):
-            model_without_ddp.sam2_mask_decoder_student.load_state_dict(ckpt["sam2_mask_decoder_student"])
-            print("[INFO] Loaded sam2_mask_decoder_student state from checkpoint")
-        elif hasattr(model_without_ddp, "sam2_mask_decoder_student"):
-            print("[WARN] sam2_mask_decoder_student exists on model but not found in checkpoint. Using random initialization.")
-
-        optimizer.load_state_dict(ckpt["optimizer"])
-
+        print(f"[RESUME] Using legacy --resume_ckpt (loads both encoder and decoder): {args.resume_ckpt}")
+        args.resume_encoder_ckpt = args.resume_ckpt
+        args.resume_decoder_ckpt = args.resume_ckpt
+    
+    # Load encoder checkpoint if specified
+    if args.resume_encoder_ckpt:
+        enc_start_epoch, enc_best_val_loss = load_encoder_checkpoint(
+            model_without_ddp=model_without_ddp,
+            checkpoint_path=args.resume_encoder_ckpt,
+            device=device,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            args=args,
+        )
+        start_epoch = max(start_epoch, enc_start_epoch)
+        best_val_loss = min(best_val_loss, enc_best_val_loss)
+        
+        # Handle LR override after encoder checkpoint load
         if args.lr_scheduler == "none" or args.override_lr:
-            # Rispetta i gruppi differenziati: encoder, decoder, transformer, dino
             if len(optimizer.param_groups) >= 4:
                 optimizer.param_groups[0]["lr"] = args.lr * args.lr_encoder_scale
                 optimizer.param_groups[1]["lr"] = args.lr * args.lr_decoder_scale
                 optimizer.param_groups[2]["lr"] = args.lr * args.lr_transformer_scale
                 optimizer.param_groups[3]["lr"] = args.lr * args.lr_dino_scale
                 print(
-                    "[INFO] Overriding optimizer LR: "
-                    f"encoder={optimizer.param_groups[0]['lr']}, "
-                    f"decoder={optimizer.param_groups[1]['lr']}, "
-                    f"transformer={optimizer.param_groups[2]['lr']}, "
-                    f"dino={optimizer.param_groups[3]['lr']}"
+                    "[INFO] Overriding optimizer LR after encoder load: "
+                    f"encoder={optimizer.param_groups[0]['lr']:.6e}, "
+                    f"decoder={optimizer.param_groups[1]['lr']:.6e}, "
+                    f"transformer={optimizer.param_groups[2]['lr']:.6e}, "
+                    f"dino={optimizer.param_groups[3]['lr']:.6e}"
                 )
-            else:
-                print(f"[WARN] Unexpected optimizer.param_groups={len(optimizer.param_groups)}; cannot override scaled LRs safely.")
-
-        # Scheduler resume logic
-        if args.lr_scheduler != "none" and "scheduler" in ckpt and not args.override_scheduler:
-            scheduler.load_state_dict(ckpt["scheduler"])
-            # If user provided a new T_max, overwrite it in the scheduler
-            if hasattr(scheduler, "T_max") and getattr(args, "overwrite_scheduler_t_max", False):
-                old_tmax = getattr(scheduler, "T_max", None)
-                scheduler.T_max = args.lr_scheduler_t_max
-                print(f"[INFO] Overriding scheduler T_max: {old_tmax} -> {scheduler.T_max}")
-        elif args.override_scheduler or args.lr_scheduler != "none":
-            print(f"[INFO] Using NEW scheduler from CLI: {args.lr_scheduler} (not loading from checkpoint)")
-
-            # [NUOVO] Se override scheduler, avanza manualmente per recuperare gli step persi
-            if args.override_scheduler and scheduler is not None:
-                resumed_epoch = ckpt.get("epoch", 0) + 1
-                
-                if args.lr_scheduler == "step":
-                    # StepLR: Chiama step() per ogni epoca già completata
-                    for _ in range(resumed_epoch):
-                        scheduler.step()
-                    print(f"[INFO] Advanced StepLR scheduler by {resumed_epoch} steps (current LR: {optimizer.param_groups[0]['lr']:.6e})")
-                
-                elif args.lr_scheduler == "cosine":
-                    # CosineAnnealingLR: Salta direttamente all'epoca corrente
-                    scheduler.last_epoch = resumed_epoch - 1  # last_epoch è 0-indexed
-                    scheduler.step()  # Aggiorna LR basato su last_epoch
-                    print(f"[INFO] Set CosineAnnealingLR to epoch {resumed_epoch} (current LR: {optimizer.param_groups[0]['lr']:.6e})")
-
-        start_epoch = ckpt.get("epoch", 0) + 1
-        best_val_loss = ckpt.get("best_val_loss", float("inf"))
-        print(f"Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
+    
+    # Load decoder checkpoint if specified
+    if args.resume_decoder_ckpt:
+        dec_start_epoch, dec_best_val_loss = load_decoder_checkpoint(
+            model_without_ddp=model_without_ddp,
+            checkpoint_path=args.resume_decoder_ckpt,
+            device=device,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            args=args,
+        )
+        start_epoch = max(start_epoch, dec_start_epoch)
+        best_val_loss = min(best_val_loss, dec_best_val_loss)
+        
+        # Handle LR override after decoder checkpoint load
+        if args.lr_scheduler == "none" or args.override_lr:
+            if len(optimizer.param_groups) >= 4:
+                optimizer.param_groups[0]["lr"] = args.lr * args.lr_encoder_scale
+                optimizer.param_groups[1]["lr"] = args.lr * args.lr_decoder_scale
+                optimizer.param_groups[2]["lr"] = args.lr * args.lr_transformer_scale
+                optimizer.param_groups[3]["lr"] = args.lr * args.lr_dino_scale
+                print(
+                    "[INFO] Overriding optimizer LR after decoder load: "
+                    f"encoder={optimizer.param_groups[0]['lr']:.6e}, "
+                    f"decoder={optimizer.param_groups[1]['lr']:.6e}, "
+                    f"transformer={optimizer.param_groups[2]['lr']:.6e}, "
+                    f"dino={optimizer.param_groups[3]['lr']:.6e}"
+                )
+    
+    # Scheduler advance logic if we resumed from a checkpoint
+    if args.resume_encoder_ckpt or args.resume_decoder_ckpt:
+        if args.override_scheduler and scheduler is not None:
+            resumed_epoch = start_epoch
+            
+            if args.lr_scheduler == "step":
+                # StepLR: Chiama step() per ogni epoca già completata
+                for _ in range(resumed_epoch):
+                    scheduler.step()
+                print(f"[INFO] Advanced StepLR scheduler by {resumed_epoch} steps (current LR: {optimizer.param_groups[0]['lr']:.6e})")
+            
+            elif args.lr_scheduler == "cosine":
+                # CosineAnnealingLR: Salta direttamente all'epoca corrente
+                scheduler.last_epoch = resumed_epoch - 1  # last_epoch è 0-indexed
+                scheduler.step()  # Aggiorna LR basato su last_epoch
+                print(f"[INFO] Set CosineAnnealingLR to epoch {resumed_epoch} (current LR: {optimizer.param_groups[0]['lr']:.6e})")
+        
+        if start_epoch > 0:
+            print(f"[RESUME] Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
     
     # ========== INITIALIZE WANDB (only if rank == 0) ==========
     if args.use_wandb and WANDB_AVAILABLE and global_rank == 0:
@@ -1932,16 +1891,42 @@ def distill(args):
                 print(f"New best validation loss: {best_val_loss:.6f}")
                 # Save best checkpoint
                 if global_rank == 0:
-                    save_checkpoint_distillation(
-                        model_without_ddp,
-                        optimizer,
-                        scheduler,
-                        epoch,
-                        best_val_loss,
-                        args.output_dir,
-                        tag="best",
-                        args=args,
-                    )
+                    # Default: save encoder and decoder separately
+                    if not args.save_combined_ckpt:
+                        if args.save_encoder_ckpt:
+                            save_encoder_checkpoint(
+                                model_without_ddp,
+                                optimizer,
+                                scheduler,
+                                epoch,
+                                best_val_loss,
+                                args.output_dir,
+                                tag="best",
+                                args=args,
+                            )
+                        if args.save_decoder_ckpt:
+                            save_decoder_checkpoint(
+                                model_without_ddp,
+                                optimizer,
+                                scheduler,
+                                epoch,
+                                best_val_loss,
+                                args.output_dir,
+                                tag="best",
+                                args=args,
+                            )
+                    # Legacy: save both in single file if --save_combined_ckpt is set
+                    else:
+                        save_checkpoint_distillation(
+                            model_without_ddp,
+                            optimizer,
+                            scheduler,
+                            epoch,
+                            best_val_loss,
+                            args.output_dir,
+                            tag="best",
+                            args=args,
+                        )
         
         # Step scheduler
         if scheduler is not None:
@@ -1959,16 +1944,42 @@ def distill(args):
         # Save checkpoint periodically
         if (epoch + 1) % args.save_freq == 0 or (epoch + 1) == args.epochs:
             if global_rank == 0:
-                save_checkpoint_distillation(
-                    model_without_ddp,
-                    optimizer,
-                    scheduler,
-                    epoch,
-                    best_val_loss,
-                    args.output_dir,
-                    tag=f"epoch{epoch+1}",
-                    args=args,
-                )
+                # Default: save encoder and decoder separately
+                if not args.save_combined_ckpt:
+                    if args.save_encoder_ckpt:
+                        save_encoder_checkpoint(
+                            model_without_ddp,
+                            optimizer,
+                            scheduler,
+                            epoch,
+                            best_val_loss,
+                            args.output_dir,
+                            tag=f"epoch{epoch+1}",
+                            args=args,
+                        )
+                    if args.save_decoder_ckpt:
+                        save_decoder_checkpoint(
+                            model_without_ddp,
+                            optimizer,
+                            scheduler,
+                            epoch,
+                            best_val_loss,
+                            args.output_dir,
+                            tag=f"epoch{epoch+1}",
+                            args=args,
+                        )
+                # Legacy: save both in single file if --save_combined_ckpt is set
+                else:
+                    save_checkpoint_distillation(
+                        model_without_ddp,
+                        optimizer,
+                        scheduler,
+                        epoch,
+                        best_val_loss,
+                        args.output_dir,
+                        tag=f"epoch{epoch+1}",
+                        args=args,
+                    )
         
         epoch_time = time.time() - epoch_start
 
@@ -2027,16 +2038,42 @@ def distill(args):
     
     # Save final checkpoint
     if global_rank == 0:
-        save_checkpoint_distillation(
-            model_without_ddp,
-            optimizer,
-            scheduler,
-            args.epochs - 1,
-            best_val_loss,
-            args.output_dir,
-            tag="final",
-            args=args,
-        )
+        # Default: save encoder and decoder separately
+        if not args.save_combined_ckpt:
+            if args.save_encoder_ckpt:
+                save_encoder_checkpoint(
+                    model_without_ddp,
+                    optimizer,
+                    scheduler,
+                    args.epochs - 1,
+                    best_val_loss,
+                    args.output_dir,
+                    tag="final",
+                    args=args,
+                )
+            if args.save_decoder_ckpt:
+                save_decoder_checkpoint(
+                    model_without_ddp,
+                    optimizer,
+                    scheduler,
+                    args.epochs - 1,
+                    best_val_loss,
+                    args.output_dir,
+                    tag="final",
+                    args=args,
+                )
+        # Legacy: save both in single file if --save_combined_ckpt is set
+        else:
+            save_checkpoint_distillation(
+                model_without_ddp,
+                optimizer,
+                scheduler,
+                args.epochs - 1,
+                best_val_loss,
+                args.output_dir,
+                tag="final",
+                args=args,
+            )
     
     total_time = time.time() - start_time
     print(f"Distillation training completed in {str(datetime.timedelta(seconds=int(total_time)))}")
@@ -2045,6 +2082,363 @@ def distill(args):
         wandb.finish()
 
 # ==================== Checkpoint Management ====================
+
+def load_encoder_checkpoint(
+    model_without_ddp,
+    checkpoint_path: str,
+    device: torch.device,
+    optimizer=None,
+    scheduler=None,
+    args=None,
+) -> Tuple[int, float]:
+    """
+    Load checkpoint containing only ENCODER trainable components.
+    
+    Loads:
+        - dpt_feature_head_2 (student encoder)
+        - sam2_compat (student encoder compatibility layer)
+        - unfrozen info_sharing blocks (multi-view transformer)
+        - unfrozen DINOv2 encoder blocks
+        - optimizer state (if provided)
+        - scheduler state (if provided and not overridden)
+    
+    Args:
+        model_without_ddp: Model without DDP wrapper
+        checkpoint_path: Path to encoder checkpoint
+        device: Device to load checkpoint on
+        optimizer: Optimizer (optional, for loading optimizer state)
+        scheduler: Scheduler (optional, for loading scheduler state)
+        args: Training arguments with override flags
+    
+    Returns:
+        (start_epoch, best_val_loss) tuple from checkpoint
+    """
+    print(f"[LOAD] Loading encoder checkpoint: {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    # Load encoder head
+    if "dpt_feature_head_2" in ckpt:
+        model_without_ddp.dpt_feature_head_2.load_state_dict(ckpt["dpt_feature_head_2"])
+        print("[INFO] Loaded dpt_feature_head_2 state from encoder checkpoint")
+    else:
+        print("[WARN] dpt_feature_head_2 not found in encoder checkpoint!")
+    
+    # Load sam2_compat if present
+    if "sam2_compat" in ckpt and hasattr(model_without_ddp, "sam2_compat"):
+        model_without_ddp.sam2_compat.load_state_dict(ckpt["sam2_compat"])
+        print("[INFO] Loaded sam2_compat state from encoder checkpoint")
+    elif hasattr(model_without_ddp, "sam2_compat"):
+        print("[INFO] sam2_compat not in encoder checkpoint; using random initialization")
+    
+    # Load unfrozen info_sharing blocks
+    if "info_sharing_blocks" in ckpt and hasattr(model_without_ddp, "info_sharing"):
+        info = model_without_ddp.info_sharing
+        blocks = getattr(info, "self_attention_blocks", None)
+        if blocks is None:
+            print("[WARN] info_sharing has no self_attention_blocks. Skipping restore.")
+            blocks = []
+        
+        saved_indices = ckpt.get("info_sharing_unfrozen_indices", [])
+        for idx, state_dict in ckpt["info_sharing_blocks"].items():
+            if idx < len(blocks):
+                try:
+                    blocks[idx].load_state_dict(state_dict)
+                except Exception as e:
+                    print(f"[WARN] Failed loading info_sharing block {idx}: {e}")
+        
+        print(f"[INFO] Restored {len(saved_indices)} unfrozen info_sharing blocks from encoder checkpoint")
+        if args is not None:
+            args.info_sharing_unfrozen_indices = saved_indices
+        
+        # Load wrapper params if present
+        if "info_sharing_wrappers" in ckpt:
+            for name, data in ckpt["info_sharing_wrappers"].items():
+                try:
+                    param = dict(model_without_ddp.info_sharing.named_parameters())[name]
+                    param.data.copy_(data)
+                    param.requires_grad = True
+                except Exception as e:
+                    print(f"[WARN] Failed loading info_sharing wrapper param {name}: {e}")
+            print(f"[INFO] Restored {len(ckpt['info_sharing_wrappers'])} info_sharing wrapper params")
+    
+    # Load unfrozen DINOv2 blocks
+    if "dino_encoder_blocks" in ckpt and hasattr(model_without_ddp, "encoder"):
+        dino_encoder = model_without_ddp.encoder
+        dino_model = dino_encoder.model if hasattr(dino_encoder, "model") else dino_encoder
+        blocks = getattr(dino_model, "blocks", None)
+        if blocks is None:
+            print("[WARN] DINO model has no .blocks. Skipping restore.")
+            blocks = []
+        
+        for idx, state_dict in ckpt["dino_encoder_blocks"].items():
+            if idx < len(blocks):
+                try:
+                    blocks[idx].load_state_dict(state_dict)
+                except Exception as e:
+                    print(f"[WARN] Failed loading DINOv2 block {idx}: {e}")
+        
+        print(f"[INFO] Restored {len(ckpt['dino_encoder_blocks'])} unfrozen DINOv2 encoder blocks")
+        if args is not None:
+            args.dino_unfrozen_indices = list(ckpt["dino_encoder_blocks"].keys())
+        
+        # Load wrapper params if present
+        if "dino_encoder_wrappers" in ckpt:
+            for name, data in ckpt["dino_encoder_wrappers"].items():
+                try:
+                    param = dict(dino_model.named_parameters())[name]
+                    param.data.copy_(data)
+                    param.requires_grad = True
+                except Exception as e:
+                    print(f"[WARN] Failed loading DINOv2 wrapper param {name}: {e}")
+            print(f"[INFO] Restored {len(ckpt['dino_encoder_wrappers'])} DINOv2 wrapper params")
+    
+    # Load optimizer state if provided
+    if optimizer is not None and "optimizer" in ckpt:
+        try:
+            optimizer.load_state_dict(ckpt["optimizer"])
+            print("[INFO] Loaded optimizer state from encoder checkpoint")
+        except Exception as e:
+            print(f"[WARN] Failed loading optimizer state: {e}")
+    
+    # Load scheduler state if provided
+    if scheduler is not None and "scheduler" in ckpt and not getattr(args, "override_scheduler", False):
+        try:
+            scheduler.load_state_dict(ckpt["scheduler"])
+            print("[INFO] Loaded scheduler state from encoder checkpoint")
+        except Exception as e:
+            print(f"[WARN] Failed loading scheduler state: {e}")
+    
+    start_epoch = ckpt.get("epoch", 0) + 1
+    best_val_loss = ckpt.get("best_val_loss", float("inf"))
+    
+    return start_epoch, best_val_loss
+
+
+def load_decoder_checkpoint(
+    model_without_ddp,
+    checkpoint_path: str,
+    device: torch.device,
+    optimizer=None,
+    scheduler=None,
+    args=None,
+) -> Tuple[int, float]:
+    """
+    Load checkpoint containing only DECODER trainable components.
+    
+    Loads:
+        - sam2_mask_decoder_student (student decoder)
+        - optimizer state (if provided)
+        - scheduler state (if provided and not overridden)
+    
+    Args:
+        model_without_ddp: Model without DDP wrapper
+        checkpoint_path: Path to decoder checkpoint
+        device: Device to load checkpoint on
+        optimizer: Optimizer (optional, for loading optimizer state)
+        scheduler: Scheduler (optional, for loading scheduler state)
+        args: Training arguments with override flags
+    
+    Returns:
+        (start_epoch, best_val_loss) tuple from checkpoint
+    """
+    print(f"[LOAD] Loading decoder checkpoint: {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    # Load decoder
+    if "sam2_mask_decoder_student" in ckpt and hasattr(model_without_ddp, "sam2_mask_decoder_student"):
+        model_without_ddp.sam2_mask_decoder_student.load_state_dict(ckpt["sam2_mask_decoder_student"])
+        print("[INFO] Loaded sam2_mask_decoder_student state from decoder checkpoint")
+    elif hasattr(model_without_ddp, "sam2_mask_decoder_student"):
+        print("[WARN] sam2_mask_decoder_student not found in decoder checkpoint; using random initialization")
+    else:
+        print("[WARN] sam2_mask_decoder_student not present in model!")
+    
+    # Load optimizer state if provided
+    if optimizer is not None and "optimizer" in ckpt:
+        try:
+            optimizer.load_state_dict(ckpt["optimizer"])
+            print("[INFO] Loaded optimizer state from decoder checkpoint")
+        except Exception as e:
+            print(f"[WARN] Failed loading optimizer state: {e}")
+    
+    # Load scheduler state if provided
+    if scheduler is not None and "scheduler" in ckpt and not getattr(args, "override_scheduler", False):
+        try:
+            scheduler.load_state_dict(ckpt["scheduler"])
+            print("[INFO] Loaded scheduler state from decoder checkpoint")
+        except Exception as e:
+            print(f"[WARN] Failed loading scheduler state: {e}")
+    
+    start_epoch = ckpt.get("epoch", 0) + 1
+    best_val_loss = ckpt.get("best_val_loss", float("inf"))
+    
+    return start_epoch, best_val_loss
+
+
+def save_encoder_checkpoint(
+    model_without_ddp,
+    optimizer,
+    scheduler,
+    epoch: int,
+    best_val_loss: float,
+    output_dir: str,
+    tag: str = "last",
+    args=None,
+):
+    """
+    Save checkpoint containing only ENCODER trainable components.
+    
+    Saves:
+        - dpt_feature_head_2 (student encoder)
+        - sam2_compat (student encoder compatibility layer)
+        - unfrozen info_sharing blocks (multi-view transformer)
+        - unfrozen DINOv2 encoder blocks
+        - optimizer state (encoder only)
+        - scheduler state
+        - training metadata (epoch, best_val_loss, wandb_run_id)
+    
+    Args:
+        model_without_ddp: Model without DDP wrapper
+        optimizer: Optimizer
+        scheduler: Learning rate scheduler
+        epoch: Current epoch
+        best_val_loss: Best validation loss so far
+        output_dir: Directory to save checkpoint
+        tag: Tag for checkpoint filename (e.g., "best", "last", "epoch10")
+        args: Training arguments with unfrozen indices info
+    """
+    state = {
+        "dpt_feature_head_2": model_without_ddp.dpt_feature_head_2.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "epoch": epoch,
+        "best_val_loss": best_val_loss,
+    }
+
+    # Save sam2_compat if present
+    if hasattr(model_without_ddp, "sam2_compat"):
+        state["sam2_compat"] = model_without_ddp.sam2_compat.state_dict()
+        print("[INFO] Added sam2_compat to encoder checkpoint")
+
+    # Save unfrozen info_sharing blocks if any
+    if args is not None and hasattr(model_without_ddp, "info_sharing") and getattr(args, "info_sharing_unfrozen_indices", []):
+        info = model_without_ddp.info_sharing
+        blocks = getattr(info, "self_attention_blocks", None)
+        if blocks is None:
+            blocks = []
+        indices = [i for i in getattr(args, "info_sharing_unfrozen_indices", []) if i < len(blocks)]
+        state["info_sharing_unfrozen_indices"] = indices
+        state["info_sharing_blocks"] = {i: blocks[i].state_dict() for i in indices}
+        print(f"[INFO] Added {len(indices)} unfrozen info_sharing blocks to encoder checkpoint: {indices}")
+
+        if args.num_info_sharing_blocks_unfreeze == 24:
+            wrapper_state = {}
+            for name, param in model_without_ddp.info_sharing.named_parameters():
+                if name.startswith(("proj_embed", "norm")):
+                    wrapper_state[name] = param.data.clone()
+            if wrapper_state:
+                state["info_sharing_wrappers"] = wrapper_state
+                print(f"[INFO] Added {len(wrapper_state)} info_sharing wrapper params to encoder checkpoint")
+
+    # Save unfrozen DINOv2 blocks
+    if args is not None and hasattr(args, 'dino_unfrozen_indices') and args.dino_unfrozen_indices:
+        dino_encoder = model_without_ddp.encoder
+        dino_model = dino_encoder.model if hasattr(dino_encoder, "model") else dino_encoder
+        blocks = getattr(dino_model, "blocks", None)
+        if blocks is None:
+            blocks = []
+        
+        state["dino_encoder_blocks"] = {}
+        if blocks:
+            for idx in args.dino_unfrozen_indices:
+                if idx < len(blocks):
+                    state["dino_encoder_blocks"][idx] = blocks[idx].state_dict()
+
+        if args.num_dino_layers_unfreeze == 24:
+            wrapper_state = {}
+            dino_model = dino_encoder.model if hasattr(dino_encoder, "model") else dino_encoder
+            for name, param in dino_model.named_parameters():
+                if name.startswith(("patch_embed.proj", "pos_embed", "cls_token", "norm")):
+                    wrapper_state[name] = param.data.clone()
+            if wrapper_state:
+                state["dino_encoder_wrappers"] = wrapper_state
+                print(f"[INFO] Added {len(wrapper_state)} DINOv2 wrapper params to encoder checkpoint")
+
+        print(f"[INFO] Added {len(state['dino_encoder_blocks'])} unfrozen DINOv2 encoder blocks to encoder checkpoint: {list(state['dino_encoder_blocks'].keys())}")
+
+    if scheduler is not None:
+        state["scheduler"] = scheduler.state_dict()
+    
+    # Save wandb run_id if available
+    if WANDB_AVAILABLE and wandb.run is not None:
+        state["wandb_run_id"] = wandb.run.id
+    
+    # Crea la sottocartella checkpoints
+    ckpt_dir = Path(output_dir) / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    
+    ckpt_path = ckpt_dir / f"checkpoint_encoder_{tag}.pth"
+    torch.save(state, ckpt_path)
+    print(f"[SAVE] Encoder checkpoint saved: {ckpt_path}")
+
+
+def save_decoder_checkpoint(
+    model_without_ddp,
+    optimizer,
+    scheduler,
+    epoch: int,
+    best_val_loss: float,
+    output_dir: str,
+    tag: str = "last",
+    args=None,
+):
+    """
+    Save checkpoint containing only DECODER trainable components.
+    
+    Saves:
+        - sam2_mask_decoder_student (student decoder)
+        - optimizer state (decoder only)
+        - scheduler state
+        - training metadata (epoch, best_val_loss, wandb_run_id)
+    
+    Args:
+        model_without_ddp: Model without DDP wrapper
+        optimizer: Optimizer
+        scheduler: Learning rate scheduler
+        epoch: Current epoch
+        best_val_loss: Best validation loss so far
+        output_dir: Directory to save checkpoint
+        tag: Tag for checkpoint filename (e.g., "best", "last", "epoch10")
+        args: Training arguments
+    """
+    state = {
+        "optimizer": optimizer.state_dict(),
+        "epoch": epoch,
+        "best_val_loss": best_val_loss,
+    }
+
+    # Save student mask decoder if present
+    if hasattr(model_without_ddp, "sam2_mask_decoder_student"):
+        state["sam2_mask_decoder_student"] = model_without_ddp.sam2_mask_decoder_student.state_dict()
+        print("[INFO] Added sam2_mask_decoder_student to decoder checkpoint")
+    else:
+        print("[WARN] sam2_mask_decoder_student not found in model!")
+
+    if scheduler is not None:
+        state["scheduler"] = scheduler.state_dict()
+    
+    # Save wandb run_id if available
+    if WANDB_AVAILABLE and wandb.run is not None:
+        state["wandb_run_id"] = wandb.run.id
+    
+    # Crea la sottocartella checkpoints
+    ckpt_dir = Path(output_dir) / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    
+    ckpt_path = ckpt_dir / f"checkpoint_decoder_{tag}.pth"
+    torch.save(state, ckpt_path)
+    print(f"[SAVE] Decoder checkpoint saved: {ckpt_path}")
+
+
 def save_checkpoint_distillation(
     model_without_ddp,
     optimizer,
@@ -2057,6 +2451,9 @@ def save_checkpoint_distillation(
 ):
     """
     Save checkpoint containing trainable components for distillation.
+    
+    DEPRECATED: This function is kept for backward compatibility.
+    Use save_encoder_checkpoint and save_decoder_checkpoint separately instead.
     
     Saves:
         - dpt_feature_head_2 (student encoder)
@@ -2224,7 +2621,12 @@ def get_args_parser():
     parser.add_argument("--max_views", type=int, default=6, help="Max views per scene. Train: Random Sample. Val: First N.")
     
     # Checkpointing
-    parser.add_argument("--resume_ckpt", type=str, default=None, help="Path to checkpoint to resume from")
+    parser.add_argument("--resume_ckpt", type=str, default=None, help="[DEPRECATED] Path to checkpoint to resume from (loads both encoder and decoder)")
+    parser.add_argument("--resume_encoder_ckpt", type=str, default=None, help="Path to encoder checkpoint to load")
+    parser.add_argument("--resume_decoder_ckpt", type=str, default=None, help="Path to decoder checkpoint to load")
+    parser.add_argument("--save_encoder_ckpt", action="store_false", default=True, help="Disable separate encoder checkpoint saving (saves combined by default)")
+    parser.add_argument("--save_decoder_ckpt", action="store_false", default=True, help="Disable separate decoder checkpoint saving (saves combined by default)")
+    parser.add_argument("--save_combined_ckpt", action="store_true", default=False, help="Save encoder and decoder in a single combined checkpoint file (legacy behavior)")
     parser.add_argument("--save_freq", type=int, default=10, help="Save checkpoint every N epochs")
     parser.add_argument("--eval_freq", type=int, default=1, help="Run validation every N epochs")
     
