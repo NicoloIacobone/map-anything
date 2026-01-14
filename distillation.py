@@ -939,20 +939,23 @@ def train_one_epoch_distillation(
         ):
             if data_iter_step % getattr(args, "log_freq", 100) == 0:
                 log_dict = {
-                    "train/enc_loss": float(loss_value),
-                    "train/enc_mse_loss": float(mse_value),
-                    "train/enc_cos_loss": float(cos_value),
-                    "train/enc_cos_sim": float(cos_sim_value),
-                    "train/lr": float(optimizer.param_groups[0]["lr"]),
+                    # Encoder metrics (batch-level)
+                    "train_encoder/enc_loss": float(loss_value),
+                    "train_encoder/enc_mse_loss": float(mse_value),
+                    "train_encoder/enc_cos_loss": float(cos_value),
+                    "train_encoder/enc_cos_sim": float(cos_sim_value),
+                    # Decoder metrics (batch-level)
+                    "train_decoder/decoder_loss_total": float(decoder_loss_total),
+                    "train_decoder/decoder_loss_masks": float(decoder_loss_masks),
+                    "train_decoder/decoder_loss_iou": float(decoder_loss_iou),
+                    "train_decoder/decoder_loss_tokens": float(decoder_loss_tokens),
+                    # Progress
                     "epoch_progress": epoch_f,
                 }
                 # Aggiungi metriche decoder se presenti
                 if decoder_loss_total > 0:
                     log_dict.update({
-                        "train/decoder_loss_total": float(decoder_loss_total),
-                        "train/decoder_loss_masks": float(decoder_loss_masks),
-                        "train/decoder_loss_iou": float(decoder_loss_iou),
-                        "train/decoder_loss_tokens": float(decoder_loss_tokens),
+                        "train_decoder/lr": float(optimizer.param_groups[0]["lr"]),
                     })
                 wandb.log(log_dict)
         
@@ -1974,39 +1977,38 @@ def distill(args):
             log_dict = {
                 "epoch": epoch + 1,
                 # Encoder metrics (train)
-                "train_enc_loss": train_stats.get("train_enc_loss", 0.0),
-                "train_enc_mse_loss": train_stats.get("train_enc_mse_loss", 0.0),
-                "train_enc_cos_loss": train_stats.get("train_enc_cos_loss", 0.0),
-                "train_enc_mean_diff": train_stats.get("train_enc_mean_diff", 0.0),
-                "train_enc_std_diff": train_stats.get("train_enc_std_diff", 0.0),
-                "train_enc_cos_sim": train_stats.get("train_enc_cos_sim", 0.0),
+                "test_encoder/train_enc_loss": train_stats.get("train_enc_loss", 0.0),
+                "test_encoder/train_enc_mse_loss": train_stats.get("train_enc_mse_loss", 0.0),
+                "test_encoder/train_enc_cos_loss": train_stats.get("train_enc_cos_loss", 0.0),
+                "test_encoder/train_enc_mean_diff": train_stats.get("train_enc_mean_diff", 0.0),
+                "test_encoder/train_enc_std_diff": train_stats.get("train_enc_std_diff", 0.0),
+                "test_encoder/train_enc_cos_sim": train_stats.get("train_enc_cos_sim", 0.0),
                 # Decoder metrics (train)
-                "train_decoder_loss_total": train_stats.get("train_decoder_loss_total", 0.0),
-                "train_decoder_loss_masks": train_stats.get("train_decoder_loss_masks", 0.0),
-                "train_decoder_loss_iou": train_stats.get("train_decoder_loss_iou", 0.0),
-                "train_decoder_loss_tokens": train_stats.get("train_decoder_loss_tokens", 0.0),
-                # Total loss (train)
-                "train_loss_total": train_stats.get("train_loss_total", 0.0),
-                # Learning rate & time
-                "lr": optimizer.param_groups[0]["lr"],
-                "epoch_time_sec": epoch_time,
+                "test_decoder/train_decoder_loss_total": train_stats.get("train_decoder_loss_total", 0.0),
+                "test_decoder/train_decoder_loss_masks": train_stats.get("train_decoder_loss_masks", 0.0),
+                "test_decoder/train_decoder_loss_iou": train_stats.get("train_decoder_loss_iou", 0.0),
+                "test_decoder/train_decoder_loss_tokens": train_stats.get("train_decoder_loss_tokens", 0.0),
+                # Total loss and metrics (train)
+                "test_totale/train_loss_total": train_stats.get("train_loss_total", 0.0),
+                "test_totale/lr": optimizer.param_groups[0]["lr"],
+                "test_totale/epoch_time_sec": epoch_time,
             }
             if val_stats:
                 log_dict.update({
                     # Encoder metrics (val)
-                    "val_enc_loss": val_stats.get("val_enc_loss", 0.0),
-                    "val_enc_mse_loss": val_stats.get("val_enc_mse_loss", 0.0),
-                    "val_enc_cos_loss": val_stats.get("val_enc_cos_loss", 0.0),
-                    "val_enc_mean_diff": val_stats.get("val_enc_mean_diff", 0.0),
-                    "val_enc_std_diff": val_stats.get("val_enc_std_diff", 0.0),
-                    "val_enc_cos_sim": val_stats.get("val_enc_cos_sim", 0.0),
+                    "test_encoder/val_enc_loss": val_stats.get("val_enc_loss", 0.0),
+                    "test_encoder/val_enc_mse_loss": val_stats.get("val_enc_mse_loss", 0.0),
+                    "test_encoder/val_enc_cos_loss": val_stats.get("val_enc_cos_loss", 0.0),
+                    "test_encoder/val_enc_mean_diff": val_stats.get("val_enc_mean_diff", 0.0),
+                    "test_encoder/val_enc_std_diff": val_stats.get("val_enc_std_diff", 0.0),
+                    "test_encoder/val_enc_cos_sim": val_stats.get("val_enc_cos_sim", 0.0),
                     # Decoder metrics (val)
-                    "val_decoder_loss_total": val_stats.get("val_decoder_loss_total", 0.0),
-                    "val_decoder_loss_masks": val_stats.get("val_decoder_loss_masks", 0.0),
-                    "val_decoder_loss_iou": val_stats.get("val_decoder_loss_iou", 0.0),
-                    "val_decoder_loss_tokens": val_stats.get("val_decoder_loss_tokens", 0.0),
+                    "test_decoder/val_decoder_loss_total": val_stats.get("val_decoder_loss_total", 0.0),
+                    "test_decoder/val_decoder_loss_masks": val_stats.get("val_decoder_loss_masks", 0.0),
+                    "test_decoder/val_decoder_loss_iou": val_stats.get("val_decoder_loss_iou", 0.0),
+                    "test_decoder/val_decoder_loss_tokens": val_stats.get("val_decoder_loss_tokens", 0.0),
                     # Total loss (val)
-                    "val_loss_total": val_stats.get("val_loss_total", 0.0),
+                    "test_totale/val_loss_total": val_stats.get("val_loss_total", 0.0),
                 })
             wandb.log(log_dict)
         
