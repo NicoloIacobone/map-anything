@@ -394,7 +394,7 @@ class TeacherFeatureExtractor:
         return self
 
 # ==================== Loss Functions ====================
-class DistillationLoss(torch.nn.Module):
+class EncoderDistillationLoss(torch.nn.Module):
     """
     Loss combinata MSE + (1 - Cosine Similarity) per la distillazione delle feature.
     
@@ -1613,7 +1613,7 @@ def distill(args):
         print_trainable_summary(model, detailed=True)
     
     # Initialize criterion for STUDENT ENCODER distillation
-    criterion = DistillationLoss(
+    criterion = EncoderDistillationLoss(
         mse_weight=args.mse_weight,
         cosine_weight=args.cosine_weight,
         normalize=args.normalize_features,
