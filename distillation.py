@@ -431,7 +431,7 @@ class DistillationLoss(torch.nn.Module):
         
         Returns:
             loss: valore scalare totale
-            loss_details: dizionario con componenti ('mse_loss','cos_loss','cos_sim')
+            loss_details: dizionario con componenti ('enc_mse_loss','enc_cos_loss','enc_cos_sim')
         Note:
             F.cosine_similarity(..., dim=1) produce (B,H,W); qui facciamo .mean() su tutte le posizioni.
         """
@@ -468,9 +468,9 @@ class DistillationLoss(torch.nn.Module):
         total_loss = self.mse_weight * mse_loss + self.cosine_weight * cos_loss
         
         loss_details = {
-            "mse_loss": mse_loss.item(),
-            "cos_loss": cos_loss.item(),
-            "cos_sim": cos_sim.item(),
+            "enc_mse_loss": mse_loss.item(),
+            "enc_cos_loss": cos_loss.item(),
+            "enc_cos_sim": cos_sim.item(),
         }
         
         return total_loss, loss_details
@@ -903,9 +903,9 @@ def train_one_epoch_distillation(
             loss_details.update(decoder_loss_details)
 
         # Extract metrics
-        mse_value = float(loss_details.get("mse_loss", 0.0))
-        cos_value = float(loss_details.get("cos_loss", 0.0))
-        cos_sim_value = float(loss_details.get("cos_sim", 0.0))
+        mse_value = float(loss_details.get("enc_mse_loss", 0.0))
+        cos_value = float(loss_details.get("enc_cos_loss", 0.0))
+        cos_sim_value = float(loss_details.get("enc_cos_sim", 0.0))
         
         # Decoder metrics (0.0 se decoder non attivo)
         decoder_loss_total = float(loss_details.get("decoder_loss_total", 0.0))
@@ -939,10 +939,10 @@ def train_one_epoch_distillation(
         ):
             if data_iter_step % getattr(args, "log_freq", 100) == 0:
                 log_dict = {
-                    "train/loss": float(loss_value),
-                    "train/mse_loss": float(mse_value),
-                    "train/cos_loss": float(cos_value),
-                    "train/cos_sim": float(cos_sim_value),
+                    "train/enc_loss": float(loss_value),
+                    "train/enc_mse_loss": float(mse_value),
+                    "train/enc_cos_loss": float(cos_value),
+                    "train/enc_cos_sim": float(cos_sim_value),
                     "train/lr": float(optimizer.param_groups[0]["lr"]),
                     "epoch_progress": epoch_f,
                 }
@@ -1015,16 +1015,17 @@ def train_one_epoch_distillation(
     # Return averaged stats
     denom = max(1, total_samples)
     results = {
-        "loss_mean": sum_loss / denom,
-        "mse_loss_mean": sum_mse / denom,
-        "cos_loss_mean": sum_cos / denom,
-        "cos_sim_mean": sum_cos_sim / denom,
-        "mean_diff": sum_mean_diff / denom,
-        "std_diff": sum_std_diff / denom,
-        "decoder_loss_total_mean": sum_decoder_loss_total / denom,
-        "decoder_loss_masks_mean": sum_decoder_loss_masks / denom,
-        "decoder_loss_iou_mean": sum_decoder_loss_iou / denom,
-        "decoder_loss_tokens_mean": sum_decoder_loss_tokens / denom,
+        "train_enc_loss": sum_loss / denom,
+        "train_enc_mse_loss": sum_mse / denom,
+        "train_enc_cos_loss": sum_cos / denom,
+        "train_enc_cos_sim": sum_cos_sim / denom,
+        "train_enc_mean_diff": sum_mean_diff / denom,
+        "train_enc_std_diff": sum_std_diff / denom,
+        "train_decoder_loss_total": sum_decoder_loss_total / denom,
+        "train_decoder_loss_masks": sum_decoder_loss_masks / denom,
+        "train_decoder_loss_iou": sum_decoder_loss_iou / denom,
+        "train_decoder_loss_tokens": sum_decoder_loss_tokens / denom,
+        "train_loss_total": (sum_loss + sum_decoder_loss_total) / denom,
         "lr": optimizer.param_groups[0]["lr"],
         "samples": total_samples,
     }
@@ -1177,9 +1178,9 @@ def validate_one_epoch_distillation(
         
         # Extract metrics
         loss_value = loss.detach().cpu().item()
-        mse_value = float(loss_details.get("mse_loss", 0.0))
-        cos_value = float(loss_details.get("cos_loss", 0.0))
-        cos_sim_value = float(loss_details.get("cos_sim", 0.0))
+        mse_value = float(loss_details.get("enc_mse_loss", 0.0))
+        cos_value = float(loss_details.get("enc_cos_loss", 0.0))
+        cos_sim_value = float(loss_details.get("enc_cos_sim", 0.0))
         
         # Decoder metrics
         decoder_loss_total = float(loss_details.get("decoder_loss_total", 0.0))
@@ -1228,18 +1229,19 @@ def validate_one_epoch_distillation(
 
     denom = max(1, total_samples)
     results = {
-        "loss_mean": sum_loss / denom,
-        "mse_loss_mean": sum_mse / denom,
-        "cos_loss_mean": sum_cos / denom,
-        "cos_sim_mean": sum_cos_sim / denom,
-        "mean_diff": sum_mean_diff / denom,
-        "std_diff": sum_std_diff / denom,
-        "decoder_loss_total_mean": sum_decoder_loss_total / denom,
-        "decoder_loss_masks_mean": sum_decoder_loss_masks / denom,
-        "decoder_loss_iou_mean": sum_decoder_loss_iou / denom,
-        "decoder_loss_tokens_mean": sum_decoder_loss_tokens / denom,
+        "val_enc_loss": sum_loss / denom,
+        "val_enc_mse_loss": sum_mse / denom,
+        "val_enc_cos_loss": sum_cos / denom,
+        "val_enc_cos_sim": sum_cos_sim / denom,
+        "val_enc_mean_diff": sum_mean_diff / denom,
+        "val_enc_std_diff": sum_std_diff / denom,
+        "val_decoder_loss_total": sum_decoder_loss_total / denom,
+        "val_decoder_loss_masks": sum_decoder_loss_masks / denom,
+        "val_decoder_loss_iou": sum_decoder_loss_iou / denom,
+        "val_decoder_loss_tokens": sum_decoder_loss_tokens / denom,
+        "val_loss_total": (sum_loss + sum_decoder_loss_total) / denom,
         "samples": total_samples,
-        "loss_avg": sum_loss / denom,
+        "val_enc_loss_avg": sum_loss / denom,
     }
     return results
 
@@ -1972,17 +1974,19 @@ def distill(args):
             log_dict = {
                 "epoch": epoch + 1,
                 # Encoder metrics (train)
-                "train_loss": train_stats.get("loss_mean", 0.0),
-                "train_mse_loss": train_stats.get("mse_loss_mean", 0.0),
-                "train_cos_loss": train_stats.get("cos_loss_mean", 0.0),
-                "train_mean_diff": train_stats.get("mean_diff", 0.0),
-                "train_std_diff": train_stats.get("std_diff", 0.0),
-                "train_cos_sim": train_stats.get("cos_sim_mean", 0.0),
+                "train_enc_loss": train_stats.get("train_enc_loss", 0.0),
+                "train_enc_mse_loss": train_stats.get("train_enc_mse_loss", 0.0),
+                "train_enc_cos_loss": train_stats.get("train_enc_cos_loss", 0.0),
+                "train_enc_mean_diff": train_stats.get("train_enc_mean_diff", 0.0),
+                "train_enc_std_diff": train_stats.get("train_enc_std_diff", 0.0),
+                "train_enc_cos_sim": train_stats.get("train_enc_cos_sim", 0.0),
                 # Decoder metrics (train)
-                "train_decoder_loss_total": train_stats.get("decoder_loss_total_mean", 0.0),
-                "train_decoder_loss_masks": train_stats.get("decoder_loss_masks_mean", 0.0),
-                "train_decoder_loss_iou": train_stats.get("decoder_loss_iou_mean", 0.0),
-                "train_decoder_loss_tokens": train_stats.get("decoder_loss_tokens_mean", 0.0),
+                "train_decoder_loss_total": train_stats.get("train_decoder_loss_total", 0.0),
+                "train_decoder_loss_masks": train_stats.get("train_decoder_loss_masks", 0.0),
+                "train_decoder_loss_iou": train_stats.get("train_decoder_loss_iou", 0.0),
+                "train_decoder_loss_tokens": train_stats.get("train_decoder_loss_tokens", 0.0),
+                # Total loss (train)
+                "train_loss_total": train_stats.get("train_loss_total", 0.0),
                 # Learning rate & time
                 "lr": optimizer.param_groups[0]["lr"],
                 "epoch_time_sec": epoch_time,
@@ -1990,30 +1994,32 @@ def distill(args):
             if val_stats:
                 log_dict.update({
                     # Encoder metrics (val)
-                    "val_loss": val_stats.get("loss_mean", 0.0),
-                    "val_mse_loss": val_stats.get("mse_loss_mean", 0.0),
-                    "val_cos_loss": val_stats.get("cos_loss_mean", 0.0),
-                    "val_mean_diff": val_stats.get("mean_diff", 0.0),
-                    "val_std_diff": val_stats.get("std_diff", 0.0),
-                    "val_cosine_similarity": val_stats.get("cos_sim_mean", 0.0),
+                    "val_enc_loss": val_stats.get("val_enc_loss", 0.0),
+                    "val_enc_mse_loss": val_stats.get("val_enc_mse_loss", 0.0),
+                    "val_enc_cos_loss": val_stats.get("val_enc_cos_loss", 0.0),
+                    "val_enc_mean_diff": val_stats.get("val_enc_mean_diff", 0.0),
+                    "val_enc_std_diff": val_stats.get("val_enc_std_diff", 0.0),
+                    "val_enc_cos_sim": val_stats.get("val_enc_cos_sim", 0.0),
                     # Decoder metrics (val)
-                    "val_decoder_loss_total": val_stats.get("decoder_loss_total_mean", 0.0),
-                    "val_decoder_loss_masks": val_stats.get("decoder_loss_masks_mean", 0.0),
-                    "val_decoder_loss_iou": val_stats.get("decoder_loss_iou_mean", 0.0),
-                    "val_decoder_loss_tokens": val_stats.get("decoder_loss_tokens_mean", 0.0),
+                    "val_decoder_loss_total": val_stats.get("val_decoder_loss_total", 0.0),
+                    "val_decoder_loss_masks": val_stats.get("val_decoder_loss_masks", 0.0),
+                    "val_decoder_loss_iou": val_stats.get("val_decoder_loss_iou", 0.0),
+                    "val_decoder_loss_tokens": val_stats.get("val_decoder_loss_tokens", 0.0),
+                    # Total loss (val)
+                    "val_loss_total": val_stats.get("val_loss_total", 0.0),
                 })
             wandb.log(log_dict)
         
         # Console print con decoder loss
-        decoder_train_loss = train_stats.get("decoder_loss_total_mean", 0.0)
-        decoder_val_loss = val_stats.get("decoder_loss_total_mean", 0.0) if val_stats else 0.0
+        decoder_train_loss = train_stats.get("train_decoder_loss_total", 0.0)
+        decoder_val_loss = val_stats.get("val_decoder_loss_total", 0.0) if val_stats else 0.0
         
         print(
             f"Epoch {epoch+1}/{args.epochs} | "
-            f"Train Loss: {train_stats.get('loss_mean', 0):.6f} "
-            f"(Enc: {train_stats.get('mse_loss_mean', 0):.4f}, Dec: {decoder_train_loss:.4f}) | "
-            f"Val Loss: {val_stats.get('loss_mean', 0):.6f} "
-            f"(Enc: {val_stats.get('mse_loss_mean', 0) if val_stats else 0:.4f}, Dec: {decoder_val_loss:.4f}) | "
+            f"Train Loss: {train_stats.get('train_enc_loss', 0):.6f} "
+            f"(Enc: {train_stats.get('train_enc_mse_loss', 0):.4f}, Dec: {decoder_train_loss:.4f}) | "
+            f"Val Loss: {val_stats.get('val_enc_loss', 0):.6f} "
+            f"(Enc: {val_stats.get('val_enc_mse_loss', 0) if val_stats else 0:.4f}, Dec: {decoder_val_loss:.4f}) | "
             f"Time: {epoch_time:.2f}s"
         )
     
