@@ -1784,34 +1784,56 @@ def distill(args):
     
     # Load decoder checkpoint if specified
     if args.resume_decoder_ckpt:
-        dec_start_epoch, dec_best_val_loss = load_decoder_checkpoint(
-            model_without_ddp=model_without_ddp,
-            checkpoint_path=args.resume_decoder_ckpt,
-            device=device,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            args=args,
-        )
-        start_epoch = max(start_epoch, dec_start_epoch)
-        best_val_loss = min(best_val_loss, dec_best_val_loss)
-        
-        # Handle LR override after decoder checkpoint load
-        if args.lr_scheduler == "none" or args.override_lr:
-            if len(optimizer.param_groups) >= 4:
-                optimizer.param_groups[0]["lr"] = args.lr * args.lr_encoder_scale
-                optimizer.param_groups[1]["lr"] = args.lr * args.lr_decoder_scale
-                optimizer.param_groups[2]["lr"] = args.lr * args.lr_transformer_scale
-                optimizer.param_groups[3]["lr"] = args.lr * args.lr_dino_scale
-                print(
-                    "[INFO] Overriding optimizer LR after decoder load: "
-                    f"encoder={optimizer.param_groups[0]['lr']:.6e}, "
-                    f"decoder={optimizer.param_groups[1]['lr']:.6e}, "
-                    f"transformer={optimizer.param_groups[2]['lr']:.6e}, "
-                    f"dino={optimizer.param_groups[3]['lr']:.6e}"
-                )
+        try:
+            dec_start_epoch, dec_best_val_loss = load_decoder_checkpoint(
+                model_without_ddp=model_without_ddp,
+                checkpoint_path=args.resume_decoder_ckpt,
+                device=device,
+                optimizer=None,
+                scheduler=None,
+                args=args,
+            )
+            start_epoch = max(start_epoch, dec_start_epoch)
+            best_val_loss = min(best_val_loss, dec_best_val_loss)
+            print(f"[RESUME] Decoder checkpoint loaded. Start epoch: {start_epoch}, Best val loss: {best_val_loss:.6f}")
+        except Exception as e:
+            print(f"[ERROR] Failed to load decoder checkpoint: {e}")
+            raise
+    
+    # Load trainer checkpoint if specified
+    if args.resume_trainer_ckpt:
+        try:
+            tr_start_epoch, tr_best_val_loss = load_trainer_checkpoint(
+                checkpoint_path=args.resume_trainer_ckpt,
+                device=device,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                args=args,
+            )
+            start_epoch = max(start_epoch, tr_start_epoch)
+            best_val_loss = min(best_val_loss, tr_best_val_loss)
+            print(f"[RESUME] Trainer checkpoint loaded. Start epoch: {start_epoch}, Best val loss: {best_val_loss:.6f}")
+        except Exception as e:
+            print(f"[ERROR] Failed to load trainer checkpoint: {e}")
+            raise
+    
+    # Handle LR override after loading checkpoints
+    if args.lr_scheduler == "none" or args.override_lr:
+        if len(optimizer.param_groups) >= 4:
+            optimizer.param_groups[0]["lr"] = args.lr * args.lr_encoder_scale
+            optimizer.param_groups[1]["lr"] = args.lr * args.lr_decoder_scale
+            optimizer.param_groups[2]["lr"] = args.lr * args.lr_transformer_scale
+            optimizer.param_groups[3]["lr"] = args.lr * args.lr_dino_scale
+            print(
+                "[INFO] Overriding optimizer LR: "
+                f"encoder={optimizer.param_groups[0]['lr']:.6e}, "
+                f"decoder={optimizer.param_groups[1]['lr']:.6e}, "
+                f"transformer={optimizer.param_groups[2]['lr']:.6e}, "
+                f"dino={optimizer.param_groups[3]['lr']:.6e}"
+            )
     
     # Scheduler advance logic if we resumed from a checkpoint
-    if args.resume_encoder_ckpt or args.resume_decoder_ckpt:
+    if args.resume_encoder_ckpt or args.resume_decoder_ckpt or args.resume_trainer_ckpt:
         if args.override_scheduler and scheduler is not None:
             resumed_epoch = start_epoch
             
@@ -1891,7 +1913,7 @@ def distill(args):
                 print(f"New best validation loss: {best_val_loss:.6f}")
                 # Save best checkpoint
                 if global_rank == 0:
-                    # Default: save encoder and decoder separately
+                    # Default: save encoder, decoder, and trainer separately
                     if not args.save_combined_ckpt:
                         if args.save_encoder_ckpt:
                             save_encoder_checkpoint(
@@ -1914,6 +1936,15 @@ def distill(args):
                                 args.output_dir,
                                 tag="best",
                                 args=args,
+                            )
+                        if getattr(args, "save_trainer_ckpt", True):
+                            save_trainer_checkpoint(
+                                optimizer,
+                                scheduler,
+                                epoch,
+                                best_val_loss,
+                                args.output_dir,
+                                tag="best",
                             )
                     # Legacy: save both in single file if --save_combined_ckpt is set
                     else:
@@ -1944,7 +1975,7 @@ def distill(args):
         # Save checkpoint periodically
         if (epoch + 1) % args.save_freq == 0 or (epoch + 1) == args.epochs:
             if global_rank == 0:
-                # Default: save encoder and decoder separately
+                # Default: save encoder, decoder, and trainer separately
                 if not args.save_combined_ckpt:
                     if args.save_encoder_ckpt:
                         save_encoder_checkpoint(
@@ -1967,6 +1998,15 @@ def distill(args):
                             args.output_dir,
                             tag=f"epoch{epoch+1}",
                             args=args,
+                        )
+                    if getattr(args, "save_trainer_ckpt", True):
+                        save_trainer_checkpoint(
+                            optimizer,
+                            scheduler,
+                            epoch,
+                            best_val_loss,
+                            args.output_dir,
+                            tag=f"epoch{epoch+1}",
                         )
                 # Legacy: save both in single file if --save_combined_ckpt is set
                 else:
@@ -2038,7 +2078,7 @@ def distill(args):
     
     # Save final checkpoint
     if global_rank == 0:
-        # Default: save encoder and decoder separately
+        # Default: save encoder, decoder, and trainer separately
         if not args.save_combined_ckpt:
             if args.save_encoder_ckpt:
                 save_encoder_checkpoint(
@@ -2062,6 +2102,15 @@ def distill(args):
                     tag="final",
                     args=args,
                 )
+            if getattr(args, "save_trainer_ckpt", True):
+                save_trainer_checkpoint(
+                    optimizer,
+                    scheduler,
+                    args.epochs - 1,
+                    best_val_loss,
+                    args.output_dir,
+                    tag="final",
+                )
         # Legacy: save both in single file if --save_combined_ckpt is set
         else:
             save_checkpoint_distillation(
@@ -2082,6 +2131,90 @@ def distill(args):
         wandb.finish()
 
 # ==================== Checkpoint Management ====================
+
+def save_trainer_checkpoint(
+    optimizer,
+    scheduler,
+    epoch: int,
+    best_val_loss: float,
+    output_dir: str,
+    tag: str = "last",
+):
+    """
+    Save trainer state (optimizer/scheduler/epoch/best_val_loss) in a separate file.
+    
+    Args:
+        optimizer: Optimizer
+        scheduler: Learning rate scheduler
+        epoch: Current epoch
+        best_val_loss: Best validation loss so far
+        output_dir: Directory to save checkpoint
+        tag: Tag for checkpoint filename (e.g., "best", "last", "epoch10")
+    """
+    state = {
+        "optimizer": optimizer.state_dict(),
+        "epoch": epoch,
+        "best_val_loss": best_val_loss,
+    }
+    
+    if scheduler is not None:
+        state["scheduler"] = scheduler.state_dict()
+    
+    if WANDB_AVAILABLE and wandb.run is not None:
+        state["wandb_run_id"] = wandb.run.id
+    
+    ckpt_dir = Path(output_dir) / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_path = ckpt_dir / f"checkpoint_trainer_{tag}.pth"
+    torch.save(state, ckpt_path)
+    print(f"[SAVE] Trainer checkpoint saved: {ckpt_path}")
+
+
+def load_trainer_checkpoint(
+    checkpoint_path: str,
+    device: torch.device,
+    optimizer=None,
+    scheduler=None,
+    args=None,
+) -> Tuple[int, float]:
+    """
+    Load trainer state (optimizer/scheduler) from checkpoint.
+    
+    Args:
+        checkpoint_path: Path to trainer checkpoint
+        device: Device to load checkpoint on
+        optimizer: Optimizer (required for loading optimizer state)
+        scheduler: Scheduler (optional, for loading scheduler state)
+        args: Training arguments with override flags
+    
+    Returns:
+        (start_epoch, best_val_loss) tuple from checkpoint
+    """
+    print(f"[LOAD] Loading trainer checkpoint: {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    if optimizer is not None and "optimizer" in ckpt:
+        try:
+            optimizer.load_state_dict(ckpt["optimizer"])
+            print("[INFO] Loaded optimizer state from trainer checkpoint")
+        except Exception as e:
+            print(f"[WARN] Failed loading optimizer state: {e}")
+    
+    if (
+        scheduler is not None
+        and "scheduler" in ckpt
+        and not getattr(args, "override_scheduler", False)
+    ):
+        try:
+            scheduler.load_state_dict(ckpt["scheduler"])
+            print("[INFO] Loaded scheduler state from trainer checkpoint")
+        except Exception as e:
+            print(f"[WARN] Failed loading scheduler state: {e}")
+    
+    start_epoch = ckpt.get("epoch", 0) + 1
+    best_val_loss = ckpt.get("best_val_loss", float("inf"))
+    return start_epoch, best_val_loss
+
 
 def load_encoder_checkpoint(
     model_without_ddp,
@@ -2192,21 +2325,8 @@ def load_encoder_checkpoint(
                     print(f"[WARN] Failed loading DINOv2 wrapper param {name}: {e}")
             print(f"[INFO] Restored {len(ckpt['dino_encoder_wrappers'])} DINOv2 wrapper params")
     
-    # Load optimizer state if provided
-    if optimizer is not None and "optimizer" in ckpt:
-        try:
-            optimizer.load_state_dict(ckpt["optimizer"])
-            print("[INFO] Loaded optimizer state from encoder checkpoint")
-        except Exception as e:
-            print(f"[WARN] Failed loading optimizer state: {e}")
-    
-    # Load scheduler state if provided
-    if scheduler is not None and "scheduler" in ckpt and not getattr(args, "override_scheduler", False):
-        try:
-            scheduler.load_state_dict(ckpt["scheduler"])
-            print("[INFO] Loaded scheduler state from encoder checkpoint")
-        except Exception as e:
-            print(f"[WARN] Failed loading scheduler state: {e}")
+    # NOTE: optimizer/scheduler are NOT loaded from encoder checkpoint
+    # Use load_trainer_checkpoint() instead
     
     start_epoch = ckpt.get("epoch", 0) + 1
     best_val_loss = ckpt.get("best_val_loss", float("inf"))
@@ -2253,21 +2373,8 @@ def load_decoder_checkpoint(
     else:
         print("[WARN] sam2_mask_decoder_student not present in model!")
     
-    # Load optimizer state if provided
-    if optimizer is not None and "optimizer" in ckpt:
-        try:
-            optimizer.load_state_dict(ckpt["optimizer"])
-            print("[INFO] Loaded optimizer state from decoder checkpoint")
-        except Exception as e:
-            print(f"[WARN] Failed loading optimizer state: {e}")
-    
-    # Load scheduler state if provided
-    if scheduler is not None and "scheduler" in ckpt and not getattr(args, "override_scheduler", False):
-        try:
-            scheduler.load_state_dict(ckpt["scheduler"])
-            print("[INFO] Loaded scheduler state from decoder checkpoint")
-        except Exception as e:
-            print(f"[WARN] Failed loading scheduler state: {e}")
+    # NOTE: optimizer/scheduler are NOT loaded from decoder checkpoint
+    # Use load_trainer_checkpoint() instead
     
     start_epoch = ckpt.get("epoch", 0) + 1
     best_val_loss = ckpt.get("best_val_loss", float("inf"))
@@ -2293,14 +2400,15 @@ def save_encoder_checkpoint(
         - sam2_compat (student encoder compatibility layer)
         - unfrozen info_sharing blocks (multi-view transformer)
         - unfrozen DINOv2 encoder blocks
-        - optimizer state (encoder only)
-        - scheduler state
         - training metadata (epoch, best_val_loss, wandb_run_id)
+    
+    NOTE: optimizer/scheduler are NOT saved here.
+    Use save_trainer_checkpoint() for optimizer/scheduler state.
     
     Args:
         model_without_ddp: Model without DDP wrapper
-        optimizer: Optimizer
-        scheduler: Learning rate scheduler
+        optimizer: Optimizer (unused, kept for backward compatibility)
+        scheduler: Learning rate scheduler (unused, kept for backward compatibility)
         epoch: Current epoch
         best_val_loss: Best validation loss so far
         output_dir: Directory to save checkpoint
@@ -2309,7 +2417,6 @@ def save_encoder_checkpoint(
     """
     state = {
         "dpt_feature_head_2": model_without_ddp.dpt_feature_head_2.state_dict(),
-        "optimizer": optimizer.state_dict(),
         "epoch": epoch,
         "best_val_loss": best_val_loss,
     }
@@ -2364,9 +2471,6 @@ def save_encoder_checkpoint(
                 print(f"[INFO] Added {len(wrapper_state)} DINOv2 wrapper params to encoder checkpoint")
 
         print(f"[INFO] Added {len(state['dino_encoder_blocks'])} unfrozen DINOv2 encoder blocks to encoder checkpoint: {list(state['dino_encoder_blocks'].keys())}")
-
-    if scheduler is not None:
-        state["scheduler"] = scheduler.state_dict()
     
     # Save wandb run_id if available
     if WANDB_AVAILABLE and wandb.run is not None:
@@ -2396,14 +2500,15 @@ def save_decoder_checkpoint(
     
     Saves:
         - sam2_mask_decoder_student (student decoder)
-        - optimizer state (decoder only)
-        - scheduler state
         - training metadata (epoch, best_val_loss, wandb_run_id)
+    
+    NOTE: optimizer/scheduler are NOT saved here.
+    Use save_trainer_checkpoint() for optimizer/scheduler state.
     
     Args:
         model_without_ddp: Model without DDP wrapper
-        optimizer: Optimizer
-        scheduler: Learning rate scheduler
+        optimizer: Optimizer (unused, kept for backward compatibility)
+        scheduler: Learning rate scheduler (unused, kept for backward compatibility)
         epoch: Current epoch
         best_val_loss: Best validation loss so far
         output_dir: Directory to save checkpoint
@@ -2411,7 +2516,6 @@ def save_decoder_checkpoint(
         args: Training arguments
     """
     state = {
-        "optimizer": optimizer.state_dict(),
         "epoch": epoch,
         "best_val_loss": best_val_loss,
     }
@@ -2422,9 +2526,6 @@ def save_decoder_checkpoint(
         print("[INFO] Added sam2_mask_decoder_student to decoder checkpoint")
     else:
         print("[WARN] sam2_mask_decoder_student not found in model!")
-
-    if scheduler is not None:
-        state["scheduler"] = scheduler.state_dict()
     
     # Save wandb run_id if available
     if WANDB_AVAILABLE and wandb.run is not None:
@@ -2624,8 +2725,10 @@ def get_args_parser():
     parser.add_argument("--resume_ckpt", type=str, default=None, help="[DEPRECATED] Path to checkpoint to resume from (loads both encoder and decoder)")
     parser.add_argument("--resume_encoder_ckpt", type=str, default=None, help="Path to encoder checkpoint to load")
     parser.add_argument("--resume_decoder_ckpt", type=str, default=None, help="Path to decoder checkpoint to load")
-    parser.add_argument("--save_encoder_ckpt", action="store_false", default=True, help="Disable separate encoder checkpoint saving (saves combined by default)")
-    parser.add_argument("--save_decoder_ckpt", action="store_false", default=True, help="Disable separate decoder checkpoint saving (saves combined by default)")
+    parser.add_argument("--resume_trainer_ckpt", type=str, default=None, help="Path to trainer checkpoint (optimizer/scheduler) to load")
+    parser.add_argument("--save_encoder_ckpt", action="store_false", default=True, help="Disable separate encoder checkpoint saving (saves by default)")
+    parser.add_argument("--save_decoder_ckpt", action="store_false", default=True, help="Disable separate decoder checkpoint saving (saves by default)")
+    parser.add_argument("--save_trainer_ckpt", action="store_false", default=True, help="Disable separate trainer checkpoint saving (saves by default)")
     parser.add_argument("--save_combined_ckpt", action="store_true", default=False, help="Save encoder and decoder in a single combined checkpoint file (legacy behavior)")
     parser.add_argument("--save_freq", type=int, default=10, help="Save checkpoint every N epochs")
     parser.add_argument("--eval_freq", type=int, default=1, help="Run validation every N epochs")
