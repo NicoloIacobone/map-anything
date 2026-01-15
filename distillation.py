@@ -768,20 +768,25 @@ def train_one_epoch_distillation(
     accum_iter = args.accum_iter
     optimizer.zero_grad()
     
-    # Accumulatori per encoder metrics
+    # Accumulatori per samples
     total_samples = 0
-    sum_loss = 0.0
+
+    # ===== ENCODER =====
+    sum_encoder_loss = 0.0
     sum_mse = 0.0
     sum_cos = 0.0
     sum_cos_sim = 0.0
     sum_mean_diff = 0.0
     sum_std_diff = 0.0
-    
-    # Accumulatori per decoder metrics
+
+    # ===== DECODER =====
     sum_decoder_loss_total = 0.0
     sum_decoder_loss_masks = 0.0
     sum_decoder_loss_iou = 0.0
     sum_decoder_loss_tokens = 0.0
+
+    # ===== TOTALE =====
+    sum_total_loss = 0.0
     
     for data_iter_step, batch in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, header)
@@ -826,6 +831,8 @@ def train_one_epoch_distillation(
 
         # Compute encoder loss
         loss, loss_details = criterion(student_features, teacher_features, mse_type=args.mse_type)
+        # Salva encoder loss PRIMA di aggiungere decoder
+        encoder_loss_value = loss.detach().cpu().item()
 
         # ===== DECODER DISTILLATION =====
         if sam_prompt_encoder_teacher is not None:
@@ -901,6 +908,9 @@ def train_one_epoch_distillation(
 
             loss = loss + decoder_weight * decoder_loss
             loss_details.update(decoder_loss_details)
+        
+        # Salva total loss DOPO aver sommato decoder
+        total_loss_value = loss.detach().cpu().item()
 
         # Extract metrics
         mse_value = float(loss_details.get("enc_mse_loss", 0.0))
@@ -922,10 +932,8 @@ def train_one_epoch_distillation(
             md = sd = 0.0
             cs = cos_sim_value
 
-        loss_value = loss.detach().cpu().item()
-
-        if not math.isfinite(loss_value):
-            print(f"Loss is {loss_value}, stopping training", flush=True)
+        if not math.isfinite(total_loss_value):
+            print(f"Loss is {total_loss_value}, stopping training", flush=True)
             sys.exit(1)
 
         # W&B batch-level logging
@@ -939,17 +947,22 @@ def train_one_epoch_distillation(
         ):
             if data_iter_step % getattr(args, "log_freq", 100) == 0:
                 log_dict = {
-                    # Encoder metrics (batch-level)
-                    "train_encoder/enc_loss": float(loss_value),
+                    # ===== LOSS TOTALE =====
+                    "train/total_loss": total_loss_value,
+                    
+                    # ===== ENCODER (solo MSE+Cosine, PRIMA del decoder) =====
+                    "train_encoder/enc_loss": encoder_loss_value,
                     "train_encoder/enc_mse_loss": float(mse_value),
                     "train_encoder/enc_cos_loss": float(cos_value),
                     "train_encoder/enc_cos_sim": float(cos_sim_value),
-                    # Decoder metrics (batch-level)
+                    
+                    # ===== DECODER (componenti) =====
                     "train_decoder/decoder_loss_total": float(decoder_loss_total),
                     "train_decoder/decoder_loss_masks": float(decoder_loss_masks),
                     "train_decoder/decoder_loss_iou": float(decoder_loss_iou),
                     "train_decoder/decoder_loss_tokens": float(decoder_loss_tokens),
-                    # Progress
+                    
+                    # ===== PROGRESS =====
                     "epoch_progress": epoch_f,
                 }
                 # Aggiungi metriche decoder se presenti
@@ -994,18 +1007,23 @@ def train_one_epoch_distillation(
         # Accumulate weighted sums
         batch_size = student_features.shape[0]
         total_samples += batch_size
-        sum_loss += loss_value * batch_size
+
+        # ===== ENCODER =====
+        sum_encoder_loss += encoder_loss_value * batch_size
         sum_mse += mse_value * batch_size
         sum_cos += cos_value * batch_size
         sum_cos_sim += cos_sim_value * batch_size
         sum_mean_diff += md * batch_size
         sum_std_diff += sd * batch_size
-        
-        # Accumulate decoder metrics
+
+        # ===== DECODER =====
         sum_decoder_loss_total += decoder_loss_total * batch_size
         sum_decoder_loss_masks += decoder_loss_masks * batch_size
         sum_decoder_loss_iou += decoder_loss_iou * batch_size
         sum_decoder_loss_tokens += decoder_loss_tokens * batch_size
+
+        # ===== TOTALE =====
+        sum_total_loss += total_loss_value * batch_size
 
         # Clean up
         del loss, student_features, teacher_features
@@ -1013,22 +1031,28 @@ def train_one_epoch_distillation(
         # Update metrics
         metric_logger.update(epoch=epoch_f)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
-        metric_logger.update(loss=loss_value, **loss_details)
+        metric_logger.update(loss=total_loss_value, **loss_details)
 
     # Return averaged stats
     denom = max(1, total_samples)
     results = {
-        "train_enc_loss": sum_loss / denom,
+        # ===== ENCODER =====
+        "train_enc_loss": sum_encoder_loss / denom,
         "train_enc_mse_loss": sum_mse / denom,
         "train_enc_cos_loss": sum_cos / denom,
         "train_enc_cos_sim": sum_cos_sim / denom,
         "train_enc_mean_diff": sum_mean_diff / denom,
         "train_enc_std_diff": sum_std_diff / denom,
+
+        # ===== DECODER =====
         "train_decoder_loss_total": sum_decoder_loss_total / denom,
         "train_decoder_loss_masks": sum_decoder_loss_masks / denom,
         "train_decoder_loss_iou": sum_decoder_loss_iou / denom,
         "train_decoder_loss_tokens": sum_decoder_loss_tokens / denom,
-        "train_loss_total": (sum_loss + sum_decoder_loss_total) / denom,
+
+        # ===== TOTALE =====
+        "train_loss_total": sum_total_loss / denom,
+
         "lr": optimizer.param_groups[0]["lr"],
         "samples": total_samples,
     }
@@ -1072,20 +1096,25 @@ def validate_one_epoch_distillation(
     metric_logger.meters = defaultdict(lambda: train_tools.SmoothedValue(window_size=int(1e6)))
     header = f"Distillation Validation: [{epoch}]"
     
-    # Accumulatori encoder
+    # Accumulatori samples
     total_samples = 0
-    sum_loss = 0.0
+
+    # ===== ENCODER =====
+    sum_encoder_loss = 0.0
     sum_mse = 0.0
     sum_cos = 0.0
     sum_cos_sim = 0.0
     sum_mean_diff = 0.0
     sum_std_diff = 0.0
-    
-    # Accumulatori decoder
+
+    # ===== DECODER =====
     sum_decoder_loss_total = 0.0
     sum_decoder_loss_masks = 0.0
     sum_decoder_loss_iou = 0.0
     sum_decoder_loss_tokens = 0.0
+
+    # ===== TOTALE =====
+    sum_total_loss = 0.0
 
     for batch_idx, batch in enumerate(
         metric_logger.log_every(data_loader, args.print_freq, header)
@@ -1215,36 +1244,46 @@ def validate_one_epoch_distillation(
         # Accumulate
         batch_size = student_features.shape[0]
         total_samples += batch_size
-        sum_loss += loss_value * batch_size
+
+        # ===== ENCODER =====
+        sum_encoder_loss += loss_value * batch_size
         sum_mse += mse_value * batch_size
         sum_cos += cos_value * batch_size
         sum_cos_sim += cos_sim_value * batch_size
         sum_mean_diff += md * batch_size
         sum_std_diff += sd * batch_size
-        
-        # Accumulate decoder metrics
+
+        # ===== DECODER =====
         sum_decoder_loss_total += decoder_loss_total * batch_size
         sum_decoder_loss_masks += decoder_loss_masks * batch_size
         sum_decoder_loss_iou += decoder_loss_iou * batch_size
         sum_decoder_loss_tokens += decoder_loss_tokens * batch_size
 
+        # ===== TOTALE =====
+        sum_total_loss += loss_value * batch_size
+
         del student_features, teacher_features
 
     denom = max(1, total_samples)
     results = {
-        "val_enc_loss": sum_loss / denom,
+        # ===== ENCODER =====
+        "val_enc_loss": sum_encoder_loss / denom,
         "val_enc_mse_loss": sum_mse / denom,
         "val_enc_cos_loss": sum_cos / denom,
         "val_enc_cos_sim": sum_cos_sim / denom,
         "val_enc_mean_diff": sum_mean_diff / denom,
         "val_enc_std_diff": sum_std_diff / denom,
+
+        # ===== DECODER =====
         "val_decoder_loss_total": sum_decoder_loss_total / denom,
         "val_decoder_loss_masks": sum_decoder_loss_masks / denom,
         "val_decoder_loss_iou": sum_decoder_loss_iou / denom,
         "val_decoder_loss_tokens": sum_decoder_loss_tokens / denom,
-        "val_loss_total": (sum_loss + sum_decoder_loss_total) / denom,
+
+        # ===== TOTALE =====
+        "val_loss_total": sum_total_loss / denom,
+
         "samples": total_samples,
-        "val_enc_loss_avg": sum_loss / denom,
     }
     return results
 

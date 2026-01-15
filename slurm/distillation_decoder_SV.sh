@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=SV_decoder_01
+#SBATCH --job-name=SV_decoder_02
 #
 # Specify output file.
-#SBATCH --output=SV_decoder_01_%j.log
+#SBATCH --output=SV_decoder_02_%j.log
 #
 # Specify error file.
-#SBATCH --error=SV_decoder_01_%j.err
+#SBATCH --error=SV_decoder_02_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -72,7 +72,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation.py \
   --use_wandb \
   --num_workers 8 \
   --dataset coco2017 \
-  --wandb_name "SV_decoder_01" \
+  --wandb_name "SV_decoder_02" \
   --epochs 100 \
   --lr 5e-4 \
   --batch_size 8 \
