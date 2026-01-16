@@ -1148,6 +1148,8 @@ def validate_one_epoch_distillation(
         
         # Compute encoder loss
         loss, loss_details = criterion(student_features, teacher_features, mse_type=args.mse_type)
+        # Salva encoder loss PRIMA di aggiungere decoder
+        encoder_loss_value = loss.detach().cpu().item()
         
         # ===== DECODER DISTILLATION =====
         if sam_prompt_encoder_teacher is not None:
@@ -1246,7 +1248,7 @@ def validate_one_epoch_distillation(
         total_samples += batch_size
 
         # ===== ENCODER =====
-        sum_encoder_loss += loss_value * batch_size
+        sum_encoder_loss += encoder_loss_value * batch_size
         sum_mse += mse_value * batch_size
         sum_cos += cos_value * batch_size
         sum_cos_sim += cos_sim_value * batch_size
