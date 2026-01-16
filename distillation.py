@@ -1234,7 +1234,7 @@ def validate_one_epoch_distillation(
         metric_logger.update(loss=loss_value, **loss_details)
         
         # Salva visualizzazioni se richiesto
-        if args.save_visualizations and batch_idx == 0:
+        if args.save_visualizations_encoder and batch_idx == 0:
             save_pca_visualizations(
                 student_features=student_features,
                 teacher_features=teacher_features,
@@ -1242,6 +1242,10 @@ def validate_one_epoch_distillation(
                 epoch=epoch,
                 output_dir=args.output_dir,
             )
+
+        # if args.save_visualizations_decoder and batch_idx == 0:
+        #     anns = convert_mask_decoder_output_to_showable(masks_logits, iou_preds, mask_threshold=0.0)
+        #     show_anns(anns)
         
         # Accumulate
         batch_size = student_features.shape[0]
@@ -1358,6 +1362,122 @@ def save_pca_visualizations(
             continue
     
     print(f"[VIZ] Saved {B} PCA visualizations to {viz_dir}")
+
+def save_decoder_masks_visualization(
+    student_masks: torch.Tensor,
+    teacher_masks: torch.Tensor,
+    student_iou: torch.Tensor,
+    teacher_iou: torch.Tensor,
+    image_paths: List[str],
+    epoch: int,
+    output_dir: str,
+    mask_threshold: float = 0.0,
+):
+    """
+    Visualizza le maschere del decoder (student vs teacher) come heatmaps.
+    
+    Args:
+        student_masks: (B, num_masks, H, W) logit dalle maschere dello student
+        teacher_masks: (B, num_masks, H, W) logit dalle maschere del teacher
+        student_iou: (B, num_masks) predizioni IoU dello student
+        teacher_iou: (B, num_masks) predizioni IoU del teacher
+        image_paths: List of image paths
+        epoch: Current epoch
+        output_dir: Output directory
+        mask_threshold: Soglia per binarizzare le maschere
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        from PIL import Image as PILImage
+    except ImportError:
+        print("[WARN] matplotlib or PIL not available for decoder visualization")
+        return
+    
+    # Cartella output
+    viz_dir = Path(output_dir) / "visualizations_decoder"
+    viz_dir.mkdir(parents=True, exist_ok=True)
+    
+    student_masks_cpu = torch.sigmoid(student_masks.detach().cpu())  # Applica sigmoid ai logit
+    teacher_masks_cpu = torch.sigmoid(teacher_masks.detach().cpu())
+    student_iou_cpu = student_iou.detach().cpu()
+    teacher_iou_cpu = teacher_iou.detach().cpu()
+    
+    B = student_masks_cpu.shape[0]
+    num_masks = student_masks_cpu.shape[1]
+    
+    for batch_idx in range(B):
+        try:
+            img_path = image_paths[batch_idx]
+            img = PILImage.open(img_path).convert("RGB")
+            img_array = np.array(img)
+            
+            # Ridimensiona le maschere alla dimensione dell'immagine se necessario
+            img_h, img_w = img_array.shape[:2]
+            mask_h, mask_w = student_masks_cpu.shape[2:]
+            
+            # Crea figura con sottografici (immagine + tutte le maschere)
+            n_cols = num_masks + 1  # +1 per immagine originale
+            fig, axes = plt.subplots(2, n_cols, figsize=(4*n_cols, 8))
+            
+            if num_masks == 1:
+                axes = axes.reshape(2, 1)
+            
+            # Riga 0: Teacher, Riga 1: Student
+            
+            # Colonna 0: Immagine originale
+            for row in range(2):
+                axes[row, 0].imshow(img_array)
+                axes[row, 0].set_title("Original Image" if row == 0 else "")
+                axes[row, 0].axis("off")
+            
+            # Colonne 1+: Maschere
+            for mask_idx in range(num_masks):
+                teacher_mask = teacher_masks_cpu[batch_idx, mask_idx]  # (H, W)
+                student_mask = student_masks_cpu[batch_idx, mask_idx]
+                
+                teacher_iou_val = teacher_iou_cpu[batch_idx, mask_idx].item() if teacher_iou_cpu.numel() > 0 else 0.0
+                student_iou_val = student_iou_cpu[batch_idx, mask_idx].item() if student_iou_cpu.numel() > 0 else 0.0
+                
+                # Ridimensiona se necessario
+                if (mask_h, mask_w) != (img_h, img_w):
+                    teacher_mask = F.interpolate(
+                        teacher_mask.unsqueeze(0).unsqueeze(0),
+                        size=(img_h, img_w),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).squeeze()
+                    student_mask = F.interpolate(
+                        student_mask.unsqueeze(0).unsqueeze(0),
+                        size=(img_h, img_w),
+                        mode="bilinear",
+                        align_corners=False,
+                    ).squeeze()
+                
+                # Teacher (riga 0)
+                ax_teacher = axes[0, mask_idx + 1]
+                im_teacher = ax_teacher.imshow(teacher_mask.numpy(), cmap="viridis", vmin=0, vmax=1)
+                ax_teacher.set_title(f"Teacher Mask {mask_idx}\nIoU: {teacher_iou_val:.3f}")
+                ax_teacher.axis("off")
+                plt.colorbar(im_teacher, ax=ax_teacher)
+                
+                # Student (riga 1)
+                ax_student = axes[1, mask_idx + 1]
+                im_student = ax_student.imshow(student_mask.numpy(), cmap="viridis", vmin=0, vmax=1)
+                ax_student.set_title(f"Student Mask {mask_idx}\nIoU: {student_iou_val:.3f}")
+                ax_student.axis("off")
+                plt.colorbar(im_student, ax=ax_student)
+            
+            plt.tight_layout()
+            img_basename = Path(img_path).stem
+            save_path = viz_dir / f"epoch_{epoch:04d}_{img_basename}_decoder_masks.png"
+            plt.savefig(save_path, dpi=100, bbox_inches="tight")
+            plt.close()
+            
+            print(f"[VIZ] Saved decoder masks visualization to {save_path}")
+        except Exception as e:
+            print(f"[WARN] Failed to visualize decoder masks for {img_path}: {e}")
+            continue
 
 # ==================== Main Training Loop ====================
 def distill(args):
@@ -2781,7 +2901,8 @@ def get_args_parser():
     parser.add_argument("--wandb_project", type=str, default="mapanything-distillation", help="W&B project name")
     parser.add_argument("--wandb_name", type=str, default=None, help="W&B run name")
     parser.add_argument("--wandb_resume_id", type=str, default=None, help="W&B run ID to resume")
-    parser.add_argument("--save_visualizations", action="store_true", help="Save PCA visualizations during validation")
+    parser.add_argument("--save_visualizations_encoder", action="store_true", help="Save PCA visualizations during validation for encoder output")
+    parser.add_argument("--save_visualizations_decoder", action="store_true", help="Save masks annotations during validation for decoder output")
     parser.add_argument("--log_freq", type=int, default=100, help="Log to W&B every N batches")
     parser.add_argument("--print_args", action="store_true", help="Print all arguments before starting distillation")
     
