@@ -12,6 +12,7 @@ from torch import nn
 import numpy as np
 import cv2
 from typing import List, Dict, Any
+from sam2_minimal.utils.amg import batched_mask_to_box, box_xyxy_to_xywh
 
 class SAM2CompatibilityLayer(nn.Module):
     def __init__(self, in_channels: int, out_channels: int = 256):
@@ -608,6 +609,37 @@ def print_trainable_summary(model, detailed=False, max_print=None):
     
     return stats
 
+# def show_anns(anns, borders=True, output_dir=None):
+#     if len(anns) == 0:
+#         return
+#     sorted_anns = sorted(anns, key=(lambda x: x['area']), reverse=True)
+    
+    
+#     # Modalità nuovo: salva su disco
+#     img = np.ones((sorted_anns[0]['segmentation'].shape[0], sorted_anns[0]['segmentation'].shape[1], 4))
+#     img[:, :, 3] = 0
+#     for ann in sorted_anns:
+#         m = ann['segmentation']
+#         color_mask = np.concatenate([np.random.random(3), [0.5]])
+#         img[m] = color_mask 
+#         if borders:
+#             contours, _ = cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE) 
+#             # Try to smooth contours
+#             contours = [cv2.approxPolyDP(contour, epsilon=0.01, closed=True) for contour in contours]
+#             cv2.drawContours(img, contours, -1, (0, 0, 1, 0.4), thickness=1) 
+    
+#     # Crea directory se non esiste
+#     Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
+#     # Salva l'immagine
+#     fig, ax = plt.subplots(figsize=(10, 10))
+#     ax.imshow(img)
+#     ax.axis('off')
+#     output_path = os.path.join(output_dir, "annotations.png")
+#     plt.savefig(output_path, bbox_inches='tight', dpi=100)
+#     plt.close(fig)
+#     print(f"[INFO] Annotations saved to {output_path}")
+
 def show_anns(anns, borders=True):
     if len(anns) == 0:
         return
@@ -656,8 +688,8 @@ def convert_mask_decoder_output_to_showable(
     if iou_preds.dim() == 2:
         iou_preds = iou_preds.squeeze(1)  # (B, 1) -> (B,)
     
-    # Binarizza i logit
-    masks_binary = (masks_logits > mask_threshold).float()
+    # Binarizza i logit - IMPORTANTE: deve essere bool, non float!
+    masks_binary = masks_logits > mask_threshold  # <-- Rimosso .float()
     
     # Aggiungi dimensione batch se necessario per batched_mask_to_box
     if masks_binary.dim() == 2:
@@ -674,7 +706,7 @@ def convert_mask_decoder_output_to_showable(
     anns = []
     for i, (mask, iou_pred, box) in enumerate(zip(masks_binary, iou_preds, boxes)):
         if return_format == "binary_mask":
-            segmentation = mask.cpu().numpy().astype(bool)
+            segmentation = mask.cpu().numpy()  # Già booleano
             area = int(segmentation.sum())
         else:  # rle
             segmentation = rles[i]
@@ -690,8 +722,62 @@ def convert_mask_decoder_output_to_showable(
     
     return anns
 
-
-# Uso:
-# masks_logits, iou_preds = mask_decoder(...)
-# anns = convert_mask_decoder_output_to_showable(masks_logits, iou_preds, mask_threshold=0.0)
-# show_anns(anns)
+def convert_maskdecoder_to_showable(
+    masks_logits: torch.Tensor,
+    iou_preds: torch.Tensor,
+    mask_threshold: float = 0.0,
+    orig_size: tuple = None,
+) -> List[Dict[str, Any]]:
+    """
+    Converte l'output grezzo di MaskDecoder in formato compatibile con show_anns.
+    
+    Args:
+        masks_logits: Output logit da MaskDecoder, shape (B, C, H, W) o (B, H, W)
+        iou_preds: Predizioni IoU da MaskDecoder, shape (B, C) o (B,)
+        mask_threshold: Threshold per binarizzare i logit (default: 0.0)
+        orig_size: Dimensione originale immagine (H, W) per resize. Se None, usa dimensione masks_logits
+    
+    Returns:
+        Lista di dict compatibili con show_anns, con chiavi:
+        - 'segmentation': maschera binaria numpy (H, W)
+        - 'area': area in pixel
+        - 'bbox': bounding box in formato XYWH
+        - 'predicted_iou': predizione IoU del modello
+    """
+    
+    # Normalizza dimensioni: porta tutto a (B, H, W)
+    if masks_logits.dim() == 4:
+        # (B, C, H, W) -> flatten primo e secondo asse
+        B, C = masks_logits.shape[:2]
+        masks_logits = masks_logits.reshape(B * C, *masks_logits.shape[2:])
+        iou_preds = iou_preds.reshape(B * C)
+    
+    # Binarizza i logit (applica threshold)
+    masks_binary = (masks_logits > mask_threshold)
+    
+    # Resize alle dimensioni originali se specificato
+    if orig_size is not None:
+        masks_binary = torch.nn.functional.interpolate(
+            masks_binary.unsqueeze(1).float(),
+            size=orig_size,
+            mode='bilinear',
+            align_corners=False
+        ).squeeze(1) > 0.5
+    
+    # Calcola bounding boxes
+    boxes = batched_mask_to_box(masks_binary)
+    
+    # Converti in formato show_anns
+    anns = []
+    for i in range(len(masks_binary)):
+        mask_np = masks_binary[i].cpu().numpy().astype(bool)
+        
+        ann = {
+            'segmentation': mask_np,
+            'area': int(mask_np.sum()),
+            'bbox': box_xyxy_to_xywh(boxes[i]).tolist(),
+            'predicted_iou': float(iou_preds[i].item()),
+        }
+        anns.append(ann)
+    
+    return anns

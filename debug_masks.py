@@ -26,6 +26,16 @@ from matplotlib.colors import Normalize
 import cv2
 from PIL import Image as PILImage
 from sklearn.decomposition import PCA
+from PIL import Image
+
+from sam2_minimal.utils.amg import (
+    calculate_stability_score, 
+    batched_mask_to_box,
+    mask_to_rle_pytorch,
+)
+from torchvision.ops.boxes import batched_nms
+
+from nico.utils import convert_maskdecoder_to_showable, show_anns
 
 # Aggiungi root al path per importare moduli locali
 sys.path.insert(0, str(Path(__file__).parent))
@@ -195,33 +205,6 @@ def save_decoder_masks_visualization_impl(
         print(f"[DECODER VIZ] Saved {save_path}")
 
 
-def convert_mask_decoder_output_to_showable(
-    masks_logits: torch.Tensor,
-    iou_preds: torch.Tensor,
-    mask_threshold: float = 0.0,
-) -> dict:
-    """
-    Converte output del decoder SAM2 a formato showable per show_anns().
-    
-    Args:
-        masks_logits: (B, num_masks, H, W)
-        iou_preds: (B, num_masks)
-        mask_threshold: Soglia per binarizzare
-    
-    Returns:
-        annotations dict con 'masks' e 'iou_predictions'
-    """
-    masks = torch.sigmoid(masks_logits) > mask_threshold  # (B, num_masks, H, W)
-    masks = masks.cpu().numpy()
-    iou_preds = iou_preds.cpu().numpy()
-    
-    anns = {
-        "masks": masks,
-        "iou_predictions": iou_preds,
-    }
-    return anns
-
-
 def show_anns_simple(anns: dict, output_dir: str = "debug_show_anns"):
     """
     Visualizza annotazioni in stile SAM.
@@ -351,7 +334,7 @@ def main():
     parser.add_argument(
         "--image_path",
         type=str,
-        default="/scratch2/nico/distillation/tests/masks_visualization/reference_image.jpg",
+        default="/scratch2/nico/distillation/tests/masks_visualization/reference_image.png",
         help="Path a immagine di riferimento (opzionale)"
     )
     parser.add_argument(
@@ -371,28 +354,39 @@ def main():
     # Carica tensori
     mask_dir = Path(args.mask_dir)
     t_masks_path = mask_dir / "t_masks.pt"
-    s_masks_path = mask_dir / "s_masks.pt"
-    
-    if not t_masks_path.exists() or not s_masks_path.exists():
-        print(f"[ERROR] Missing files in {mask_dir}")
-        print(f"  t_masks.pt exists: {t_masks_path.exists()}")
-        print(f"  s_masks.pt exists: {s_masks_path.exists()}")
-        sys.exit(1)
+    # s_masks_path = mask_dir / "s_masks.pt"
     
     print(f"[INFO] Loading masks from {mask_dir}")
     t_masks = torch.load(t_masks_path)
-    s_masks = torch.load(s_masks_path)
+    print(f"  Loaded t_masks with shape {t_masks.shape}")
+
+    # Visualizza t_masks come immagine binaria
+    t_mask_binary = (t_masks > 0.0).squeeze().cpu().numpy()  # Converte a bool e rimuove dimensioni singleton
+    plt.figure(figsize=(8, 8))
+    plt.imshow(t_mask_binary, cmap='gray')
+    plt.title(f"t_masks binary visualization (shape: {t_mask_binary.shape})")
+    plt.axis('off')
+    plt.colorbar()
+    plt.tight_layout()
+    plt.savefig('t_masks_binary.png', dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Binary mask saved as t_masks_binary.png")
+    
+    # s_masks = torch.load(s_masks_path)
     
     # Carica IoU se disponibili
-    student_iou = None
-    teacher_iou = None
-    if (mask_dir / "s_iou.pt").exists():
-        student_iou = torch.load(mask_dir / "s_iou.pt")
+    # student_iou = None
+    t_iou = None
+    # if (mask_dir / "s_iou.pt").exists():
+    #     student_iou = torch.load(mask_dir / "s_iou.pt")
     if (mask_dir / "t_iou.pt").exists():
-        teacher_iou = torch.load(mask_dir / "t_iou.pt")
+        t_iou = torch.load(mask_dir / "t_iou.pt")
+
+    print(t_iou)
+    raise SystemExit
     
     # Stampa statistiche
-    print_stats(t_masks, s_masks, student_iou, teacher_iou)
+    print_stats(t_masks, t_masks, t_iou, t_iou)
     
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -400,26 +394,96 @@ def main():
     # Visualizzazioni
     print("[INFO] Starting visualizations...")
     
-    print("\n1. PCA Visualization")
-    pca_visualize_masks(
-        t_masks, s_masks,
-        output_dir=str(output_dir / "pca")
-    )
+    # print("\n1. PCA Visualization")
+    # pca_visualize_masks(
+    #     t_masks, s_masks,
+    #     output_dir=str(output_dir / "pca")
+    # )
     
-    print("\n2. Decoder Masks Visualization (heatmaps)")
-    save_decoder_masks_visualization_impl(
-        s_masks, t_masks,
-        output_dir=str(output_dir / "decoder_masks"),
-        image_path=args.image_path
-    )
+    # print("\n2. Decoder Masks Visualization (heatmaps)")
+    # save_decoder_masks_visualization_impl(
+    #     s_masks, t_masks,
+    #     output_dir=str(output_dir / "decoder_masks"),
+    #     image_path=args.image_path
+    # )
     
     print("\n3. Show Anns Visualization")
-    anns = convert_mask_decoder_output_to_showable(s_masks, student_iou if student_iou is not None else torch.zeros(s_masks.shape[0], s_masks.shape[1]))
-    show_anns_simple(
-        anns,
-        output_dir=str(output_dir / "show_anns")
+    # anns = convert_mask_decoder_output_to_showable(s_masks, student_iou if student_iou is not None else torch.zeros(s_masks.shape[0], s_masks.shape[1]))
+    # anns = convert_mask_decoder_output_to_showable(t_masks, teacher_iou if teacher_iou is not None else torch.zeros(t_masks.shape[0], t_masks.shape[1]))
+    # show_anns(anns, output_dir=str(output_dir / "show_anns"), image_path=args.image_path)
+
+    image = np.array(Image.open(args.image_path).convert("RGB"))
+
+    output_show_anns_dir = output_dir / "show_anns"
+    output_show_anns_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Binarizzazione
+    mask_threshold = 0.0
+    masks = t_masks > mask_threshold  # Boolean mask
+
+    # 2. Stability score
+    masks_float = t_masks.float()  # Riconverti a float per stability
+    stability_score_offset = 1.0
+    stability_scores = calculate_stability_score(
+        masks_float, 
+        mask_threshold, 
+        stability_score_offset
     )
-    
+
+    # 3. Filtraggio IoU
+    pred_iou_thresh = 0.0
+    keep_iou = t_iou > pred_iou_thresh
+
+    # 4. Filtraggio stability
+    stability_score_thresh = 0.0
+    keep_stability = stability_scores > stability_score_thresh
+
+    # 5. Combina i due filtri
+    keep = keep_iou & keep_stability
+    masks = masks[keep]
+    t_iou = t_iou[keep]
+
+    # 6. Bounding box e NMS
+    boxes = batched_mask_to_box(masks)
+    keep_nms = batched_nms(
+        boxes.float(),
+        t_iou,
+        torch.zeros_like(boxes[:, 0]),
+        iou_threshold=0.0
+    )
+
+    final_masks = masks[keep_nms]
+
+    # Converte final_masks (torch tensor booleano) in formato per show_anns
+    final_masks_np = final_masks.cpu().numpy()  # (N, H, W) con valori 0 e 1
+
+    # Crea list di dict nel formato che show_anns si aspetta
+    annotations = []
+    for idx, mask in enumerate(final_masks_np):
+        ann = {
+            "segmentation": mask,
+            "area": int(np.sum(mask)),
+        }
+        annotations.append(ann)
+
+    # Visualizza
+    plt.figure(figsize=(20, 20))
+    plt.imshow(image)
+    show_anns(annotations)
+    plt.axis('off')
+    plt.savefig(output_show_anns_dir / "show_anns.png", bbox_inches='tight', pad_inches=0)
+    plt.close()
+
+    # anns = convert_maskdecoder_to_showable(t_masks, t_iou, 0.0, (640, 426))
+
+    # plt.figure(figsize=(20, 20))
+    # plt.imshow(image)
+    # show_anns(anns)
+    # plt.axis('off')
+    # plt.savefig(output_show_anns_dir / "show_anns.png", bbox_inches='tight', pad_inches=0)
+    # plt.close()
+    print(f"Saved to {output_show_anns_dir / 'show_anns.png'}")
+        
     print(f"\n[SUCCESS] All visualizations saved to {output_dir}")
 
 
