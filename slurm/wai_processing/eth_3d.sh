@@ -4,7 +4,7 @@
 #SBATCH --output=wai_eth3d_processing_%j.log
 #SBATCH --error=wai_eth3d_processing_%j.err
 #SBATCH --open-mode=append
-#SBATCH --time=04:00:00
+#SBATCH --time=01:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=4096
@@ -22,15 +22,15 @@ echo "Activated Python venv: $(which python)"
 
 cd /cluster/scratch/niacobone/map-anything
 
-# 1. Conversione ETH3D
-python -m wai_processing.scripts.conversion.eth3d \
-  original_root="/cluster/scratch/niacobone/distillation/dataset/normal/ETH3D" \
-  root="/cluster/scratch/niacobone/distillation/dataset/processed/ETH3D"
+# # 1. Conversione ETH3D
+# python -m wai_processing.scripts.conversion.eth3d \
+#   original_root="/cluster/scratch/niacobone/distillation/dataset/normal/ETH3D" \
+#   root="/cluster/scratch/niacobone/distillation/dataset/processed/ETH3D"
 
-# 2. Covisibility
-python -m wai_processing.scripts.covisibility \
-  data_processing/wai_processing/configs/covisibility/covisibility_gt_depth_224x224.yaml \
-  root="/cluster/scratch/niacobone/distillation/dataset/processed/ETH3D"
+# # 2. Covisibility
+# python -m wai_processing.scripts.covisibility \
+#   data_processing/wai_processing/configs/covisibility/covisibility_gt_depth_224x224.yaml \
+#   root="/cluster/scratch/niacobone/distillation/dataset/processed/ETH3D"
 
 # 3. MoGe
 python -m wai_processing.scripts.run_moge \

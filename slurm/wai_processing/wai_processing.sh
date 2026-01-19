@@ -75,6 +75,8 @@ fi
 # Installa wai_processing con il supporto mvsanywhere
 pip install -e .[mvsanywhere] --no-build-isolation
 
+pip install plyfile
+
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
 end_time=$(date +%s)
