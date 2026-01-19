@@ -2106,6 +2106,7 @@ def distill(args):
                                 best_val_loss,
                                 args.output_dir,
                                 tag="best",
+                                args=args,
                             )
                     # Legacy: save both in single file if --save_combined_ckpt is set
                     else:
@@ -2168,6 +2169,7 @@ def distill(args):
                             best_val_loss,
                             args.output_dir,
                             tag=f"epoch{epoch+1}",
+                            args=args,
                         )
                 # Legacy: save both in single file if --save_combined_ckpt is set
                 else:
@@ -2271,6 +2273,7 @@ def distill(args):
                     best_val_loss,
                     args.output_dir,
                     tag="final",
+                    args=args,
                 )
         # Legacy: save both in single file if --save_combined_ckpt is set
         else:
@@ -2300,6 +2303,7 @@ def save_trainer_checkpoint(
     best_val_loss: float,
     output_dir: str,
     tag: str = "last",
+    args=None,
 ):
     """
     Save trainer state (optimizer/scheduler/epoch/best_val_loss) in a separate file.
@@ -2311,12 +2315,17 @@ def save_trainer_checkpoint(
         best_val_loss: Best validation loss so far
         output_dir: Directory to save checkpoint
         tag: Tag for checkpoint filename (e.g., "best", "last", "epoch10")
+        args: Training arguments (for full reproducibility)
     """
     state = {
         "optimizer": optimizer.state_dict(),
         "epoch": epoch,
         "best_val_loss": best_val_loss,
     }
+    
+    # Save full args for reproducibility
+    if args is not None:
+        state["args"] = args
     
     if scheduler is not None:
         state["scheduler"] = scheduler.state_dict()
@@ -2581,6 +2590,10 @@ def save_encoder_checkpoint(
         "epoch": epoch,
         "best_val_loss": best_val_loss,
     }
+    
+    # Save full args for reproducibility
+    if args is not None:
+        state["args"] = args
 
     # Save sam2_compat if present
     if hasattr(model_without_ddp, "sam2_compat"):
@@ -2680,6 +2693,10 @@ def save_decoder_checkpoint(
         "epoch": epoch,
         "best_val_loss": best_val_loss,
     }
+    
+    # Save full args for reproducibility
+    if args is not None:
+        state["args"] = args
 
     # Save student mask decoder if present
     if hasattr(model_without_ddp, "sam2_mask_decoder_student"):
@@ -2743,6 +2760,10 @@ def save_checkpoint_distillation(
         "epoch": epoch,
         "best_val_loss": best_val_loss,
     }
+    
+    # Save full args for reproducibility
+    if args is not None:
+        state["args"] = args
 
     # Save sam2_compat if present
     if hasattr(model_without_ddp, "sam2_compat"):
