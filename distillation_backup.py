@@ -56,6 +56,8 @@ from mapanything.utils.image import load_images
 from mapanything.utils import train_tools
 from nico.utils import *
 
+from sam2_minimal.modeling.sam.prompt_encoder import PromptEncoder
+from sam2_minimal.modeling.sam.mask_decoder import MaskDecoder
 from sam2_builder import (
     load_sam2_feature_extractor,
     load_sam2_teacher_prompt_and_decoder,
@@ -119,7 +121,7 @@ def setup_runtime_paths(args):
 # ==================== Dataset Classes ====================
 class DistillationDataset(Dataset):
     """
-    Dataset per la distillazione: supporta Single-View (lista piatta)
+    Dataset per la distillazione: supporta Single-View (lista piatta) e Multi-View (scene folders).
     """
     
     def __init__(
@@ -128,11 +130,15 @@ class DistillationDataset(Dataset):
         teacher_extractor: Optional[callable] = None,
         image_paths: Optional[List[str]] = None,
         transform=None,
+        multi_view_mode: bool = False,
+        max_views_per_scene: int = 6,
         split: str = "train",
     ):
         self.image_dir = Path(image_dir)
         self.teacher_extractor = teacher_extractor
         self.transform = transform
+        self.multi_view_mode = multi_view_mode
+        self.max_views_per_scene = max_views_per_scene
         self.is_train = "train" in split.lower()
         
         # Validation
@@ -143,17 +149,32 @@ class DistillationDataset(Dataset):
         self.samples = [] 
         if image_paths is not None:
             # Se paths forniti manualmente (es. debug), usiamo quelli.
+            # In multi_view, si assume che image_paths sia una lista di liste o gestita esternamente,
+            # ma per semplicità qui manteniamo la logica base o appiattita.
             self.samples = image_paths
         else:
-            # --- LOGICA SINGLE-VIEW ---
-            # Ogni "sample" è una stringa (path immagine)
-            self.samples = sorted([
-                str(self.image_dir / f)
-                for f in os.listdir(self.image_dir)
-                if self._is_image_file(f)
-            ])
-            print(f"[INFO] Mode: SINGLE-VIEW (Images)")
-            print(f"[INFO] Found {len(self.samples)} images in {image_dir}")
+            if self.multi_view_mode:
+                # --- LOGICA MULTI-VIEW (SCENE) ---
+                # Ogni "sample" è una lista di path immagini appartenenti alla stessa scena
+                scene_dirs = sorted([d for d in self.image_dir.iterdir() if d.is_dir()])
+                for scene in scene_dirs:
+                    views = sorted([
+                        str(f) for f in scene.iterdir() 
+                        if self._is_image_file(f.name)
+                    ])
+                    if len(views) > 0:
+                        self.samples.append(views) # List[str]
+                print(f"[INFO] Mode: MULTI-VIEW (Scenes) | Split: {split} | Max Views: {self.max_views_per_scene}")
+            else:
+                # --- LOGICA SINGLE-VIEW ---
+                # Ogni "sample" è una stringa (path immagine)
+                self.samples = sorted([
+                    str(self.image_dir / f)
+                    for f in os.listdir(self.image_dir)
+                    if self._is_image_file(f)
+                ])
+                print(f"[INFO] Mode: SINGLE-VIEW (Images)")
+                print(f"[INFO] Found {len(self.samples)} images in {image_dir}")
 
         print(f"[INFO] Using online feature extraction with teacher model")
     
@@ -167,11 +188,24 @@ class DistillationDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict:
         """
         Ritorna un dizionario contenente paths, features e (opzionalmente) PIL images.
+        Se Multi-View: ritorna le liste per l'intera scena.
         """
         sample = self.samples[idx] # Può essere str (single) o List[str] (multi)
         
         # Normalizziamo tutto a liste per gestire single/multi uniformemente qui dentro
         img_paths = sample if isinstance(sample, list) else [sample]
+
+        # ----- LOGICA DI SUBSAMPLING -----
+        if self.multi_view_mode and len(img_paths) > self.max_views_per_scene:
+            if self.is_train:
+                # TRAINING: Random Sampling (Augmentation)
+                # sorted() dopo sample assicura che l'ordine temporale/numerico sia mantenuto
+                img_paths = sorted(random.sample(img_paths, self.max_views_per_scene))
+            else:
+                # VALIDATION: Deterministic Slicing (Consistency)
+                # Prende sempre le prime N view in ordine alfabetico/numerico
+                img_paths = sorted(img_paths)[:self.max_views_per_scene]
+        # -----------------------------------
         
         try:
             # Online mode: carica immagini PIL
@@ -200,6 +234,8 @@ def collate_fn_distillation(batch: List[Dict]) -> Dict:
     Nota: Se batch_size=1 (1 scena), 'batch' è una lista di 1 elemento (il dizionario della scena).
     """
     # batch è una lista di dizionari ritornati da __getitem__
+    # Esempio batch_size=1, multi-view:
+    # batch = [ {"image_paths": [v1, v2], "teacher_features": Tensor(2,C,H,W), ...} ]
     
     all_image_paths = []
     all_teacher_feats = []
@@ -284,7 +320,7 @@ class TeacherFeatureExtractor:
         self.augment_single = _make_pipeline()
 
     @torch.no_grad()
-    def __call__(self, pil_images: List, debug_visualize: bool = False) -> torch.Tensor:
+    def __call__(self, pil_images: List, multi_view: bool = False, debug_visualize: bool = False) -> torch.Tensor:
         """Estrae feature con augmentation e opzionale debug visualizzazione."""
         
         features = []
@@ -300,7 +336,7 @@ class TeacherFeatureExtractor:
                 pil_img.save(debug_dir / f"{timestamp}_before_{idx:02d}.png")
         
         # Applica augmentation
-        if use_aug and self.augment_shared is not None:
+        if use_aug and multi_view and self.augment_shared is not None:
             scene_seed = random.randint(0, 2**31-1)
             augmented_imgs = []
             for pil_img in pil_images:
@@ -503,7 +539,9 @@ def build_distillation_dataloader(
     image_paths: Optional[List[str]] = None,
     pin_memory: bool = True,
     distributed: bool = False,
+    multi_view_mode: bool = False,
     split: str = "train",
+    max_views_per_scene: int = 6,
 ) -> DataLoader:
     """
     Build a DataLoader for distillation training/validation.
@@ -525,7 +563,9 @@ def build_distillation_dataloader(
         image_dir=image_dir,
         teacher_extractor=teacher_extractor,
         image_paths=image_paths,
+        multi_view_mode=multi_view_mode,
         split=split,
+        max_views_per_scene=max_views_per_scene,
     )
     
     sampler = None
@@ -557,10 +597,12 @@ def forward_pass_distillation_unified(
     device: torch.device,
     use_amp: bool = False,
     amp_dtype: str = "bf16",
+    process_individually: bool = True,
     use_encoder_features: bool = False,
 ) -> torch.Tensor:
     """
     Forward pass unificato per MapAnything distillation.
+    Supporta sia single-view batch-safe che multi-view con cross-attention.
     
     Args:
         model: MapAnything model
@@ -568,6 +610,10 @@ def forward_pass_distillation_unified(
         device: Device CUDA
         use_amp: Se usare mixed precision
         amp_dtype: Tipo AMP ("bf16" o "fp16")
+        process_individually: Se True, ogni immagine è processata separatamente
+                             (NO cross-attention, single-view batch-safe).
+                             Se False, tutte le immagini sono caricate insieme
+                             (cross-attention applicato, multi-view).
     
     Returns:
         torch.Tensor: Student features (B, C, H, W) dove B = len(image_paths)
@@ -576,45 +622,79 @@ def forward_pass_distillation_unified(
         >>> # Single-view batch-safe (immagini indipendenti)
         >>> features = forward_pass_distillation_unified(
         ...     model, ["img1.jpg", "img2.jpg"], device,
+        ...     process_individually=True
         ... )
         >>> features.shape  # (2, 256, 64, 64) - NO cross-attention
+        
+        >>> # Multi-view (gruppo di views della stessa scena)
+        >>> features = forward_pass_distillation_unified(
+        ...     model, ["scene1_v0.jpg", "scene1_v1.jpg"], device,
+        ...     process_individually=False
+        ... )
+        >>> features.shape  # (2, 256, 64, 64) - CON cross-attention
     """
     
     amp_dtype_torch = torch.bfloat16 if amp_dtype == "bf16" else torch.float16
     
-    # ========== SINGLE-VIEW BATCH-SAFE ==========
-    # Processa ogni immagine separatamente per evitare cross-attention
-    all_features = []
+    if process_individually:
+        # ========== SINGLE-VIEW BATCH-SAFE ==========
+        # Processa ogni immagine separatamente per evitare cross-attention
+        all_features = []
+        
+        for img_path in image_paths:
+            # Carica singola immagine come lista di 1 view
+            views = load_images([img_path])
+            
+            # Forward con AMP
+            with torch.autocast("cuda", enabled=use_amp, dtype=amp_dtype_torch):
+                # Sposta su device DENTRO autocast per fix dtype mismatch
+                for v in views:
+                    img = v.get("img")
+                    if isinstance(img, torch.Tensor):
+                        v["img"] = img.to(device, non_blocking=True)
+                
+                # MapAnything vede SINGOLA VIEW → NO cross-attention
+                _ = model(views, memory_efficient_inference=False, use_encoder_features=use_encoder_features)
+            
+            # Estrai feature dalla view 0 (unica view)
+            base_model = model.module if hasattr(model, "module") else model
+            student_features_single = getattr(base_model, "_last_feat2_8x", None)
+
+            if student_features_single is None:
+                raise KeyError(
+                    "Student features not found on model (_last_feat2_8x). "
+                    "Ensure dpt_feature_head_2 is present and forward populates this attribute."
+                )
+            
+            all_features.append(student_features_single)
+        
+        # Concatena feature di tutte le immagini
+        return torch.cat(all_features, dim=0)  # (B, C, H, W)
     
-    for img_path in image_paths:
-        # Carica singola immagine come lista di 1 view
-        views = load_images([img_path])
+    else:
+        # ========== MULTI-VIEW ==========
+        # Carica tutte le immagini insieme (cross-attention applicato)
+        views = load_images(image_paths)
         
         # Forward con AMP
         with torch.autocast("cuda", enabled=use_amp, dtype=amp_dtype_torch):
-            # Sposta su device DENTRO autocast per fix dtype mismatch
+            # Sposta su device DENTRO autocast
             for v in views:
                 img = v.get("img")
                 if isinstance(img, torch.Tensor):
                     v["img"] = img.to(device, non_blocking=True)
             
-            # MapAnything vede SINGOLA VIEW → NO cross-attention
+            # MapAnything vede N VIEWS → cross-attention tra tutte
             _ = model(views, memory_efficient_inference=False, use_encoder_features=use_encoder_features)
         
-        # Estrai feature dalla view 0 (unica view)
+        # Estrai feature (già tutte in un batch)
         base_model = model.module if hasattr(model, "module") else model
-        student_features_single = getattr(base_model, "_last_feat2_8x", None)
+        student_features = getattr(base_model, "_last_feat2_8x", None)
 
-        if student_features_single is None:
-            raise KeyError(
-                "Student features not found on model (_last_feat2_8x). "
-                "Ensure dpt_feature_head_2 is present and forward populates this attribute."
-            )
+        if student_features is None:
+            raise KeyError("Student features not found (_last_feat2_8x)")
         
-        all_features.append(student_features_single)
-    
-    # Concatena feature di tutte le immagini
-    return torch.cat(all_features, dim=0)  # (B, C, H, W)
+        return student_features  # (B, C, H, W) dove B = len(image_paths)
     
 def _generate_point_prompts_grid(batch_size: int, image_size: int = 1024, points_per_side: int = 3, device: torch.device = torch.device("cuda")) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -722,8 +802,10 @@ def train_one_epoch_distillation(
         
         pil_images = batch["pil_images"]
         with torch.no_grad():
+            # PASSA multi_view per coerenza intra-scena
             teacher_features = teacher_extractor(
                 pil_images, 
+                multi_view=args.multi_view_mode,
             ).to(device, non_blocking=True)
         
         # Forward pass to get student features
@@ -733,6 +815,7 @@ def train_one_epoch_distillation(
             device=device,
             use_amp=args.amp,
             amp_dtype=args.amp_dtype,
+            process_individually=not args.multi_view_mode,
             use_encoder_features=args.use_encoder_features,
         )
         
@@ -1040,7 +1123,7 @@ def validate_one_epoch_distillation(
         image_paths = batch["image_paths"]
         
         pil_images = batch["pil_images"]
-        teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
+        teacher_features = teacher_extractor(pil_images, multi_view=args.multi_view_mode).to(device, non_blocking=True)
     
         # Forward pass
         student_features = forward_pass_distillation_unified(
@@ -1049,6 +1132,7 @@ def validate_one_epoch_distillation(
             device=device,
             use_amp=args.amp,
             amp_dtype=args.amp_dtype,
+            process_individually=not args.multi_view_mode,
             use_encoder_features=args.use_encoder_features,
         )
         
@@ -1518,7 +1602,7 @@ def distill(args):
     train_image_paths = None
     
     # Logica Debug per SINGLE-VIEW: filtriamo la lista delle immagini PRIMA di creare il loader
-    if args.debug_max_train_images:
+    if args.debug_max_train_images and not args.multi_view_mode:
         all_imgs = sorted([
             os.path.join(TRAIN_IMAGES_DIR, f)
             for f in os.listdir(TRAIN_IMAGES_DIR)
@@ -1533,17 +1617,26 @@ def distill(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         shuffle=True,
-        image_paths=train_image_paths,
+        image_paths=train_image_paths, # Sarà None in multi-view mode
         distributed=args.distributed.distributed,
+        multi_view_mode=args.multi_view_mode,
         split=TRAIN_SPLIT,             # "train": attiva Random Sampling delle view
+        max_views_per_scene=args.max_views,
     )
+
+    # Logica Debug per MULTI-VIEW: tagliamo la lista delle scene DOPO aver creato il dataset
+    if args.multi_view_mode and args.debug_max_train_images:
+        original_len = len(data_loader_train.dataset.samples)
+        limit = min(args.debug_max_train_images, original_len)
+        data_loader_train.dataset.samples = data_loader_train.dataset.samples[:limit]
+        print(f"[DEBUG] Multi-View: Limited train to first {limit} SCENES (was {original_len})")
 
     # --- 2. VAL DATALOADER ---
     print(f"[INFO] Building val dataloader from {VAL_IMAGES_DIR}")
     val_image_paths = None
     
     # Logica Debug per SINGLE-VIEW
-    if args.debug_max_val_images:
+    if args.debug_max_val_images and not args.multi_view_mode:
         all_val_imgs = sorted([
             os.path.join(VAL_IMAGES_DIR, f)
             for f in os.listdir(VAL_IMAGES_DIR)
@@ -1558,10 +1651,19 @@ def distill(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         shuffle=False,
-        image_paths=val_image_paths,
+        image_paths=val_image_paths, # Sarà None in multi-view mode
         distributed=args.distributed.distributed,
+        multi_view_mode=args.multi_view_mode,
         split=VAL_SPLIT,               # "val": attiva Deterministic Slicing (prime N views)
+        max_views_per_scene=args.max_views,
     )
+
+    # Logica Debug per MULTI-VIEW
+    if args.multi_view_mode and args.debug_max_val_images:
+        original_len = len(data_loader_val.dataset.samples)
+        limit = min(args.debug_max_val_images, original_len)
+        data_loader_val.dataset.samples = data_loader_val.dataset.samples[:limit]
+        print(f"[DEBUG] Multi-View: Limited val to first {limit} SCENES (was {original_len})")
 
     # ========== FREEZE STRATEGY ==========
     # 1. Freeze tutto inizialmente
@@ -2791,11 +2893,15 @@ def get_args_parser():
     parser.add_argument("--normalize_features", action="store_true", help="Normalize features before loss")
     
     # Data
-    parser.add_argument("--dataset", type=str, default="coco2017", choices=["coco2017"], help="Seleziona il dataset single-view")
+    parser.add_argument("--dataset", type=str, default="coco2017", choices=["coco2017", "ETH3D", "ETH3D_single"], help="Seleziona il dataset")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
     parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging")
     parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
     parser.add_argument("--use_data_augmentation", action="store_true", help="Enable data augmentation")
+    
+    # Multi-view
+    parser.add_argument("--multi_view_mode", action="store_true", help="Enable multi-view mode (cross-attention between views)")
+    parser.add_argument("--max_views", type=int, default=6, help="Max views per scene. Train: Random Sample. Val: First N.")
     
     # Checkpointing
     parser.add_argument("--resume_ckpt", type=str, default=None, help="[DEPRECATED] Path to checkpoint to resume from (loads both encoder and decoder)")
@@ -2842,6 +2948,11 @@ def get_args_parser():
     parser.add_argument("--decoder_masks_weight", type=float, default=0.5, help="Weight for masks loss component")
     parser.add_argument("--decoder_iou_weight", type=float, default=0.3, help="Weight for IoU loss component")
     parser.add_argument("--amg_points_per_side", type=int, default=3, help="Points per side for decoder prompt grid")
+    
+    # comando debug pc lab
+    # python distillation_test_multi_view_gemini.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2
+    # python distillation_test_multi_view_gemini.py --epochs 10 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 4 --resume_ckpt /scratch2/nico/distillation/output/distill_20251125_143157/checkpoints/checkpoint_best.pth
+    # python distillation_test_multi_view_gemini.py --epochs 10 --log_freq 1 --save_freq 1 --save_visualizations --multi_view_mode
 
     # Proporzioni
     # batch_size 1, lr 1e-4, accum_iter 1
