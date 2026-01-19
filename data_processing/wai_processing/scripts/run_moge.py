@@ -12,7 +12,8 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 from argconf import argconf_parse
-from moge.model.v2 import MoGeModel
+# from moge.model.v2 import MoGeModel
+from mapanything.models.external.moge.models.v2 import MoGeModel
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
