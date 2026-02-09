@@ -1,0 +1,6 @@
+output_dir: "/scratch2/nico/distillation/output"
+base_dir: "/scratch2/nico/distillation/dataset"
+sam2_path: "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
+config_json_path: "/scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/562de9ff7077addd5780415661c5fb031eb8003e"
+root_data_dir: "/scratch2/nico/distillation/dataset/converted/wai_data"
+mapanything_dataset_metadata_dir: "/scratch2/nico/distillation/dataset/converted/mapanything_dataset_metadata"

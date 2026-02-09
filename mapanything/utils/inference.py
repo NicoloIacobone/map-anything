@@ -24,6 +24,8 @@ from mapanything.utils.geometry import (
 )
 from mapanything.utils.image import rgb
 
+from nico.utils import pca_visualization
+
 # Hard constraints - exactly what users can provide
 ALLOWED_VIEW_KEYS = {
     "img",  # Required - input images
@@ -45,7 +47,6 @@ CONFLICTING_KEYS = [
     ("intrinsics", "ray_directions")  # Both represent camera projection
 ]
 
-
 def loss_of_one_batch_multi_view(
     batch,
     model,
@@ -55,6 +56,7 @@ def loss_of_one_batch_multi_view(
     amp_dtype="bf16",
     ret=None,
     ignore_keys=None,
+    teacher_features=None,
 ):
     """
     Calculate loss for a batch with multiple views.
@@ -115,15 +117,82 @@ def loss_of_one_batch_multi_view(
     # Run model and compute loss
     with torch.autocast("cuda", enabled=bool(use_amp), dtype=amp_dtype):
         preds = model(batch)
-        with torch.autocast("cuda", enabled=False):
-            loss = criterion(batch, preds) if criterion is not None else None
+        # ========= EXTRACT STUDENT FEATURES AND CONFIDENCE IF AVAILABLE =========
+        if hasattr(model, "dpt_feature_head_2"):
+            base_model = model.module if hasattr(model, "module") else model
+            # Estrai le feature (256 canali)
+            student_features = getattr(base_model, "_last_feat2_8x", None)
+            # for i in range(student_features.shape[0]):
+                # pca_visualization(student_features[i], student_features[i])
+            
+            # Estrai la confidenza appresa (1 canale, softplus attivata)
+            # student_confidences = getattr(base_model, "_last_conf2_8x", None)
+            student_confidences = None  # [MODIFICA] Disabilitata confidenza per ora
+        else:
+            student_features = None
+            student_confidences = None
+
+    # ========== PREPARE INPUT FOR SEMANTIC CONSISTENCY LOSS ==========
+    if type(criterion).__name__ == "SemanticConsistencyLoss":
+        def _select_per_view(feats, view_idx, batch, n_views):
+            if feats is None:
+                return None
+            # List/Tuple: già per-view
+            if isinstance(feats, (list, tuple)):
+                return feats[view_idx]
+
+            if torch.is_tensor(feats):
+                # (n_views, B, C, H, W)
+                if feats.dim() == 5:
+                    return feats[view_idx]
+
+                # (B, C, H, W) oppure (n_views*B, C, H, W)
+                if feats.dim() == 4:
+                    B = batch[view_idx]["img"].shape[0] if "img" in batch[view_idx] else None
+                    if B is not None and feats.shape[0] == n_views * B:
+                        feats = feats.view(n_views, B, *feats.shape[1:])
+                        return feats[view_idx]
+                    return feats
+
+            # Fallback
+            return feats
+
+        # Special handling for semantic consistency loss
+        for i in range(len(batch)):
+            # Add teacher features to batch (BCHW format)
+            if teacher_features is not None:
+                batch[i]["semantics"] = _select_per_view(teacher_features, i, batch, len(batch))
+
+            # Add student features to preds (BCHW format)
+            if student_features is not None:
+                preds[i]["semantics"] = _select_per_view(student_features, i, batch, len(batch))
+
+            # [MODIFICA] Add student confidence to preds
+            if student_confidences is not None:
+                preds[i]["sem_conf"] = _select_per_view(student_confidences, i, batch, len(batch))
+
+            # Fallback (Uniforme)
+            else:
+                B, C, H, W = preds[i]["semantics"].shape
+                device = preds[i]["semantics"].device
+                preds[i]["sem_conf"] = torch.ones(B, 1, H, W, device=device)
+
+            # pca_visualization(preds[i]["semantics"], batch[i]["semantics"])
+            # pca_visualization(batch[i]["semantics"], preds[i]["semantics"])
+    # ==============================================================================
+    # pca_visualization(student_features, teacher_features)
+    if i == 0 and len(batch) > 1:
+        t01 = (batch[0]["semantics"] - batch[1]["semantics"]).abs().mean().item()
+        s01 = (preds[0]["semantics"] - preds[1]["semantics"]).abs().mean().item()
+        print("[DEBUG] teacher v0-v1:", t01, "student v0-v1:", s01)
+    
+    with torch.autocast("cuda", enabled=False):
+        loss = criterion(batch, preds) if criterion is not None else None
 
     result = {f"view{i + 1}": view for i, view in enumerate(batch)}
     result.update({f"pred{i + 1}": pred for i, pred in enumerate(preds)})
     result["loss"] = loss
-
     return result[ret] if ret else result
-
 
 def validate_input_views_for_inference(
     views: List[Dict[str, Any]],
@@ -198,7 +267,6 @@ def validate_input_views_for_inference(
 
     return views
 
-
 def preprocess_input_views_for_inference(
     views: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
@@ -223,7 +291,7 @@ def preprocess_input_views_for_inference(
         # Copy the view dictionary to avoid modifying the original input
         processed_view = dict(view)
 
-        # Step 1: Convert intrinsics to ray_directions when required. If ray_directions are provided, unit normalize them.
+        # Step 1: Convert intrinsics to ray_directions when required. If ray directions are provided, unit normalize them.
         if "intrinsics" in view:
             images = view["img"]
             height, width = images.shape[-2:]
@@ -289,7 +357,6 @@ def preprocess_input_views_for_inference(
         processed_views.append(processed_view)
 
     return processed_views
-
 
 def postprocess_model_outputs_for_inference(
     raw_outputs: List[Dict[str, torch.Tensor]],

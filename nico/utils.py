@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw, ImageFont
 from torch import nn
 import numpy as np
 import cv2
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from sam2_minimal.utils.amg import batched_mask_to_box, box_xyxy_to_xywh
 
 class SAM2CompatibilityLayer(nn.Module):
@@ -609,37 +609,6 @@ def print_trainable_summary(model, detailed=False, max_print=None):
     
     return stats
 
-# def show_anns(anns, borders=True, output_dir=None):
-#     if len(anns) == 0:
-#         return
-#     sorted_anns = sorted(anns, key=(lambda x: x['area']), reverse=True)
-    
-    
-#     # Modalità nuovo: salva su disco
-#     img = np.ones((sorted_anns[0]['segmentation'].shape[0], sorted_anns[0]['segmentation'].shape[1], 4))
-#     img[:, :, 3] = 0
-#     for ann in sorted_anns:
-#         m = ann['segmentation']
-#         color_mask = np.concatenate([np.random.random(3), [0.5]])
-#         img[m] = color_mask 
-#         if borders:
-#             contours, _ = cv2.findContours(m.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE) 
-#             # Try to smooth contours
-#             contours = [cv2.approxPolyDP(contour, epsilon=0.01, closed=True) for contour in contours]
-#             cv2.drawContours(img, contours, -1, (0, 0, 1, 0.4), thickness=1) 
-    
-#     # Crea directory se non esiste
-#     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    
-#     # Salva l'immagine
-#     fig, ax = plt.subplots(figsize=(10, 10))
-#     ax.imshow(img)
-#     ax.axis('off')
-#     output_path = os.path.join(output_dir, "annotations.png")
-#     plt.savefig(output_path, bbox_inches='tight', dpi=100)
-#     plt.close(fig)
-#     print(f"[INFO] Annotations saved to {output_path}")
-
 def show_anns(anns, borders=True):
     if len(anns) == 0:
         return
@@ -781,3 +750,849 @@ def convert_maskdecoder_to_showable(
         anns.append(ann)
     
     return anns
+
+def setup_freeze_strategy(
+    model: torch.nn.Module,
+    num_info_sharing_blocks_unfreeze: int = 0,
+    num_dino_layers_unfreeze: int = 0,
+    student_components: list = None,
+) -> dict:
+    """
+    Setup freeze/unfreeze strategy for distillation training.
+    
+    Args:
+        model: MapAnything model
+        num_info_sharing_blocks_unfreeze: Number of last info_sharing blocks to unfreeze
+        num_dino_layers_unfreeze: Number of last DINOv2 encoder blocks to unfreeze
+        student_components: List of module name prefixes to always unfreeze
+                          (default: ["dpt_feature_head_2", "sam2_compat", "sam2_mask_decoder_student"])
+    
+    Returns:
+        dict with keys:
+            - "info_sharing_unfrozen_indices": list of unfrozen info_sharing block indices
+            - "dino_unfrozen_indices": list of unfrozen DINOv2 block indices
+    """
+    if student_components is None:
+        # student_components = ["dpt_feature_head_2", "sam2_compat", "sam2_mask_decoder_student"]
+        student_components = ["dpt_feature_head_2", "sam2_compat"]
+    
+    # 1. Freeze tutto
+    print("[INFO] Freezing all parameters...")
+    for param in model.parameters():
+        param.requires_grad = False
+    
+    # 2. Unfreeze componenti student
+    print(f"[INFO] Unfreezing student components: {student_components}")
+    for name, param in model.named_parameters():
+        if any(name.startswith(prefix) for prefix in student_components):
+            param.requires_grad = True
+    
+    result = {
+        "info_sharing_unfrozen_indices": [],
+        "dino_unfrozen_indices": [],
+    }
+    
+    # 3. Unfreeze info_sharing blocks
+    if num_info_sharing_blocks_unfreeze > 0 and hasattr(model, "info_sharing"):
+        info_sharing = model.info_sharing
+        blocks = getattr(info_sharing, "self_attention_blocks", None)
+        
+        if blocks and len(blocks) > 0:
+            start_idx = max(0, len(blocks) - num_info_sharing_blocks_unfreeze)
+            unfrozen_indices = []
+            unfrozen_count = 0
+            
+            for i in range(start_idx, len(blocks)):
+                for param in blocks[i].parameters():
+                    param.requires_grad = True
+                    unfrozen_count += param.numel()
+                unfrozen_indices.append(i)
+            
+            # Unfreeze wrapper params if all blocks unfrozen
+            if num_info_sharing_blocks_unfreeze == 24:
+                for name, p in model.named_parameters():
+                    if name.startswith(("info_sharing.proj_embed", "info_sharing.norm")):
+                        p.requires_grad = True
+            
+            result["info_sharing_unfrozen_indices"] = unfrozen_indices
+            print(f"[INFO] Unfroze last {num_info_sharing_blocks_unfreeze} info_sharing blocks (indices {unfrozen_indices})")
+            print(f"[INFO] Unfroze {unfrozen_count:,} parameters in info_sharing")
+            
+            from nico.utils import verify_frozen_blocks
+            verify_frozen_blocks(blocks, "Multi-View Transformer blocks", unfrozen_indices)
+    
+    # 4. Unfreeze DINOv2 blocks
+    if num_dino_layers_unfreeze > 0 and hasattr(model, "encoder"):
+        dino_encoder = model.encoder
+        dino_model = getattr(dino_encoder, "model", dino_encoder)
+        blocks = getattr(dino_model, "blocks", None)
+        
+        if blocks and len(blocks) > 0:
+            start_idx = max(0, len(blocks) - num_dino_layers_unfreeze)
+            unfrozen_indices = []
+            unfrozen_count = 0
+            
+            for i in range(start_idx, len(blocks)):
+                for param in blocks[i].parameters():
+                    param.requires_grad = True
+                    unfrozen_count += param.numel()
+                unfrozen_indices.append(i)
+            
+            # Unfreeze wrapper params if all blocks unfrozen
+            if num_dino_layers_unfreeze == 24:
+                for name, p in model.named_parameters():
+                    if name.startswith((
+                        "encoder.model.patch_embed.proj",
+                        "encoder.model.pos_embed",
+                        "encoder.model.cls_token",
+                        "encoder.model.norm",
+                    )):
+                        p.requires_grad = True
+            
+            result["dino_unfrozen_indices"] = unfrozen_indices
+            print(f"[INFO] Unfroze last {num_dino_layers_unfreeze} DINOv2 encoder blocks (indices {unfrozen_indices})")
+            print(f"[INFO] Unfroze {unfrozen_count:,} parameters in DINOv2 encoder")
+            
+            from nico.utils import verify_frozen_blocks
+            verify_frozen_blocks(blocks, "DINOv2 encoder blocks", unfrozen_indices)
+        else:
+            print("[WARN] DINOv2 encoder has no 'blocks'. Skipping unfreezing.")
+    
+    return result
+
+class EncoderDistillationLoss(torch.nn.Module):
+    """
+    Loss combinata MSE + (1 - Cosine Similarity) per la distillazione delle feature.
+    
+    Args:
+        mse_weight: peso della componente MSE
+        cosine_weight: peso della componente (1 - cosine similarity)
+        normalize: se True, normalizza lungo i canali (dim=1) prima del calcolo
+    """
+    
+    def __init__(
+        self,
+        mse_weight: float = 0.5,
+        cosine_weight: float = 0.5,
+        normalize: bool = False,
+    ):
+        super().__init__()
+        self.mse_weight = mse_weight
+        self.cosine_weight = cosine_weight
+        self.normalize = normalize
+    
+    def forward(
+        self,
+        student_features: torch.Tensor,
+        teacher_features: torch.Tensor,
+        mse_type: str = "pixel",
+    ) -> Tuple[torch.Tensor, Dict]:
+        """
+        Calcola la loss di distillazione.
+        
+        Args:
+            student_features: Tensor (B,C,H,W) dallo studente
+            teacher_features: Tensor (B,C,H,W) dal teacher
+            mse_type: Tipo di MSE ("pixel" o "sample")
+        
+        Returns:
+            loss: valore scalare totale
+            loss_details: dizionario con componenti ('enc_mse_loss','enc_cos_loss','enc_cos_sim')
+        Note:
+            F.cosine_similarity(..., dim=1) produce (B,H,W); qui facciamo .mean() su tutte le posizioni.
+        """
+        # Optionally normalize
+        if self.normalize:
+            student_norm = F.normalize(student_features, dim=1)
+            teacher_norm = F.normalize(teacher_features, dim=1)
+        else:
+            student_norm = student_features
+            teacher_norm = teacher_features
+
+        cos_map = F.cosine_similarity(student_norm, teacher_norm, dim=1)  # (B, H, W)
+        cos_sim_per_image = cos_map.flatten(1).mean(dim=1)  # Media su (H,W) → (B,)
+        cos_sim = cos_sim_per_image.mean()  # Media su batch → scalare
+        
+        cos_loss = 1.0 - cos_sim
+
+        if mse_type == "sample":
+            # Calcola MSE sample-wise (media su batch, ma SOMMA su C,H,W)
+            mse_per_sample = F.mse_loss(
+                student_norm, 
+                teacher_norm, 
+                reduction='none'  # (B, C, H, W)
+            ).mean(dim=(1, 2, 3))  # Media su (C,H,W) → (B,)
+            
+            mse_loss = mse_per_sample.mean()  # Media su batch → scalare
+
+        elif mse_type == "pixel":
+            # Calcola MSE pixel-wise (media su batch, H, W, ma SOMMA su canali C)
+            diff = student_norm - teacher_norm
+            mse_loss = (diff ** 2).sum(dim=1).mean() # Somma su C, media su H,W
+        
+        # Combined loss
+        total_loss = self.mse_weight * mse_loss + self.cosine_weight * cos_loss
+        
+        loss_details = {
+            "enc_mse_loss": mse_loss.item(),
+            "enc_cos_loss": cos_loss.item(),
+            "enc_cos_sim": cos_sim.item(),
+        }
+        
+        return total_loss, loss_details
+
+class DecoderDistillationLoss(torch.nn.Module):
+    """
+    Loss MSE per distillazione decoder SAM2.
+    Applica MSE su masks, IoU predictions, e output tokens.
+    """
+    
+    def __init__(
+        self,
+        weight_masks: float = 0.5,
+        weight_iou: float = 0.3,
+        weight_tokens: float = 1.0,
+    ):
+        super().__init__()
+        self.weight_masks = weight_masks
+        self.weight_iou = weight_iou
+        self.weight_tokens = weight_tokens
+    
+    def forward(
+        self,
+        student_masks: torch.Tensor,
+        student_iou: torch.Tensor,
+        student_tokens: torch.Tensor,
+        teacher_masks: torch.Tensor,
+        teacher_iou: torch.Tensor,
+        teacher_tokens: torch.Tensor,
+    ) -> Tuple[torch.Tensor, Dict]:
+        """
+        Calcola loss MSE di distillazione decoder.
+        
+        Returns:
+            total_loss: Loss scalare totale
+            loss_dict: Dizionario con componenti individuali
+        """
+        # MSE per ogni componente
+        loss_masks = F.mse_loss(student_masks, teacher_masks)
+        loss_iou = F.mse_loss(student_iou, teacher_iou)
+        loss_tokens = F.mse_loss(student_tokens, teacher_tokens)
+        
+        # Combinazione pesata
+        total_loss = (
+            self.weight_masks * loss_masks +
+            self.weight_iou * loss_iou +
+            self.weight_tokens * loss_tokens
+        )
+        
+        loss_dict = {
+            "decoder_loss_masks": loss_masks.item(),
+            "decoder_loss_iou": loss_iou.item(),
+            "decoder_loss_tokens": loss_tokens.item(),
+            "decoder_loss_total": total_loss.item(),
+        }
+        
+        return total_loss, loss_dict
+
+
+# ==================== Checkpoint Management ====================
+def load_trainer_checkpoint(
+    checkpoint_path: str,
+    device: torch.device,
+    optimizer=None,
+    scheduler=None,
+    args=None,
+) -> Tuple[int, float]:
+    """
+    Load trainer state (optimizer/scheduler) from checkpoint.
+    
+    Args:
+        checkpoint_path: Path to trainer checkpoint
+        device: Device to load checkpoint on
+        optimizer: Optimizer (required for loading optimizer state)
+        scheduler: Scheduler (optional, for loading scheduler state)
+        args: Training arguments with override flags
+    
+    Returns:
+        (start_epoch, best_val_loss) tuple from checkpoint
+    """
+    print(f"[LOAD] Loading trainer checkpoint: {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    if optimizer is not None and "optimizer" in ckpt:
+        try:
+            optimizer.load_state_dict(ckpt["optimizer"])
+            print("[INFO] Loaded optimizer state from trainer checkpoint")
+        except Exception as e:
+            print(f"[WARN] Failed loading optimizer state: {e}")
+    
+    if (
+        scheduler is not None
+        and "scheduler" in ckpt
+        and not getattr(getattr(args, "train_params", None) or {}, "override_scheduler", False)
+    ):
+        try:
+            scheduler.load_state_dict(ckpt["scheduler"])
+            print("[INFO] Loaded scheduler state from trainer checkpoint")
+        except Exception as e:
+            print(f"[WARN] Failed loading scheduler state: {e}")
+    
+    start_epoch = ckpt.get("epoch", 0) + 1
+    best_val_loss = ckpt.get("best_val_loss", float("inf"))
+    return start_epoch, best_val_loss
+
+def load_encoder_checkpoint(
+    model_without_ddp,
+    checkpoint_path: str,
+    device: torch.device,
+) -> Tuple[int, float]:
+    """
+    Load checkpoint containing only ENCODER trainable components.
+    
+    Loads:
+        - dpt_feature_head_2 (student encoder)
+        - sam2_compat (student encoder compatibility layer)
+        - unfrozen info_sharing blocks (multi-view transformer)
+        - unfrozen DINOv2 encoder blocks
+    
+    Args:
+        model_without_ddp: Model without DDP wrapper
+        checkpoint_path: Path to encoder checkpoint
+        device: Device to load checkpoint on
+        args: Training arguments (optional, not required for loading)
+    
+    Returns:
+        (start_epoch, best_val_loss) tuple from checkpoint
+    """
+    print(f"[LOAD] Loading encoder checkpoint: {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    print(f"[DEBUG] Checkpoint content: {ckpt.keys()}")
+    
+    # Load encoder head
+    if "dpt_feature_head_2" in ckpt:
+        model_without_ddp.dpt_feature_head_2.load_state_dict(ckpt["dpt_feature_head_2"])
+        print("[INFO] Loaded dpt_feature_head_2")
+    else:
+        print("[WARN] dpt_feature_head_2 not found in encoder checkpoint!")
+    
+    # Load sam2_compat if present
+    if "sam2_compat" in ckpt and hasattr(model_without_ddp, "sam2_compat"):
+        model_without_ddp.sam2_compat.load_state_dict(ckpt["sam2_compat"])
+        print("[INFO] Loaded sam2_compat")
+    elif hasattr(model_without_ddp, "sam2_compat"):
+        print("[INFO] sam2_compat not in encoder checkpoint; using random initialization")
+    
+    # Load info_sharing blocks (NO dipendenza da args)
+    if "info_sharing_blocks" in ckpt and hasattr(model_without_ddp, "info_sharing"):
+        info = model_without_ddp.info_sharing
+        blocks = getattr(info, "self_attention_blocks", None)
+        if blocks:
+            for idx, state_dict in ckpt["info_sharing_blocks"].items():
+                if idx < len(blocks):
+                    try:
+                        blocks[idx].load_state_dict(state_dict)
+                    except Exception as e:
+                        print(f"[WARN] Failed loading info_sharing block {idx}: {e}")
+            print(f"[INFO] Restored {len(ckpt['info_sharing_blocks'])} info_sharing blocks")
+        
+        if "info_sharing_wrappers" in ckpt:
+            for name, data in ckpt["info_sharing_wrappers"].items():
+                try:
+                    param = dict(info.named_parameters())[name]
+                    param.data.copy_(data)
+                except Exception as e:
+                    print(f"[WARN] Failed loading wrapper param {name}: {e}")
+            print(f"[INFO] Restored {len(ckpt['info_sharing_wrappers'])} info_sharing wrapper params")
+    
+    # Load DINOv2 blocks (NO dipendenza da args)
+    if "dino_encoder_blocks" in ckpt and hasattr(model_without_ddp, "encoder"):
+        dino_encoder = model_without_ddp.encoder
+        dino_model = dino_encoder.model if hasattr(dino_encoder, "model") else dino_encoder
+        blocks = getattr(dino_model, "blocks", None)
+        if blocks:
+            for idx, state_dict in ckpt["dino_encoder_blocks"].items():
+                if idx < len(blocks):
+                    try:
+                        blocks[idx].load_state_dict(state_dict)
+                    except Exception as e:
+                        print(f"[WARN] Failed loading DINOv2 block {idx}: {e}")
+            print(f"[INFO] Restored {len(ckpt['dino_encoder_blocks'])} DINOv2 blocks")
+        
+        if "dino_encoder_wrappers" in ckpt:
+            for name, data in ckpt["dino_encoder_wrappers"].items():
+                try:
+                    param = dict(dino_model.named_parameters())[name]
+                    param.data.copy_(data)
+                except Exception as e:
+                    print(f"[WARN] Failed loading wrapper param {name}: {e}")
+            print(f"[INFO] Restored {len(ckpt['dino_encoder_wrappers'])} DINOv2 wrapper params")
+    
+    start_epoch = ckpt.get("epoch", 0) + 1
+    best_val_loss = ckpt.get("best_val_loss", float("inf"))
+    
+    return start_epoch, best_val_loss
+
+def load_decoder_checkpoint(
+    model_without_ddp,
+    checkpoint_path: str,
+    device: torch.device,
+) -> Tuple[int, float]:
+    """
+    Load checkpoint containing only DECODER trainable components.
+    
+    Loads:
+        - sam2_mask_decoder_student (student decoder)
+    
+    Args:
+        model_without_ddp: Model without DDP wrapper
+        checkpoint_path: Path to decoder checkpoint
+        device: Device to load checkpoint on
+    
+    Returns:
+        (start_epoch, best_val_loss) tuple from checkpoint
+    """
+    print(f"[LOAD] Loading decoder checkpoint: {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    # Load decoder
+    if "sam2_mask_decoder_student" in ckpt and hasattr(model_without_ddp, "sam2_mask_decoder_student"):
+        model_without_ddp.sam2_mask_decoder_student.load_state_dict(ckpt["sam2_mask_decoder_student"])
+        print("[INFO] Loaded sam2_mask_decoder_student")
+    elif hasattr(model_without_ddp, "sam2_mask_decoder_student"):
+        print("[WARN] sam2_mask_decoder_student not found in decoder checkpoint; using random initialization")
+    else:
+        print("[WARN] sam2_mask_decoder_student not present in model!")
+    
+    start_epoch = ckpt.get("epoch", 0) + 1
+    best_val_loss = ckpt.get("best_val_loss", float("inf"))
+    
+    return start_epoch, best_val_loss
+
+def save_trainer_checkpoint(
+    optimizer,
+    scheduler,
+    epoch: int,
+    best_val_loss: float,
+    output_dir: str,
+    tag: str = "last",
+    args=None,
+    wandb_available: bool = False,
+):
+    """
+    Save trainer state (optimizer/scheduler/epoch/best_val_loss) in a separate file.
+    
+    Args:
+        optimizer: Optimizer
+        scheduler: Learning rate scheduler
+        epoch: Current epoch
+        best_val_loss: Best validation loss so far
+        output_dir: Directory to save checkpoint
+        tag: Tag for checkpoint filename (e.g., "best", "last", "epoch10")
+        args: Training arguments (for full reproducibility)
+    """
+    state = {
+        "optimizer": optimizer.state_dict(),
+        "epoch": epoch,
+        "best_val_loss": best_val_loss,
+    }
+    
+    # Save full args for reproducibility
+    if args is not None:
+        state["args"] = args
+    
+    if scheduler is not None:
+        state["scheduler"] = scheduler.state_dict()
+    
+    if wandb_available and wandb.run is not None:
+        state["wandb_run_id"] = wandb.run.id
+    
+    ckpt_dir = Path(output_dir) / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_path = ckpt_dir / f"checkpoint_trainer_{tag}.pth"
+    torch.save(state, ckpt_path)
+    print(f"[SAVE] Trainer checkpoint saved: {ckpt_path}")
+
+def save_encoder_checkpoint(
+    model_without_ddp,
+    epoch: int,
+    best_val_loss: float,
+    output_dir: str,
+    tag: str = "last",
+    args=None,
+    wandb_available: bool = False,
+):
+    """
+    Save checkpoint containing only ENCODER trainable components.
+    
+    Saves:
+        - dpt_feature_head_2 (student encoder)
+        - sam2_compat (student encoder compatibility layer)
+        - unfrozen info_sharing blocks (multi-view transformer)
+        - unfrozen DINOv2 encoder blocks
+        - training metadata (epoch, best_val_loss, wandb_run_id)
+    
+    NOTE: optimizer/scheduler are NOT saved here.
+    Use save_trainer_checkpoint() for optimizer/scheduler state.
+    
+    Args:
+        model_without_ddp: Model without DDP wrapper
+        epoch: Current epoch
+        best_val_loss: Best validation loss so far
+        output_dir: Directory to save checkpoint
+        tag: Tag for checkpoint filename (e.g., "best", "last", "epoch10")
+        args: Training arguments (optional, for reproducibility)
+        wandb_available: Whether wandb is available
+    """
+    state = {
+        "dpt_feature_head_2": model_without_ddp.dpt_feature_head_2.state_dict(),
+        "epoch": epoch,
+        "best_val_loss": best_val_loss,
+    }
+    
+    # Save full args for reproducibility
+    if args is not None:
+        state["args"] = args
+
+    # Save sam2_compat if present
+    if hasattr(model_without_ddp, "sam2_compat"):
+        state["sam2_compat"] = model_without_ddp.sam2_compat.state_dict()
+        print("[INFO] Added sam2_compat to encoder checkpoint")
+
+    # === Determina blocchi unfrozen da stato effettivo del modello ===
+    if hasattr(model_without_ddp, "info_sharing"):
+        info = model_without_ddp.info_sharing
+        blocks = getattr(info, "self_attention_blocks", None)
+        if blocks:
+            # Trova blocchi con requires_grad=True
+            unfrozen_indices = [
+                i for i, block in enumerate(blocks)
+                if any(p.requires_grad for p in block.parameters())
+            ]
+            
+            if unfrozen_indices:
+                state["info_sharing_blocks"] = {
+                    i: blocks[i].state_dict() for i in unfrozen_indices
+                }
+                print(f"[INFO] Saved {len(unfrozen_indices)} unfrozen info_sharing blocks: {unfrozen_indices}")
+            
+            # Salva wrapper params se unfrozen
+            wrapper_state = {
+                name: param.data.clone()
+                for name, param in info.named_parameters()
+                if param.requires_grad and name.startswith(("proj_embed", "norm"))
+            }
+            if wrapper_state:
+                state["info_sharing_wrappers"] = wrapper_state
+                print(f"[INFO] Saved {len(wrapper_state)} unfrozen info_sharing wrapper params")
+
+    # === Stessa logica per DINOv2 ===
+    if hasattr(model_without_ddp, "encoder"):
+        dino_encoder = model_without_ddp.encoder
+        dino_model = dino_encoder.model if hasattr(dino_encoder, "model") else dino_encoder
+        blocks = getattr(dino_model, "blocks", None)
+        if blocks:
+            unfrozen_indices = [
+                i for i, block in enumerate(blocks)
+                if any(p.requires_grad for p in block.parameters())
+            ]
+            
+            if unfrozen_indices:
+                state["dino_encoder_blocks"] = {
+                    i: blocks[i].state_dict() for i in unfrozen_indices
+                }
+                print(f"[INFO] Saved {len(unfrozen_indices)} unfrozen DINOv2 blocks: {unfrozen_indices}")
+            
+            wrapper_state = {
+                name: param.data.clone()
+                for name, param in dino_model.named_parameters()
+                if param.requires_grad and name.startswith(("patch_embed.proj", "pos_embed", "cls_token", "norm"))
+            }
+            if wrapper_state:
+                state["dino_encoder_wrappers"] = wrapper_state
+                print(f"[INFO] Saved {len(wrapper_state)} unfrozen DINOv2 wrapper params")
+    
+    # Save wandb run_id if available
+    if wandb_available and wandb.run is not None:
+        state["wandb_run_id"] = wandb.run.id
+    
+    # Crea la sottocartella checkpoints
+    ckpt_dir = Path(output_dir) / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    
+    ckpt_path = ckpt_dir / f"checkpoint_encoder_{tag}.pth"
+    torch.save(state, ckpt_path)
+    print(f"[SAVE] Encoder checkpoint saved: {ckpt_path}")
+
+def save_decoder_checkpoint(
+    model_without_ddp,
+    epoch: int,
+    best_val_loss: float,
+    output_dir: str,
+    tag: str = "last",
+    args=None,
+    wandb_available: bool = False,
+):
+    """
+    Save checkpoint containing only DECODER trainable components.
+    
+    Saves:
+        - sam2_mask_decoder_student (student decoder)
+        - training metadata (epoch, best_val_loss, wandb_run_id)
+    
+    NOTE: optimizer/scheduler are NOT saved here.
+    Use save_trainer_checkpoint() for optimizer/scheduler state.
+    
+    Args:
+        model_without_ddp: Model without DDP wrapper
+        epoch: Current epoch
+        best_val_loss: Best validation loss so far
+        output_dir: Directory to save checkpoint
+        tag: Tag for checkpoint filename (e.g., "best", "last", "epoch10")
+        args: Training arguments (optional, for reproducibility)
+        wandb_available: Whether wandb is available
+    """
+    state = {
+        "epoch": epoch,
+        "best_val_loss": best_val_loss,
+    }
+    
+    # Save full args for reproducibility
+    if args is not None:
+        state["args"] = args
+
+    # Save student mask decoder if present
+    if hasattr(model_without_ddp, "sam2_mask_decoder_student"):
+        state["sam2_mask_decoder_student"] = model_without_ddp.sam2_mask_decoder_student.state_dict()
+        print("[INFO] Added sam2_mask_decoder_student to decoder checkpoint")
+    else:
+        print("[WARN] sam2_mask_decoder_student not found in model!")
+    
+    # Save wandb run_id if available
+    if wandb_available and wandb.run is not None:
+        state["wandb_run_id"] = wandb.run.id
+    
+    # Crea la sottocartella checkpoints
+    ckpt_dir = Path(output_dir) / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    
+    ckpt_path = ckpt_dir / f"checkpoint_decoder_{tag}.pth"
+    torch.save(state, ckpt_path)
+    print(f"[SAVE] Decoder checkpoint saved: {ckpt_path}")
+
+def save_model(
+    model_without_ddp,
+    epoch: int,
+    best_val_loss: float,
+    output_dir: str,
+    tag: str,
+    optimizer=None,
+    scheduler=None,
+    args=None,
+    wandb_available: bool = False,
+    save_encoder: bool = True,
+    save_decoder: bool = True,
+    save_trainer: bool = True,
+):
+    """
+    Unified checkpoint saving function that saves encoder, decoder, and trainer state.
+    
+    This is a convenience wrapper that calls save_encoder_checkpoint(), save_decoder_checkpoint(),
+    and save_trainer_checkpoint() based on the provided flags.
+    
+    Args:
+        model_without_ddp: Model without DDP wrapper
+        optimizer: Optimizer
+        scheduler: Learning rate scheduler
+        epoch: Current epoch
+        best_val_loss: Best validation loss so far
+        output_dir: Directory to save checkpoints
+        tag: Tag for checkpoint filenames (e.g., "best", "last", "epoch10")
+        args: Training arguments (for reproducibility)
+        wandb_available: Whether wandb is available
+        save_encoder: Whether to save encoder checkpoint
+        save_decoder: Whether to save decoder checkpoint
+        save_trainer: Whether to save trainer checkpoint
+    """
+    if save_encoder:
+        save_encoder_checkpoint(
+            model_without_ddp=model_without_ddp,
+            epoch=epoch,
+            best_val_loss=best_val_loss,
+            output_dir=output_dir,
+            tag=tag,
+            args=args,
+            wandb_available=wandb_available,
+        )
+    
+    if save_decoder:
+        save_decoder_checkpoint(
+            model_without_ddp=model_without_ddp,
+            epoch=epoch,
+            best_val_loss=best_val_loss,
+            output_dir=output_dir,
+            tag=tag,
+            args=args,
+            wandb_available=wandb_available,
+        )
+    
+    if save_trainer:
+        save_trainer_checkpoint(
+            optimizer=optimizer,
+            scheduler=scheduler,
+            epoch=epoch,
+            best_val_loss=best_val_loss,
+            output_dir=output_dir,
+            tag=tag,
+            args=args,
+            wandb_available=wandb_available,
+        )
+
+def load_model(
+    model_without_ddp,
+    device: torch.device,
+    optimizer=None,
+    scheduler=None,
+    args=None,
+    encoder_checkpoint_path: str = None,
+    decoder_checkpoint_path: str = None,
+    trainer_checkpoint_path: str = None,
+) -> Tuple[int, float]:
+    """
+    Unified checkpoint loading function that loads encoder, decoder, and trainer state.
+    
+    This is a convenience wrapper that calls load_encoder_checkpoint(), load_decoder_checkpoint(),
+    and load_trainer_checkpoint() as needed, consolidating the start_epoch and best_val_loss.
+    
+    Args:
+        model_without_ddp: Model without DDP wrapper
+        device: Device to load checkpoints on
+        optimizer: Optimizer (for loading optimizer state from trainer checkpoint)
+        scheduler: Scheduler (for loading scheduler state from trainer checkpoint)
+        args: Training arguments with override flags
+        encoder_checkpoint_path: Path to encoder checkpoint (optional)
+        decoder_checkpoint_path: Path to decoder checkpoint (optional)
+        trainer_checkpoint_path: Path to trainer checkpoint (optional)
+    
+    Returns:
+        (start_epoch, best_val_loss): Consolidated values from all loaded checkpoints
+            - start_epoch: max epoch from all checkpoints + 1
+            - best_val_loss: min loss from all checkpoints
+    """
+    start_epoch = 0
+    best_val_loss = float("inf")
+    
+    loaded_checkpoints = []
+    
+    # Load encoder checkpoint
+    if encoder_checkpoint_path and os.path.exists(encoder_checkpoint_path):
+        enc_epoch, enc_loss = load_encoder_checkpoint(
+            model_without_ddp=model_without_ddp,
+            checkpoint_path=encoder_checkpoint_path,
+            device=device,
+        )
+        start_epoch = max(start_epoch, enc_epoch)
+        best_val_loss = min(best_val_loss, enc_loss)
+        loaded_checkpoints.append(f"encoder (epoch {enc_epoch}, loss {enc_loss:.6f})")
+    
+    # Load decoder checkpoint
+    if decoder_checkpoint_path and os.path.exists(decoder_checkpoint_path):
+        dec_epoch, dec_loss = load_decoder_checkpoint(
+            model_without_ddp=model_without_ddp,
+            checkpoint_path=decoder_checkpoint_path,
+            device=device,
+        )
+        start_epoch = max(start_epoch, dec_epoch)
+        best_val_loss = min(best_val_loss, dec_loss)
+        loaded_checkpoints.append(f"decoder (epoch {dec_epoch}, loss {dec_loss:.6f})")
+    
+    # Load trainer checkpoint
+    if trainer_checkpoint_path and os.path.exists(trainer_checkpoint_path):
+        trainer_epoch, trainer_loss = load_trainer_checkpoint(
+            checkpoint_path=trainer_checkpoint_path,
+            device=device,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            args=args,
+        )
+        start_epoch = max(start_epoch, trainer_epoch)
+        best_val_loss = min(best_val_loss, trainer_loss)
+        loaded_checkpoints.append(f"trainer (epoch {trainer_epoch}, loss {trainer_loss:.6f})")
+    
+    # Summary
+    if loaded_checkpoints:
+        print(f"\n[RESUME] Loaded {len(loaded_checkpoints)} checkpoint(s): {', '.join(loaded_checkpoints)}")
+        print(f"[RESUME] Consolidated: start_epoch={start_epoch}, best_val_loss={best_val_loss:.6f}\n")
+    else:
+        print("[INFO] No checkpoints loaded, starting from scratch")
+    
+    return start_epoch, best_val_loss
+
+def pca_visualization(student_features, teacher_features):
+    try:
+        import matplotlib
+        matplotlib.use('Agg') # Fondamentale per SSH
+        import matplotlib.pyplot as plt
+        from sklearn.decomposition import PCA
+        import os
+        import numpy as np
+
+        output_path = "/scratch2/nico/distillation/test_visivo"
+        os.makedirs(output_path, exist_ok=True)
+        
+        # Prendi il primo elemento del batch se necessario
+        # pred_sem e gt_sem sono attesi come (B, C, H, W) -> prendiamo (C, H, W)
+        s_tensor = student_features[0] if student_features.ndim == 4 else student_features
+        t_tensor = teacher_features[0] if teacher_features.ndim == 4 else teacher_features
+
+        # Converti in NumPy (H, W, C)
+        s_feat = s_tensor.detach().cpu().permute(1, 2, 0).numpy()
+        t_feat = t_tensor.detach().cpu().permute(1, 2, 0).numpy()
+
+        H, W, C = s_feat.shape
+        
+        # Appiattisci per PCA
+        s_flat = s_feat.reshape(-1, C)
+        t_flat = t_feat.reshape(-1, C)
+
+        # PCA a 3 componenti (RGB)
+        pca = PCA(n_components=3)
+        
+        # FIT SOLO SUL TEACHER! 
+        # Questo garantisce che "rosso" significhi la stessa cosa per entrambi
+        pca.fit(t_flat)
+
+        s_pca = pca.transform(s_flat).reshape(H, W, 3)
+        t_pca = pca.transform(t_flat).reshape(H, W, 3)
+
+        # Normalizzazione Min-Max indipendente (0-1) per visualizzazione
+        def normalize_vis(x):
+            mi, ma = x.min(), x.max()
+            return (x - mi) / (ma - mi + 1e-8)
+
+        s_rgb = normalize_vis(s_pca)
+        t_rgb = normalize_vis(t_pca)
+
+        # Plotting
+        fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+        
+        ax[0].imshow(s_rgb)
+        ax[0].set_title(f"Teacher Prediction")
+        ax[0].axis('off')
+        
+        ax[1].imshow(t_rgb)
+        ax[1].set_title("Student Target")
+        ax[1].axis('off')
+
+        # Salva con nome univoco (usa un timestamp o un contatore globale se disponibile)
+        import time
+        timestamp = int(time.time() * 1000)
+        save_path = os.path.join(output_path, f"vis_debug_{timestamp}.png")
+        
+        plt.tight_layout()
+        plt.savefig(save_path)
+        plt.close(fig)
+        print(f"[DEBUG VIS] Saved PCA comparison to {save_path}")
+
+    except Exception as e:
+        print(f"[DEBUG VIS ERROR] {e}")

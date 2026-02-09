@@ -1,0 +1,5 @@
+# Solo la parte semantica.
+# NOTA: Assicurati che il codice supporti l'assenza di Regr3D (alcuni logger potrebbero aspettarsi "pts3d_loss").
+train_criterion: "SemanticConsistencyLoss(distillation_weight=1.0, consistency_weight=0.0, min_conf=1.0)"
+
+test_criterion: "SemanticConsistencyLoss(distillation_weight=1.0, consistency_weight=1.0, min_conf=1.0)"

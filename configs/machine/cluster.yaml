@@ -1,0 +1,6 @@
+output_dir: "/cluster/work/igp_psr/niacobone/distillation/output"
+base_dir: "/cluster/scratch/niacobone/distillation/dataset"
+sam2_path: "/cluster/scratch/niacobone/sam2/checkpoints/sam2.1_hiera_large.pt"
+config_json_path: "/cluster/scratch/niacobone/.cache/huggingface/hub/models--facebook--map-anything/snapshots/562de9ff7077addd5780415661c5fb031eb8003e"
+root_data_dir: "/cluster/scratch/niacobone/distillation/dataset"
+mapanything_dataset_metadata_dir: "/cluster/scratch/niacobone/distillation/dataset/converted/mapanything_dataset_metadata"

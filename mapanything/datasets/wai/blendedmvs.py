@@ -15,6 +15,8 @@ import numpy as np
 from mapanything.datasets.base.base_dataset import BaseDataset
 from mapanything.utils.wai.core import load_data, load_frame
 
+from PIL import Image
+
 
 class BlendedMVSWAI(BaseDataset):
     """
@@ -110,12 +112,24 @@ class BlendedMVSWAI(BaseDataset):
         for view_index in view_indices:
             # Load the data corresponding to the view
             view_file_name = scene_file_names[view_index]
+            # Check if pred_mask/moge2 exists in scene_meta before requesting it
+            available_modalities = scene_meta.get("modalities", {})
+            modalities = ["image", "depth"]
+            if "pred_mask" in available_modalities and "moge2" in available_modalities.get("pred_mask", {}):
+                modalities.append("pred_mask/moge2")
+
             view_data = load_frame(
                 scene_root,
                 view_file_name,
-                modalities=["image", "depth", "pred_mask/moge2"],
+                modalities=modalities,
                 scene_meta=scene_meta,
             )
+            # view_data = load_frame(
+            #     scene_root,
+            #     view_file_name,
+            #     modalities=["image", "depth", "pred_mask/moge2"],
+            #     scene_meta=scene_meta,
+            # )
 
             # Convert necessary data to numpy
             image = view_data["image"].permute(1, 2, 0).numpy()
@@ -128,15 +142,26 @@ class BlendedMVSWAI(BaseDataset):
             depthmap = np.nan_to_num(depthmap, nan=0.0, posinf=0.0, neginf=0.0)
 
             # Get the non_ambiguous_mask and ensure it matches image resolution
-            non_ambiguous_mask = view_data["pred_mask/moge2"].numpy().astype(int)
-            non_ambiguous_mask = cv2.resize(
-                non_ambiguous_mask,
-                (image.shape[1], image.shape[0]),
-                interpolation=cv2.INTER_NEAREST,
-            )
+            # non_ambiguous_mask = view_data["pred_mask/moge2"].numpy().astype(int)
+            # non_ambiguous_mask = cv2.resize(
+            #     non_ambiguous_mask,
+            #     (image.shape[1], image.shape[0]),
+            #     interpolation=cv2.INTER_NEAREST,
+            # )
+
+            if "pred_mask/moge2" in view_data:
+                non_ambiguous_mask = view_data["pred_mask/moge2"].numpy().astype(int)
+                non_ambiguous_mask = cv2.resize(
+                    non_ambiguous_mask,
+                    (image.shape[1], image.shape[0]),
+                    interpolation=cv2.INTER_NEAREST,
+                )
+                depthmap = np.where(non_ambiguous_mask, depthmap, 0)
+            else:
+                non_ambiguous_mask = np.ones((image.shape[0], image.shape[1]), dtype=int)
 
             # Mask out the GT depth using the non_ambiguous_mask
-            depthmap = np.where(non_ambiguous_mask, depthmap, 0)
+            # depthmap = np.where(non_ambiguous_mask, depthmap, 0)
 
             # Resize the data to match the desired resolution
             additional_quantities_to_resize = [non_ambiguous_mask]
@@ -150,6 +175,37 @@ class BlendedMVSWAI(BaseDataset):
                 )
             )
             non_ambiguous_mask = additional_quantities_to_resize[0]
+
+            # ====================================================================================
+            # [FIX GEOMETRICO NICO] SOSTITUZIONE CROP CON RESIZE + AGGIORNAMENTO INTRINSECHE
+            # ====================================================================================
+            
+            # orig_h, orig_w = image.shape[:2]
+            # target_h, target_w = resolution 
+
+            # scale_x = target_w / orig_w
+            # scale_y = target_h / orig_h
+
+            # # 1. Resize OpenCV (ritorna NumPy array)
+            # image = cv2.resize(image, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+            
+            # # 2. [FIX CRITICO] Converti in PIL Image perché BaseDataset si aspetta .size come tupla
+            # image = Image.fromarray(image)
+
+            # # 3. Resize altri elementi
+            # depthmap = cv2.resize(depthmap, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
+            # non_ambiguous_mask = cv2.resize(
+            #     non_ambiguous_mask.astype(np.uint8), 
+            #     (target_w, target_h), 
+            #     interpolation=cv2.INTER_NEAREST
+            # ).astype(int)
+
+            # # 4. Aggiorna Intrinseche
+            # intrinsics[0, 0] *= scale_x # fx
+            # intrinsics[1, 1] *= scale_y # fy
+            # intrinsics[0, 2] *= scale_x # cx
+            # intrinsics[1, 2] *= scale_y # cy
+            # ====================================================================================
 
             # Append the view dictionary to the list of views
             views.append(

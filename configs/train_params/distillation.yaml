@@ -1,0 +1,81 @@
+epochs: 5
+eval_freq: 10000
+start_epoch: 0
+batch_size: null
+accum_iter: 1
+freeze_val_samples_across_all_epochs: true # Freeze the validation samples across all epochs (always use the same val samples)
+
+# ============ LEARNING RATE ============
+base_lr: 5e-4
+weight_decay: 1e-4
+
+# Optimizer parameters specific to submodules
+# 4 groups: encoder (dpt_feature_head_2 + sam2_compat), decoder, transformer, dino
+submodule_configs:
+  # Encoder group (dpt_feature_head_2 + sam2_compat together)
+  dpt_feature_head_2:
+    lr: 5e-4  # base_lr * 1.0
+    weight_decay: 1e-4
+  sam2_compat:
+    lr: 5e-4  # base_lr * 1.0
+    weight_decay: 1e-4
+  # Decoder
+  sam2_mask_decoder_student:
+    lr: 5e-3  # base_lr * 10.0 (decoder più veloce)
+    weight_decay: 1e-4
+  # Transformer
+  info_sharing:
+    lr: 2.5e-4  # base_lr * 0.5 (transformer a velocità media)
+    weight_decay: 1e-4
+  # DINO (encoder layers when unfrozen)
+  encoder:
+    lr: 5e-5  # base_lr * 0.1 (DINO molto conservativo)
+    weight_decay: 1e-4
+# =====================================
+
+# =========== SCHEDULER SETUP ===========
+lr_scheduler: "none"            # "cosine" | "step" | "plateau" | "none"
+lr_scheduler_t_max: null        # for cosine
+lr_min: null                    # for cosine & plateau
+lr_decay_epochs: null             # for step
+plateau_patience: null          # for plateau
+# ========== SCHEDULER UPDATE ==========
+override_lr: null
+overwrite_scheduler_t_max: null # for cosine
+override_scheduler: null
+# =======================================
+
+# ========== RESUME CHECKPOINTS (string) ==========
+resume_encoder_ckpt: null
+resume_decoder_ckpt: null
+resume_trainer_ckpt: null
+# ========== SAVE CHECKPOINTS (boolean) ==========
+save_encoder_ckpt: null
+save_decoder_ckpt: null
+save_trainer_ckpt: null
+save_combined_ckpt: null
+
+save_freq: 10000
+# =====================================
+
+# ========== UNFREEZE STRATEGY ==========
+num_info_sharing_blocks_unfreeze: 0
+num_dino_layers_unfreeze: 0
+# =====================================
+
+# ========== DECODER DISTILLATION ==========
+decoder_loss_weight: null
+decoder_tokens_weight: null
+decoder_masks_weight: null
+decoder_iou_weight: null
+amg_points_per_side: null
+# =====================================
+
+# =============== OTHER ===============
+seed: 0
+max_num_of_imgs_per_gpu: 1
+disable_cudnn_benchmark: true
+print_freq: 1
+print_trainable: false
+print_optim_params: false
+# =====================================

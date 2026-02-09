@@ -1,0 +1,6 @@
+distributed: true
+dist_url: "env://"
+gpu: 0
+rank: 0
+world_size: 2
+dist_backend: "nccl"

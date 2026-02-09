@@ -764,6 +764,7 @@ def get_parameter_groups(
     skip_list=[],
     submodule_configs=None,
     warn_not_in_submodule=False,
+    verbose=False,
 ):
     """
     Get parameter groups for optimizer with customized learning rates and weight decay.
@@ -862,7 +863,8 @@ def get_parameter_groups(
         parameter_group_names[group_name]["params"].append(name)
 
     # Print the parameter groups
-    print("Param groups = %s" % json.dumps(parameter_group_names, indent=2))
+    if verbose:
+        print("Param groups = %s" % json.dumps(parameter_group_names, indent=2))
 
     return (
         list(parameter_group_vars.values()),

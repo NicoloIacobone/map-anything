@@ -62,13 +62,12 @@ from sam2_builder import (
     build_sam_mask_decoder,
 )
 
-# Enable TF32 precision if supported # NOT USED
+# Enable TF32 precision if supported
 if hasattr(torch.backends.cuda, "matmul") and hasattr(
     torch.backends.cuda.matmul, "allow_tf32"
 ):
     torch.backends.cuda.matmul.allow_tf32 = True
 
-# NOT USED
 def setup_runtime_paths(args):
     """Inizializza OUT_DIR, BASE_DIR, DATASET, SAM2_PATH e le directory immagini/feature usando args."""
     import torch.hub as _torch_hub
@@ -118,7 +117,6 @@ def setup_runtime_paths(args):
     print(f"[INFO] Using VAL_IMAGES_DIR: {VAL_IMAGES_DIR}")
 
 # ==================== Dataset Classes ====================
-# NOT USED
 class DistillationDataset(Dataset):
     """
     Dataset per la distillazione: supporta Single-View (lista piatta)
@@ -235,7 +233,6 @@ def collate_fn_distillation(batch: List[Dict]) -> Dict:
         "pil_images": all_pil_images if has_pil else None,
     }
 
-# OK
 class TeacherFeatureExtractor:
     """
     Wrapper per estrazione feature SAM2 con gestione memoria efficiente.
@@ -361,7 +358,6 @@ class TeacherFeatureExtractor:
         return self
 
 # ==================== Loss Functions ====================
-# OK
 class EncoderDistillationLoss(torch.nn.Module):
     """
     Loss combinata MSE + (1 - Cosine Similarity) per la distillazione delle feature.
@@ -443,7 +439,6 @@ class EncoderDistillationLoss(torch.nn.Module):
         
         return total_loss, loss_details
 
-# OK
 class DecoderDistillationLoss(torch.nn.Module):
     """
     Loss MSE per distillazione decoder SAM2.
@@ -499,7 +494,6 @@ class DecoderDistillationLoss(torch.nn.Module):
         return total_loss, loss_dict
 
 # ==================== Data Loaders ====================
-# NOT USED
 def build_distillation_dataloader(
     image_dir: str,
     teacher_extractor: Optional[TeacherFeatureExtractor] = None,
@@ -1406,26 +1400,26 @@ def distill(args):
     """
     Main distillation training function.
     """
-    setup_runtime_paths(args) # OK
-    train_tools.init_distributed_mode(args.distributed) # OK
-    global_rank = train_tools.get_rank() # OK
+    setup_runtime_paths(args)
+    train_tools.init_distributed_mode(args.distributed)
+    global_rank = train_tools.get_rank()
     
-    if not args.output_dir: # OK - gestito automaticamente
+    if not args.output_dir:
         default_run_name = args.wandb_name or datetime.datetime.now().strftime("distill_%Y%m%d_%H%M%S")
         args.output_dir = os.path.join(OUT_DIR, default_run_name)
-    Path(args.output_dir).mkdir(parents=True, exist_ok=True) # OK
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     
-    if args.print_args: # OK
+    if args.print_args:
         print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
         print("{}".format(args).replace(", ", ",\n"))
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu") # OK
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    seed = args.seed + global_rank # OK
-    torch.manual_seed(seed) # OK
-    np.random.seed(seed) # OK
-    random.seed(seed) # OK 
-    cudnn.benchmark = not args.disable_cudnn_benchmark # OK
+    seed = args.seed + global_rank
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    cudnn.benchmark = not args.disable_cudnn_benchmark
     
     if run_cluster and getattr(args, "print_freq", 10) < 200:
         args.print_freq = 200
@@ -1434,36 +1428,36 @@ def distill(args):
     print("[INFO] Loading MapAnything model...")
 
     # Patch config file based on use_encoder_features
-    if CONFIG_JSON_PATH and os.path.exists(CONFIG_JSON_PATH): # OK
+    if CONFIG_JSON_PATH and os.path.exists(CONFIG_JSON_PATH):
         with open(CONFIG_JSON_PATH, 'r') as f:
             config = json.load(f)
         
         # Modify input_feature_dims in feature_head_2 based on use_encoder_features
         if args.use_encoder_features:
-            new_dims = [1024, 1024, 1024, 1024] # OK
+            new_dims = [1024, 1024, 1024, 1024]
             print(f"[INFO] use_encoder_features=True: Setting feature_head_2.input_feature_dims to {new_dims}")
         else:
-            new_dims = [1024, 768, 768, 768] # OK
+            new_dims = [1024, 768, 768, 768]
             print(f"[INFO] use_encoder_features=False: Setting feature_head_2.input_feature_dims to {new_dims}")
         
         if "pred_head_config" in config and "feature_head_2" in config["pred_head_config"]:
             config["pred_head_config"]["feature_head_2"]["input_feature_dims"] = new_dims
             
             # Save modified config back to original location to overwrite
-            with open(CONFIG_JSON_PATH, 'w') as f: # OK
+            with open(CONFIG_JSON_PATH, 'w') as f:
                 json.dump(config, f, indent=2)
             print(f"[INFO] Overwritten config.json")
 
-    if global_rank == 0: # OK
+    if global_rank == 0:
         model = MapAnything.from_pretrained(
             args.model_name,
             revision="562de9ff7077addd5780415661c5fb031eb8003e",
             strict=False,
             # local_files_only=True,
         ).to(device)
-    if torch.distributed.is_initialized(): # OK
+    if torch.distributed.is_initialized():
         torch.distributed.barrier()
-    if global_rank != 0: # OK
+    if global_rank != 0:
         model = MapAnything.from_pretrained(
             args.model_name,
             revision="562de9ff7077addd5780415661c5fb031eb8003e",
@@ -1471,12 +1465,12 @@ def distill(args):
             # local_files_only=True,
         ).to(device)
     
-    model_without_ddp = model # OK
-    print(f"[INFO] Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}") # OK
+    model_without_ddp = model
+    print(f"[INFO] Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
 
     # ========== INITIALIZE STUDENT DECODER ==========
     print(f"[INFO] Building student MaskDecoder...")
-    sam_mask_decoder_student = build_sam_mask_decoder( # OK
+    sam_mask_decoder_student = build_sam_mask_decoder(
         embed_dim=256,
         num_multimask_outputs=3,
         use_high_res_features=False,
@@ -1487,19 +1481,19 @@ def distill(args):
     print(f"[INFO] Student MaskDecoder built: {sum(p.numel() for p in sam_mask_decoder_student.parameters()):,} params")
 
     # Attach student decoder to model
-    model_without_ddp.sam2_mask_decoder_student = sam_mask_decoder_student # OK
+    model_without_ddp.sam2_mask_decoder_student = sam_mask_decoder_student
 
     # ========== INITIALIZE TEACHER ENCODER ==========
     print(f"[INFO] Preparing teacher feature extractor...")
     teacher_extractor = None
 
-    augment_cfg = { # OK
+    augment_cfg = {
         "enabled": getattr(args, "use_data_augmentation", True),
         "p_color_jitter": 0.75,     # 75% probabilità
         "p_blur": 0.05,              # 5% probabilità
         "p_grayscale": 0.05,         # 5% probabilità
     }
-    teacher_extractor = TeacherFeatureExtractor( # OK
+    teacher_extractor = TeacherFeatureExtractor(
         checkpoint_path=SAM2_PATH,
         device=str(device),
         augment_cfg=augment_cfg,
@@ -1508,7 +1502,7 @@ def distill(args):
 
     # ========== INITIALIZE TEACHER DECODER ==========
     print(f"[INFO] Loading teacher PromptEncoder and MaskDecoder...")
-    sam_prompt_encoder_teacher, sam_mask_decoder_teacher = load_sam2_teacher_prompt_and_decoder( # OK
+    sam_prompt_encoder_teacher, sam_mask_decoder_teacher = load_sam2_teacher_prompt_and_decoder(
         checkpoint_path=SAM2_PATH,
         device=str(device),
         image_size=1024,
@@ -1524,7 +1518,7 @@ def distill(args):
     train_image_paths = None
     
     # Logica Debug per SINGLE-VIEW: filtriamo la lista delle immagini PRIMA di creare il loader
-    if args.debug_max_train_images: # OK - gestito automaticamente con @ nei .yaml
+    if args.debug_max_train_images:
         all_imgs = sorted([
             os.path.join(TRAIN_IMAGES_DIR, f)
             for f in os.listdir(TRAIN_IMAGES_DIR)
@@ -1533,7 +1527,7 @@ def distill(args):
         train_image_paths = random.sample(all_imgs, min(args.debug_max_train_images, len(all_imgs)))
         print(f"[INFO] Single-View: Limited train to {len(train_image_paths)} IMAGES")
     
-    data_loader_train = build_distillation_dataloader( # OK 
+    data_loader_train = build_distillation_dataloader(
         image_dir=TRAIN_IMAGES_DIR,
         teacher_extractor=teacher_extractor,
         batch_size=args.batch_size,
@@ -1549,7 +1543,7 @@ def distill(args):
     val_image_paths = None
     
     # Logica Debug per SINGLE-VIEW
-    if args.debug_max_val_images: # OK - gestito automaticamente con @ nei .yaml
+    if args.debug_max_val_images:
         all_val_imgs = sorted([
             os.path.join(VAL_IMAGES_DIR, f)
             for f in os.listdir(VAL_IMAGES_DIR)
@@ -1558,7 +1552,7 @@ def distill(args):
         val_image_paths = all_val_imgs[:args.debug_max_val_images]
         print(f"[DEBUG] Single-View: Limited val to {len(val_image_paths)} IMAGES")
     
-    data_loader_val = build_distillation_dataloader( # OK
+    data_loader_val = build_distillation_dataloader(
         image_dir=VAL_IMAGES_DIR,
         teacher_extractor=teacher_extractor,
         batch_size=args.batch_size,
@@ -1572,26 +1566,26 @@ def distill(args):
     # ========== FREEZE STRATEGY ==========
     # 1. Freeze tutto inizialmente
     print("[INFO] Freezing all parameters...")
-    for param in model.parameters(): # OK
+    for param in model.parameters():
         param.requires_grad = False
     
     # 2. Unfreeze dpt_feature_head_2 e sam2_compat (sempre trainable) e student MaskDecoder STUDENT ENCODER + DECODER
     print("[INFO] Unfreezing dpt_feature_head_2, sam2_compat, and sam2_mask_decoder_student...")
-    for name, param in model.named_parameters(): # OK 
+    for name, param in model.named_parameters():
         if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat") or name.startswith("sam2_mask_decoder_student"):
             param.requires_grad = True
 
     # 3. Unfreeze ultimi N blocchi di info_sharing.self_attention_blocks (opzionale)
     num_info_sharing_blocks = getattr(args, 'num_info_sharing_blocks_unfreeze', 0)
-    if num_info_sharing_blocks > 0 and hasattr(model, "info_sharing"): # OK
+    if num_info_sharing_blocks > 0 and hasattr(model, "info_sharing"):
         info_sharing = model.info_sharing
         
         # Trova i blocchi (self_attention_blocks per MapAnything)
-        if hasattr(info_sharing, "self_attention_blocks"): # OK
+        if hasattr(info_sharing, "self_attention_blocks"):
             blocks = info_sharing.self_attention_blocks
         
         # Unfreeze gli ultimi N blocchi
-        if len(blocks) > 0: # OK
+        if len(blocks) > 0:
             start_idx = max(0, len(blocks) - num_info_sharing_blocks)
             unfrozen_count = 0
             unfrozen_indices = []
@@ -1600,7 +1594,7 @@ def distill(args):
                     param.requires_grad = True
                     unfrozen_count += param.numel()
                 unfrozen_indices.append(i)
-            if num_info_sharing_blocks == 24: # OK
+            if num_info_sharing_blocks == 24:
                 for name, p in model.named_parameters():
                     if name.startswith(("info_sharing.proj_embed", "info_sharing.norm")):
                         p.requires_grad = True
@@ -1608,7 +1602,7 @@ def distill(args):
             print(f"[INFO] Unfroze last {num_info_sharing_blocks} info_sharing blocks (indices {unfrozen_indices})")
             print(f"[INFO] Unfroze {unfrozen_count:,} parameters in info_sharing")
             
-            _ = verify_frozen_blocks( # OK
+            _ = verify_frozen_blocks(
                 blocks, 
                 block_name="Multi-View Transformer blocks",
                 unfrozen_indices=unfrozen_indices
@@ -1619,23 +1613,23 @@ def distill(args):
         args.info_sharing_unfrozen_indices = []
 
     # 4. Unfreeze ultimi N blocchi di DINOv2 encoder (opzionale)
-    num_dino_layers_unfreeze = getattr(args, 'num_dino_layers_unfreeze', 0) # OK
+    num_dino_layers_unfreeze = getattr(args, 'num_dino_layers_unfreeze', 0)
     if num_dino_layers_unfreeze > 0:
         # Trova l'encoder DINOv2
         dino_encoder = None
-        if hasattr(model, "encoder"): # OK
+        if hasattr(model, "encoder"):
             print("[DEBUG] Found 'encoder' in model")
             dino_encoder = model.encoder
         
         if dino_encoder is not None:
             # Cerca i blocchi transformer dell'encoder
             blocks = None
-            if hasattr(dino_encoder, "model"): # OK
+            if hasattr(dino_encoder, "model"):
                 if hasattr(dino_encoder.model, "blocks"):
                     blocks = dino_encoder.model.blocks
             
             # Unfreeze gli ultimi N blocchi
-            if blocks is not None and len(blocks) > 0: # OK 
+            if blocks is not None and len(blocks) > 0:
                 start_idx = max(0, len(blocks) - num_dino_layers_unfreeze)
                 unfrozen_count = 0
                 unfrozen_dino_indices = []
@@ -1646,7 +1640,7 @@ def distill(args):
                     unfrozen_dino_indices.append(i)
                 # There are some additional layers wrt the 24 blocks that we have to unfreeze
                 if num_dino_layers_unfreeze == 24:
-                    for name, p in model.named_parameters(): # OK
+                    for name, p in model.named_parameters():
                         if name.startswith((
                             "encoder.model.patch_embed.proj",
                             "encoder.model.pos_embed",
@@ -1659,7 +1653,7 @@ def distill(args):
                 print(f"[INFO] Unfroze last {num_dino_layers_unfreeze} DINOv2 encoder blocks (indices {unfrozen_dino_indices})")
                 print(f"[INFO] Unfroze {unfrozen_count:,} parameters in DINOv2 encoder")
 
-                _ = verify_frozen_blocks( # OK 
+                _ = verify_frozen_blocks(
                     blocks, 
                     block_name="DINOv2 encoder blocks",
                     unfrozen_indices=unfrozen_dino_indices
@@ -1671,22 +1665,21 @@ def distill(args):
             print("[WARN] DINOv2 encoder not found on model. Skipping unfreezing.")
             args.dino_unfrozen_indices = []
     else:
-        args.dino_unfrozen_indices = [] # OK 
+        args.dino_unfrozen_indices = []
 
     # ========== VERIFY TRAINABLE PARAMETERS ==========
     if args.print_trainable:
         print_trainable_summary(model, detailed=True)
     
-    # ========== CRITERION ==========
     # Initialize criterion for STUDENT ENCODER distillation
-    criterion = EncoderDistillationLoss( # OK
+    criterion = EncoderDistillationLoss(
         mse_weight=args.mse_weight,
         cosine_weight=args.cosine_weight,
         normalize=args.normalize_features,
     ).to(device)
 
     # Initialize criterion for STUDENT DECODER distillation
-    decoder_criterion = DecoderDistillationLoss( # OK
+    decoder_criterion = DecoderDistillationLoss(
         weight_masks=args.decoder_masks_weight,
         weight_iou=args.decoder_iou_weight,
         weight_tokens=args.decoder_tokens_weight,
@@ -1701,7 +1694,6 @@ def distill(args):
     # print(f"[DECODER LOSS] Total weight multiplier: {getattr(args, 'decoder_loss_weight', 1.0)}")
     # print("="*80 + "\n")
 
-    # OK
     # ========== OPTIMIZER con LR differenziati ==========
     encoder_params = [] # STUDENT ENCODER (dpt_head_2 + sam2_compat)
     decoder_params = []  # STUDENT DECODER (MaskDecoder)
@@ -1709,7 +1701,7 @@ def distill(args):
     dino_params = [] # DINOv2 ENCODER (encoder)
     other_params = [] # Fallback
 
-    for name, p in model.named_parameters(): # OK 
+    for name, p in model.named_parameters():
         if not p.requires_grad: # if frozen, skip
             continue
         if name.startswith("dpt_feature_head_2") or name.startswith("sam2_compat"):
@@ -1725,7 +1717,7 @@ def distill(args):
 
     # Fallback: se alcuni parametri trainabili non rientrano nelle categorie stampa un warning
     if other_params:
-        print(f"[WARN] Found {len(other_params)} trainable parameters not matched to any group.") # OK 
+        print(f"[WARN] Found {len(other_params)} trainable parameters not matched to any group.")
 
     lr_encoder = args.lr * args.lr_encoder_scale
     lr_decoder = args.lr * args.lr_decoder_scale
@@ -1743,7 +1735,7 @@ def distill(args):
         weight_decay=args.weight_decay,
         betas=(0.9, 0.95),
     )
-    print(f"[INFO] Groups: encoder={sum(p.numel() for p in encoder_params):,} params @ LR {lr_encoder}, " # OK 
+    print(f"[INFO] Groups: encoder={sum(p.numel() for p in encoder_params):,} params @ LR {lr_encoder}, "
           f"decoder={sum(p.numel() for p in decoder_params):,} params @ LR {lr_decoder}, "
           f"dino={sum(p.numel() for p in dino_params):,} params @ LR {lr_dino}, "
           f"transformer={sum(p.numel() for p in transformer_params):,} params @ LR {lr_transformer}")
@@ -1763,41 +1755,41 @@ def distill(args):
     # print("="*80 + "\n")
     
     # ========== WRAPPING IN DDP ==========
-    if args.distributed.distributed: # OK 
+    if args.distributed.distributed:
         print("[INFO] Wrapping model in DistributedDataParallel (DDP)...")
         model = torch.nn.parallel.DistributedDataParallel(
             model,
             device_ids=[args.distributed.gpu],
             find_unused_parameters=False,
         )
-        model_without_ddp = model.module # OK 
+        model_without_ddp = model.module
         
         # If the module graph is static across iterations, avoid re-registering DDP hooks every iteration.
         # This prevents errors like "marked ready twice" when using checkpointing / reentrant autograd.
         try:
-            if hasattr(model, "_set_static_graph"): # OK 
+            if hasattr(model, "_set_static_graph"):
                 model._set_static_graph()
         except Exception:
             pass
     
-    # ========== LEARNING RATE SCHEDULER ========== # OK 
+    # ========== LEARNING RATE SCHEDULER ==========
     scheduler = None
     if args.lr_scheduler == "cosine":
-        scheduler = optim.lr_scheduler.CosineAnnealingLR( # OK 
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
             T_max=args.lr_scheduler_t_max,
             eta_min=args.lr_min,
         )
         print(f"[INFO] Using CosineAnnealingLR with T_max={args.lr_scheduler_t_max}, eta_min={args.lr_min}")
     elif args.lr_scheduler == "step":
-        scheduler = optim.lr_scheduler.StepLR( # OK 
+        scheduler = optim.lr_scheduler.StepLR(
             optimizer,
             step_size=args.lr_decay_epochs,
             gamma=0.1,
         )
         print(f"[INFO] Using StepLR with step_size={args.lr_decay_epochs}, gamma=0.1")
     elif args.lr_scheduler == "plateau":
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau( # OK 
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode='min',
             factor=0.5,
@@ -1809,20 +1801,20 @@ def distill(args):
         )
         print(f"[INFO] Using ReduceLROnPlateau (factor=0.5, patience={args.plateau_patience}, threshold=1e-3 abs, cooldown=1)")
     else:
-        print(f"[INFO] Learning rate scheduler disabled. Base LR will remain constant at {args.lr}") # OK 
+        print(f"[INFO] Learning rate scheduler disabled. Base LR will remain constant at {args.lr}")
     
     # ========= RESUME FROM CHECKPOINT (IF SPECIFIED) ==========
     start_epoch = 0
-    best_val_loss = float("inf") # OK
+    best_val_loss = float("inf")
     
     # Handle backward compatibility: if resume_ckpt is provided, load both encoder and decoder
-    if args.resume_ckpt:  # OK
+    if args.resume_ckpt:
         print(f"[RESUME] Using legacy --resume_ckpt (loads both encoder and decoder): {args.resume_ckpt}")
         args.resume_encoder_ckpt = args.resume_ckpt
         args.resume_decoder_ckpt = args.resume_ckpt
     
     # Load encoder checkpoint if specified
-    if args.resume_encoder_ckpt:  # OK
+    if args.resume_encoder_ckpt:
         enc_start_epoch, enc_best_val_loss = load_encoder_checkpoint(
             model_without_ddp=model_without_ddp,
             checkpoint_path=args.resume_encoder_ckpt,
@@ -1835,7 +1827,7 @@ def distill(args):
         best_val_loss = min(best_val_loss, enc_best_val_loss)
         
         # Handle LR override after encoder checkpoint load
-        if args.lr_scheduler == "none" or args.override_lr:  # OK
+        if args.lr_scheduler == "none" or args.override_lr:
             if len(optimizer.param_groups) >= 4:
                 optimizer.param_groups[0]["lr"] = args.lr * args.lr_encoder_scale
                 optimizer.param_groups[1]["lr"] = args.lr * args.lr_decoder_scale
@@ -1850,7 +1842,7 @@ def distill(args):
                 )
     
     # Load decoder checkpoint if specified
-    if args.resume_decoder_ckpt:  # OK
+    if args.resume_decoder_ckpt:
         try:
             dec_start_epoch, dec_best_val_loss = load_decoder_checkpoint(
                 model_without_ddp=model_without_ddp,
@@ -1868,7 +1860,7 @@ def distill(args):
             raise
     
     # Load trainer checkpoint if specified
-    if args.resume_trainer_ckpt:  # OK
+    if args.resume_trainer_ckpt:
         try:
             tr_start_epoch, tr_best_val_loss = load_trainer_checkpoint(
                 checkpoint_path=args.resume_trainer_ckpt,
@@ -1885,7 +1877,7 @@ def distill(args):
             raise
     
     # Handle LR override after loading checkpoints
-    if args.lr_scheduler == "none" or args.override_lr:  # OK
+    if args.lr_scheduler == "none" or args.override_lr:
         if len(optimizer.param_groups) >= 4:
             optimizer.param_groups[0]["lr"] = args.lr * args.lr_encoder_scale
             optimizer.param_groups[1]["lr"] = args.lr * args.lr_decoder_scale
@@ -1900,7 +1892,7 @@ def distill(args):
             )
     
     # Scheduler advance logic if we resumed from a checkpoint
-    if args.resume_encoder_ckpt or args.resume_decoder_ckpt or args.resume_trainer_ckpt:  # OK
+    if args.resume_encoder_ckpt or args.resume_decoder_ckpt or args.resume_trainer_ckpt:
         if args.override_scheduler and scheduler is not None:
             resumed_epoch = start_epoch
             
@@ -1917,7 +1909,7 @@ def distill(args):
                 print(f"[INFO] Set CosineAnnealingLR to epoch {resumed_epoch} (current LR: {optimizer.param_groups[0]['lr']:.6e})")
         
         if start_epoch > 0:
-            print(f"[RESUME] Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")  # OK
+            print(f"[RESUME] Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
     
     # ========== INITIALIZE WANDB (only if rank == 0) ==========
     if args.use_wandb and WANDB_AVAILABLE and global_rank == 0:
@@ -2201,7 +2193,7 @@ def distill(args):
         wandb.finish()
 
 # ==================== Checkpoint Management ====================
-# OK
+
 def save_trainer_checkpoint(
     optimizer,
     scheduler,
@@ -2245,7 +2237,7 @@ def save_trainer_checkpoint(
     torch.save(state, ckpt_path)
     print(f"[SAVE] Trainer checkpoint saved: {ckpt_path}")
 
-# OK
+
 def load_trainer_checkpoint(
     checkpoint_path: str,
     device: torch.device,
@@ -2291,7 +2283,7 @@ def load_trainer_checkpoint(
     best_val_loss = ckpt.get("best_val_loss", float("inf"))
     return start_epoch, best_val_loss
 
-# OK
+
 def load_encoder_checkpoint(
     model_without_ddp,
     checkpoint_path: str,
@@ -2409,7 +2401,7 @@ def load_encoder_checkpoint(
     
     return start_epoch, best_val_loss
 
-# OK
+
 def load_decoder_checkpoint(
     model_without_ddp,
     checkpoint_path: str,
@@ -2457,7 +2449,7 @@ def load_decoder_checkpoint(
     
     return start_epoch, best_val_loss
 
-# OK
+
 def save_encoder_checkpoint(
     model_without_ddp,
     optimizer,
@@ -2564,7 +2556,7 @@ def save_encoder_checkpoint(
     torch.save(state, ckpt_path)
     print(f"[SAVE] Encoder checkpoint saved: {ckpt_path}")
 
-# OK
+
 def save_decoder_checkpoint(
     model_without_ddp,
     optimizer,
@@ -2623,7 +2615,7 @@ def save_decoder_checkpoint(
     torch.save(state, ckpt_path)
     print(f"[SAVE] Decoder checkpoint saved: {ckpt_path}")
 
-# NOT USED
+
 def save_checkpoint_distillation(
     model_without_ddp,
     optimizer,
@@ -2744,7 +2736,7 @@ def save_checkpoint_distillation(
     print(f"[SAVE] Checkpoint saved: {ckpt_path}")
 
 # ==================== Argument Parser ====================
-def get_args_parser(): # NOT USED
+def get_args_parser():
     """
     Create argument parser for distillation training.
     
@@ -2757,63 +2749,63 @@ def get_args_parser(): # NOT USED
     )
     
     # Paths
-    parser.add_argument("--output_dir", type=str, default=None, help="Output directory for checkpoints and logs (default: OUT_DIR/wandb_name or timestamp)") # NOT USED
+    parser.add_argument("--output_dir", type=str, default=None, help="Output directory for checkpoints and logs (default: OUT_DIR/wandb_name or timestamp)")
     # Note: dataset paths are derived from COCO2017_ROOT constants depending on run_cluster
     
     # Model
     # Config file path: /scratch/.cache/niacobone/huggingface/hub/models--facebook--map-anything/snapshots/6f3a25bfbb8fcc799176bb01e9d07dfb49d5416a/config.json
-    parser.add_argument("--model_name", type=str, default="facebook/map-anything", help="MapAnything model name or path") # NOT USED
+    parser.add_argument("--model_name", type=str, default="facebook/map-anything", help="MapAnything model name or path")
     
     # Training hyperparameters
-    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs") # OK
-    parser.add_argument("--batch_size", type=int, default=1, help="Batch size per GPU") # OK
-    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay") # OK
+    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
+    parser.add_argument("--batch_size", type=int, default=1, help="Batch size per GPU")
+    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay")
     parser.add_argument("--clip_grad", type=float, default=1.0, help="Gradient clipping max norm (0 to disable)")
     parser.add_argument("--accum_iter", type=int, default=1, help="Gradient accumulation iterations")
     parser.add_argument("--use_encoder_features", action="store_true", help="Use encoder features instead of transformer features for distillation")
     parser.add_argument("--debug_pdb_lr", action="store_true", help="Stop after optimizer.step() to inspect LRs via pdb")
     
     # Learning rate and scheduler
-    parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate") # Usa 5e-4 per BS_eff = 16 --> 1e-3 per BS_eff = 32, 2.5e-4 per BS_eff = 8 OK
-    parser.add_argument("--lr_min", type=float, default=1e-6, help="Minimum learning rate for scheduler") # OK
-    parser.add_argument("--lr_scheduler", type=str, default="none", choices=["cosine","step", "plateau", "none"]) # OK
-    parser.add_argument("--plateau_patience", type=int, default=10, help="Patience for ReduceLROnPlateau scheduler") # OK
-    parser.add_argument("--lr_decay_epochs", type=int, default=1000, help="Epochs per decay x0.1 (StepLR)") # OK
-    parser.add_argument("--lr_scheduler_t_max", type=int, default=None, help="T_max for CosineAnnealingLR") # OK
-    parser.add_argument("--override_lr", action="store_true", help="Override LR from checkpoint with --lr value") # OK
-    parser.add_argument("--overwrite_scheduler_t_max", action="store_true", help="Overwrite scheduler T_max when resuming") # OK
-    parser.add_argument("--override_scheduler", action="store_true", help="Override scheduler from checkpoint with CLI args") # OK
+    parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate") # Usa 5e-4 per BS_eff = 16 --> 1e-3 per BS_eff = 32, 2.5e-4 per BS_eff = 8
+    parser.add_argument("--lr_min", type=float, default=1e-6, help="Minimum learning rate for scheduler")
+    parser.add_argument("--lr_scheduler", type=str, default="none", choices=["cosine","step", "plateau", "none"])
+    parser.add_argument("--plateau_patience", type=int, default=10, help="Patience for ReduceLROnPlateau scheduler")
+    parser.add_argument("--lr_decay_epochs", type=int, default=1000, help="Epochs per decay x0.1 (StepLR)")
+    parser.add_argument("--lr_scheduler_t_max", type=int, default=None, help="T_max for CosineAnnealingLR")
+    parser.add_argument("--override_lr", action="store_true", help="Override LR from checkpoint with --lr value")
+    parser.add_argument("--overwrite_scheduler_t_max", action="store_true", help="Overwrite scheduler T_max when resuming")
+    parser.add_argument("--override_scheduler", action="store_true", help="Override scheduler from checkpoint with CLI args")
     
     # Mixed precision
-    parser.add_argument("--amp", action="store_true", help="Use automatic mixed precision") # NOT USED
-    parser.add_argument("--amp_dtype", type=str, default="bf16", choices=["bf16", "fp16"], help="AMP dtype") # NOT USED
+    parser.add_argument("--amp", action="store_true", help="Use automatic mixed precision")
+    parser.add_argument("--amp_dtype", type=str, default="bf16", choices=["bf16", "fp16"], help="AMP dtype")
     
     # Other
-    parser.add_argument("--seed", type=int, default=42, help="Random seed") # OK
-    parser.add_argument("--disable_cudnn_benchmark", action="store_true", help="Disable cudnn benchmark") # OK
+    parser.add_argument("--seed", type=int, default=42, help="Random seed")
+    parser.add_argument("--disable_cudnn_benchmark", action="store_true", help="Disable cudnn benchmark")
 
     # Loss
     parser.add_argument("--mse_weight", type=float, default=0.5, help="Weight for MSE loss")
     parser.add_argument("--cosine_weight", type=float, default=0.5, help="Weight for cosine loss")
     parser.add_argument("--mse_type", type=str, default="sample", choices=["pixel", "sample"], help="Type of MSE loss computation")
-    parser.add_argument("--normalize_features", action="store_true", help="Normalize features before loss") # NOT USED
+    parser.add_argument("--normalize_features", action="store_true", help="Normalize features before loss")
     
     # Data
-    parser.add_argument("--dataset", type=str, default="coco2017", choices=["coco2017"], help="Seleziona il dataset single-view") # NOT USED
-    parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers") # NOT USED
-    parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging") # NOT USED
-    parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging") # NOT USED
+    parser.add_argument("--dataset", type=str, default="coco2017", choices=["coco2017"], help="Seleziona il dataset single-view")
+    parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
+    parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging")
+    parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
     parser.add_argument("--use_data_augmentation", action="store_true", help="Enable data augmentation")
     
     # Checkpointing
-    parser.add_argument("--resume_ckpt", type=str, default=None, help="[DEPRECATED] Path to checkpoint to resume from (loads both encoder and decoder)") # NOT USED
-    parser.add_argument("--resume_encoder_ckpt", type=str, default=None, help="Path to encoder checkpoint to load") # OK
-    parser.add_argument("--resume_decoder_ckpt", type=str, default=None, help="Path to decoder checkpoint to load") # OK
-    parser.add_argument("--resume_trainer_ckpt", type=str, default=None, help="Path to trainer checkpoint (optimizer/scheduler) to load") # OK
-    parser.add_argument("--save_encoder_ckpt", action="store_false", default=True, help="Disable separate encoder checkpoint saving (saves by default)") # OK
-    parser.add_argument("--save_decoder_ckpt", action="store_false", default=True, help="Disable separate decoder checkpoint saving (saves by default)") # OK
-    parser.add_argument("--save_trainer_ckpt", action="store_false", default=True, help="Disable separate trainer checkpoint saving (saves by default)") # OK
-    parser.add_argument("--save_combined_ckpt", action="store_true", default=False, help="Save encoder and decoder in a single combined checkpoint file (legacy behavior)") # NOT USED
+    parser.add_argument("--resume_ckpt", type=str, default=None, help="[DEPRECATED] Path to checkpoint to resume from (loads both encoder and decoder)")
+    parser.add_argument("--resume_encoder_ckpt", type=str, default=None, help="Path to encoder checkpoint to load")
+    parser.add_argument("--resume_decoder_ckpt", type=str, default=None, help="Path to decoder checkpoint to load")
+    parser.add_argument("--resume_trainer_ckpt", type=str, default=None, help="Path to trainer checkpoint (optimizer/scheduler) to load")
+    parser.add_argument("--save_encoder_ckpt", action="store_false", default=True, help="Disable separate encoder checkpoint saving (saves by default)")
+    parser.add_argument("--save_decoder_ckpt", action="store_false", default=True, help="Disable separate decoder checkpoint saving (saves by default)")
+    parser.add_argument("--save_trainer_ckpt", action="store_false", default=True, help="Disable separate trainer checkpoint saving (saves by default)")
+    parser.add_argument("--save_combined_ckpt", action="store_true", default=False, help="Save encoder and decoder in a single combined checkpoint file (legacy behavior)")
     parser.add_argument("--save_freq", type=int, default=10, help="Save checkpoint every N epochs")
     parser.add_argument("--eval_freq", type=int, default=1, help="Run validation every N epochs")
     
@@ -2830,19 +2822,19 @@ def get_args_parser(): # NOT USED
     parser.add_argument("--print_args", action="store_true", help="Print all arguments before starting distillation")
     
     # Distributed (opzionale): abilita DDP; dist_url di solito 'env://' con torchrun; local_rank impostato da torchrun
-    parser.add_argument("--distributed", action="store_true", help="Enable distributed training") # NOT USED
-    parser.add_argument("--dist_url", type=str, default="env://", help="URL for distributed training") # NOT USED
-    parser.add_argument("--local_rank", type=int, default=0, help="Local rank for distributed training") # NOT USED
+    parser.add_argument("--distributed", action="store_true", help="Enable distributed training")
+    parser.add_argument("--dist_url", type=str, default="env://", help="URL for distributed training")
+    parser.add_argument("--local_rank", type=int, default=0, help="Local rank for distributed training")
 
     # Unfreeze strategy
-    parser.add_argument("--num_info_sharing_blocks_unfreeze", type=int, default=0, help="Number of last info_sharing transformer blocks to unfreeze") # max 24 # OK
-    parser.add_argument("--num_dino_layers_unfreeze", type=int, default=0, help="Number of last DINOv2 encoder layers to unfreeze") # max 24 # OK
+    parser.add_argument("--num_info_sharing_blocks_unfreeze", type=int, default=0, help="Number of last info_sharing transformer blocks to unfreeze") # max 24
+    parser.add_argument("--num_dino_layers_unfreeze", type=int, default=0, help="Number of last DINOv2 encoder layers to unfreeze") # max 24
 
     # Learning rates for different parts
-    parser.add_argument("--lr_encoder_scale", type=float, default=1.0, help="Scale factor for STUDENT ENCODER LR") # OK
-    parser.add_argument("--lr_decoder_scale", type=float, default=1.0, help="Scale factor for STUDENT DECODER LR") # OK
-    parser.add_argument("--lr_dino_scale", type=float, default=0.1, help="Scale factor for DINOv2 encoder LR") # OK
-    parser.add_argument("--lr_transformer_scale", type=float, default=1.0, help="Scale factor MULTI-VIEW TRANSFORMER LR") # OK
+    parser.add_argument("--lr_encoder_scale", type=float, default=1.0, help="Scale factor for STUDENT ENCODER LR")
+    parser.add_argument("--lr_decoder_scale", type=float, default=1.0, help="Scale factor for STUDENT DECODER LR")
+    parser.add_argument("--lr_dino_scale", type=float, default=0.1, help="Scale factor for DINOv2 encoder LR")
+    parser.add_argument("--lr_transformer_scale", type=float, default=1.0, help="Scale factor MULTI-VIEW TRANSFORMER LR")
 
     # Decoder distillation
     parser.add_argument("--decoder_loss_weight", type=float, default=1.0, help="Weight for total decoder loss")

@@ -67,7 +67,7 @@ all = [
 # Setuptools configuration
 [tool.setuptools]
 # Disable automatic package discovery to avoid conflicts
-packages = ["mapanything"]
+packages = ["mapanything", "nico", "sam2_minimal"]
 
 # Include package data
 [tool.setuptools.package-data]
