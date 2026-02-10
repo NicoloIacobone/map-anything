@@ -141,8 +141,6 @@ class TeacherFeatureExtractor:
         # extractor è un'istanza di SAM2FeatureExtractor che è a sua volta un wrapper che contiene image_encoder (trunk + neck)
         self.extractor = load_sam2_feature_extractor(checkpoint_path, device) 
         self.device = device
-        # self.augment_cfg = augment_cfg or {}
-        # self._build_augment_pipelines()
         print(f"[INFO] Loaded SAM2 feature extractor on {device}")
 
     def _build_augment_pipelines(self):

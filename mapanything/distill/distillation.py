@@ -60,6 +60,8 @@ def distillation(args):
     # Init output directory and device
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+        if args.train_params.run_name and global_rank == 0:
+            Path(os.path.join(args.output_dir, args.train_params.run_name)).mkdir(parents=True, exist_ok=True)
 
     # Print all arguments if required
     # print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
@@ -115,19 +117,19 @@ def distillation(args):
     # print("Model = %s" % str(model_without_ddp))
 
     # ========== INITIALIZE STUDENT DECODER ==========
-    # print(f"[INFO] Building student MaskDecoder...")
-    # sam_mask_decoder_student = build_sam_mask_decoder(
-    #     embed_dim=256,
-    #     num_multimask_outputs=3,
-    #     use_high_res_features=False,
-    #     pred_obj_scores=False,
-    #     pred_obj_scores_mlp=False,
-    #     iou_prediction_use_sigmoid=False,
-    # ).to(device)
-    # print(f"[INFO] Student MaskDecoder built: {sum(p.numel() for p in sam_mask_decoder_student.parameters()):,} params")
+    print(f"[INFO] Building student MaskDecoder...")
+    sam_mask_decoder_student = build_sam_mask_decoder(
+        embed_dim=256,
+        num_multimask_outputs=3,
+        use_high_res_features=False,
+        pred_obj_scores=False,
+        pred_obj_scores_mlp=False,
+        iou_prediction_use_sigmoid=False,
+    ).to(device)
+    print(f"[INFO] Student MaskDecoder built: {sum(p.numel() for p in sam_mask_decoder_student.parameters()):,} params")
 
-    # # Attach student decoder to model
-    # model_without_ddp.sam2_mask_decoder_student = sam_mask_decoder_student
+    # Attach student decoder to model
+    model_without_ddp.sam2_mask_decoder_student = sam_mask_decoder_student
 
     # ========== INITIALIZE TEACHER ENCODER ==========
     print(f"[INFO] Preparing teacher feature extractor...")
@@ -142,15 +144,15 @@ def distillation(args):
     teacher_extractor.to(device)
 
     # ========== INITIALIZE TEACHER DECODER ==========
-    # print(f"[INFO] Loading teacher PromptEncoder and MaskDecoder...")
-    # sam_prompt_encoder_teacher, sam_mask_decoder_teacher = load_sam2_teacher_prompt_and_decoder(
-    #     checkpoint_path=args.sam2_path,
-    #     device=str(device),
-    #     image_size=1024,
-    #     backbone_stride=16,
-    #     embed_dim=256,
-    # )
-    # print(f"[INFO] Teacher decoder components loaded and frozen")
+    print(f"[INFO] Loading teacher PromptEncoder and MaskDecoder...")
+    sam_prompt_encoder_teacher, sam_mask_decoder_teacher = load_sam2_teacher_prompt_and_decoder(
+        checkpoint_path=args.sam2_path,
+        device=str(device),
+        image_size=1024,
+        backbone_stride=16,
+        embed_dim=256,
+    )
+    print(f"[INFO] Teacher decoder components loaded and frozen")
 
     # ========== FREEZE STRATEGY ==========
     freeze_info = setup_freeze_strategy(
@@ -170,9 +172,7 @@ def distillation(args):
     print(
         f">> Creating test criterion = {args.loss.test_criterion or args.loss.train_criterion}"
     )
-    test_criterion = eval(args.loss.test_criterion or args.loss.train_criterion).to(
-        device
-    )    
+    test_criterion = eval(args.loss.test_criterion or args.loss.train_criterion).to(device)    
 
     # ========== WRAPPING IN DDP ==========
     if args.distributed.distributed:
@@ -262,9 +262,6 @@ def distillation(args):
             optimizer=optimizer,
             scheduler=scheduler,
             args=args,
-            encoder_checkpoint_path=args.train_params.resume_encoder_ckpt,
-            decoder_checkpoint_path=args.train_params.resume_decoder_ckpt,
-            trainer_checkpoint_path=args.train_params.resume_trainer_ckpt,
         )
 
     # Override start_epoch if explicitly set in args
@@ -273,7 +270,6 @@ def distillation(args):
         print(f"[INFO] Overriding start_epoch from args: {start_epoch}")
  
     # Handle LR override after loading checkpoints
-    # if args.train_params.lr_scheduler == "none" or getattr(args.train_params, "override_lr", False):
     if getattr(args.train_params, "override_lr", False):
         # Ricalcola i LR usando i valori direttamente da submodule_configs
         for submodule_name in param_groups_name_to_idx_map:
@@ -318,7 +314,9 @@ def distillation(args):
         if start_epoch > 0:
             print(f"[RESUME] Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
 
-    # ========== TRAINING LOOP ==========
+    # |=======================================================================================================================================|
+    # |============================================================ TRAINING LOOP ============================================================|
+    # |=======================================================================================================================================|
     print(f"[INFO] Start distillation training for {args.train_params.epochs} epochs from epoch {start_epoch}")
     start_time = time.time()
 
@@ -336,12 +334,8 @@ def distillation(args):
                     scheduler=scheduler,
                     epoch=epoch,
                     best_val_loss=best_val_loss,
-                    output_dir=args.output_dir,
                     tag="last",
                     args=args,
-                    save_encoder=getattr(args.train_params, "save_encoder_ckpt", False),
-                    save_decoder=getattr(args.train_params, "save_decoder_ckpt", False),
-                    save_trainer=getattr(args.train_params, "save_trainer_ckpt", False),
                 )
         
         # ========== TEST ONE EPOCH ==========
@@ -385,12 +379,8 @@ def distillation(args):
                     scheduler=scheduler,
                     epoch=epoch,
                     best_val_loss=best_so_far,
-                    output_dir=args.output_dir,
-                    tag=f"_{epoch}",
+                    tag=f"{epoch}",
                     args=args,
-                    save_encoder=getattr(args.train_params, "save_encoder_ckpt", False),
-                    save_decoder=getattr(args.train_params, "save_decoder_ckpt", False),
-                    save_trainer=getattr(args.train_params, "save_trainer_ckpt", False),
                 )
             if new_best: # save if best
                 print(f"[BEST] New best model found at epoch {epoch} with avg test loss median: {best_so_far:.6f}")
@@ -400,12 +390,8 @@ def distillation(args):
                     scheduler=scheduler,
                     epoch=epoch,
                     best_val_loss=best_so_far,
-                    output_dir=args.output_dir,
                     tag="best",
                     args=args,
-                    save_encoder=getattr(args.train_params, "save_encoder_ckpt", False),
-                    save_decoder=getattr(args.train_params, "save_decoder_ckpt", False),
-                    save_trainer=getattr(args.train_params, "save_trainer_ckpt", False),
                 )
         if epoch >= args.train_params.epochs:
             break  # exit after writing last test to disk
@@ -428,7 +414,6 @@ def distillation(args):
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         print("Training time {}".format(total_time_str))
-
     pass
 
 def build_dataset(
@@ -508,7 +493,6 @@ def train_one_epoch(
     Returns:
         dict: Dictionary containing training metrics averaged over the epoch.
     """
-    print(model.pred_head_type)
     model.train(True)
     metric_logger = train_tools.MetricLogger(delimiter=" | ")
     # NUOVO:
@@ -567,7 +551,10 @@ def train_one_epoch(
         with torch.no_grad():
             teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
         # ==============================================================================================
-
+        if (args.train_params.save_pca_visualization_every is not None and (epoch % args.train_params.save_pca_visualization_every == 0 or epoch == 0)):
+            save_pca_visualization_path = Path(os.path.join(args.output_dir, args.train_params.run_name))
+        else:
+            save_pca_visualization_path = None
         result = loss_of_one_batch_multi_view(
             batch,
             model,
@@ -577,6 +564,8 @@ def train_one_epoch(
             # amp_dtype=args.train_params.amp_dtype,
             # ret="loss",
             teacher_features=teacher_features,
+            save_pca_visualization_path=save_pca_visualization_path,
+            epoch=epoch,
         )
         loss, loss_details = result["loss"]
 
@@ -604,61 +593,61 @@ def train_one_epoch(
                 return p
             return None
 
-        print("[BEFORE] dpt_feature_head_2:", grad_norm(model.dpt_feature_head_2))
-        print("[BEFORE] sam2_compat:", grad_norm(model.sam2_compat))
+        # print("[BEFORE] dpt_feature_head_2:", grad_norm(model.dpt_feature_head_2))
+        # print("[BEFORE] sam2_compat:", grad_norm(model.sam2_compat))
 
         # ================== DEBUG CHAT ==================
-        print("[BEFORE] Grad norms in dpt_feature_head_2:")
-        for name, p in model.dpt_feature_head_2.named_parameters():
-            if p.grad is not None:
-                print(name, p.grad.norm().item())
+        # print("[BEFORE] Grad norms in dpt_feature_head_2:")
+        # for name, p in model.dpt_feature_head_2.named_parameters():
+        #     if p.grad is not None:
+        #         print(name, p.grad.norm().item())
         # ================================================
 
         loss.backward()
 
         # ================== DEBUG CHAT ==================
-        print("[AFTER] Grad norms in dpt_feature_head_2:")
-        for name, p in model.dpt_feature_head_2.named_parameters():
-            if p.grad is not None:
-                print(name, p.grad.norm().item())
+        # print("[AFTER] Grad norms in dpt_feature_head_2:")
+        # for name, p in model.dpt_feature_head_2.named_parameters():
+        #     if p.grad is not None:
+        #         print(name, p.grad.norm().item())
         # ================================================
 
-        print("[AFTER] dpt_feature_head_2:", grad_norm(model.dpt_feature_head_2))
-        print("[AFTER] sam2_compat:", grad_norm(model.sam2_compat))
+        # print("[AFTER] dpt_feature_head_2:", grad_norm(model.dpt_feature_head_2))
+        # print("[AFTER] sam2_compat:", grad_norm(model.sam2_compat))
 
-        for name, p in model.dpt_feature_head_2.named_parameters():
-            if p.grad is not None and has_nan(p.grad):
-                print("[NAN] grad in", name)
-            if has_nan(p.data):
-                print("[NAN] weight in", name)
+        # for name, p in model.dpt_feature_head_2.named_parameters():
+        #     if p.grad is not None and has_nan(p.grad):
+        #         print("[NAN] grad in", name)
+        #     if has_nan(p.data):
+        #         print("[NAN] weight in", name)
 
         if (data_iter_step + 1) % accum_iter == 0:
-            print(f"[STEP] optimizer step @ iter {data_iter_step}")
+            # print(f"[STEP] optimizer step @ iter {data_iter_step}")
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
-            with torch.no_grad():
-                w = _first_param(model.dpt_feature_head_2)
-                if w is not None:
-                    w_mean_before = w.mean().item()
-                    w_std_before = w.std().item()
-                else:
-                    w_mean_before = float("nan")
-                    w_std_before = float("nan")
-
             optimizer.step()
-
-            with torch.no_grad():
-                w = _first_param(model.dpt_feature_head_2)
-                if w is not None:
-                    w_mean_after = w.mean().item()
-                    w_std_after = w.std().item()
-                else:
-                    w_mean_after = float("nan")
-                    w_std_after = float("nan")
-
-            print(f"[HEAD] w_mean {w_mean_before:.6f} -> {w_mean_after:.6f} | w_std {w_std_before:.6f} -> {w_std_after:.6f}")
-
             optimizer.zero_grad()
+
+            # with torch.no_grad():
+            #     w = _first_param(model.dpt_feature_head_2)
+            #     if w is not None:
+            #         w_mean_before = w.mean().item()
+            #         w_std_before = w.std().item()
+            #     else:
+            #         w_mean_before = float("nan")
+            #         w_std_before = float("nan")
+
+
+            # with torch.no_grad():
+            #     w = _first_param(model.dpt_feature_head_2)
+            #     if w is not None:
+            #         w_mean_after = w.mean().item()
+            #         w_std_after = w.std().item()
+            #     else:
+            #         w_mean_after = float("nan")
+            #         w_std_after = float("nan")
+
+            # print(f"[HEAD] w_mean {w_mean_before:.6f} -> {w_mean_after:.6f} | w_std {w_std_before:.6f} -> {w_std_after:.6f}")
 
         del loss
         del batch
@@ -784,191 +773,3 @@ def test_one_epoch(
     }
 
     return results
-
-# def train_one_epoch(
-#     model: torch.nn.Module,
-#     teacher_extractor: Optional[TeacherFeatureExtractor],
-#     criterion: torch.nn.Module,
-#     data_loader: Sized,
-#     optimizer: torch.optim.Optimizer,
-#     device: torch.device,
-#     epoch: int,
-#     args,
-#     param_groups_name_to_idx_map=None,
-# ):
-#     model.train(True)
-#     metric_logger = train_tools.MetricLogger(delimiter=" | ")
-#     header = f"Distillation Epoch: [{epoch}]"
-
-#     if param_groups_name_to_idx_map is not None:
-#         for submodule_name in param_groups_name_to_idx_map:
-#             lr_name = f"lr_{submodule_name}" if submodule_name != "default" else "lr"
-#             metric_logger.add_meter(
-#                 lr_name, train_tools.SmoothedValue(window_size=1, fmt="{value:.6e}")
-#             )
-#     accum_iter = args.train_params.accum_iter
-
-#     # Set epoch for samplers
-#     if hasattr(data_loader, "dataset") and hasattr(data_loader.dataset, "set_epoch"):
-#         data_loader.dataset.set_epoch(epoch)
-#     if hasattr(data_loader, "sampler") and hasattr(data_loader.sampler, "set_epoch"):
-#         data_loader.sampler.set_epoch(epoch)
-#     if hasattr(data_loader, "batch_sampler") and hasattr(data_loader.batch_sampler, "set_epoch"):
-#         data_loader.batch_sampler.set_epoch(epoch)
-
-#     optimizer.zero_grad()
-
-#     # Definiamo i valori base (li sposteremo sul device corretto dinamicamente)
-#     MEAN_VALS = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
-#     STD_VALS = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
-
-#     # [DEBUG PATH]
-#     debug_vis_dir = "/scratch2/nico/distillation/test_visivo"
-#     debug_input_dir = "/scratch2/nico/distillation/debug_teacher_inputs"
-#     os.makedirs(debug_vis_dir, exist_ok=True)
-#     os.makedirs(debug_input_dir, exist_ok=True)
-
-#     for data_iter_step, batch in enumerate(
-#         metric_logger.log_every(data_loader, args.train_params.print_freq, header)
-#     ):
-#         n_views = len(batch)
-#         pil_images = []
-
-#         # ========== PREPARE INPUT IMAGES FOR TEACHER ==========
-#         for view_idx, view in enumerate(batch):
-#             img_tensor = view.get("img")
-#             if img_tensor is None:
-#                 continue
-            
-#             # [FIX] Assicuriamoci che MEAN/STD siano sullo stesso device dell'immagine
-#             # Questo risolve il RuntimeError: cuda:0 vs cpu
-#             current_device = img_tensor.device
-#             DINOV2_MEAN = MEAN_VALS.to(current_device)
-#             DINOV2_STD = STD_VALS.to(current_device)
-
-#             # [DEBUG INPUT STATS] (Solo al primo step)
-#             if data_iter_step == 0 and view_idx == 0:
-#                 print(f"\n[DEBUG INPUT] View {view_idx} RAW Tensor Stats:")
-#                 print(f"  Shape: {img_tensor.shape}")
-#                 print(f"  Range: [{img_tensor.min():.4f}, {img_tensor.max():.4f}] (Se ~[-2, 2] è OK)")
-
-#             # Denormalizzazione
-#             img_denorm = img_tensor * DINOV2_STD + DINOV2_MEAN
-#             img_denorm = torch.clamp(img_denorm, 0, 1)
-
-#             for batch_idx in range(img_denorm.shape[0]):
-#                 img_single = img_denorm[batch_idx]  # (3, H, W)
-                
-#                 # Conversione in Numpy -> PIL
-#                 img_np = (img_single.permute(1, 2, 0).detach().cpu().numpy() * 255).astype(np.uint8)
-#                 img_pil = Image.fromarray(img_np)
-
-#                 # =======================================================
-#                 # [DEBUG SAVE] Salviamo l'input che diamo al teacher
-#                 if data_iter_step % 50 == 0 and batch_idx == 0 and view_idx == 0:
-#                     debug_name = f"input_step{data_iter_step:04d}.png"
-#                     save_path = os.path.join(debug_input_dir, debug_name)
-#                     img_pil.save(save_path)
-#                     print(f"[DEBUG] Saved teacher input check: {save_path}")
-#                 # =======================================================
-
-#                 # [FIX CRITICO GEOMETRICO] Resize forzato a 1024x1024
-#                 # Impedisce a SAM2 di aggiungere padding e disallineare le feature
-#                 img_pil = img_pil.resize((1024, 1024), Image.Resampling.BILINEAR)
-
-#                 pil_images.append(img_pil)
-
-#         # ========== EXTRACT TEACHER FEATURES ==========
-#         with torch.no_grad():
-#             teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
-
-#         # ========== FORWARD PASS ==========
-#         result = loss_of_one_batch_multi_view(
-#             batch,
-#             model,
-#             criterion,
-#             device,
-#             teacher_features=teacher_features,
-#         )
-#         loss, loss_details = result["loss"]
-
-#         if n_views > 2:
-#             loss = loss * (2 / n_views)
-        
-#         loss_value = float(loss)
-#         loss /= accum_iter
-#         loss.backward()
-
-#         if (data_iter_step + 1) % accum_iter == 0:
-#             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-#             optimizer.step()
-#             optimizer.zero_grad()
-
-#         # =================================================================
-#         # [DEBUG VISUALIZATION] PCA Student vs Teacher
-#         # =================================================================
-#         if data_iter_step % 10 == 0:
-#             try:
-#                 # Recupero dati (gestione robusta chiavi)
-#                 if "pred1" in result and "semantics" in result["pred1"]:
-#                     s_tensor = result["pred1"]["semantics"][0] 
-#                 elif "preds" in result:
-#                     s_tensor = result["preds"][0]["semantics"][0]
-#                 else:
-#                     s_tensor = None
-
-#                 if "semantics" in batch[0]:
-#                     t_tensor = batch[0]["semantics"][0]
-#                 else:
-#                     t_tensor = None
-
-#                 if s_tensor is not None and t_tensor is not None:
-#                     s_feat = s_tensor.detach().cpu().permute(1, 2, 0).numpy() # H,W,C
-#                     t_feat = t_tensor.detach().cpu().permute(1, 2, 0).numpy()
-
-#                     H, W, C = s_feat.shape
-#                     s_flat = s_feat.reshape(-1, C)
-#                     t_flat = t_feat.reshape(-1, C)
-
-#                     # PCA (Fit su Teacher)
-#                     pca = PCA(n_components=3)
-#                     pca.fit(t_flat) # Fit sul target per allineare i colori
-                    
-#                     s_pca = pca.transform(s_flat).reshape(H, W, 3)
-#                     t_pca = pca.transform(t_flat).reshape(H, W, 3)
-
-#                     # Normalize MinMax
-#                     def norm_vis(x):
-#                         return (x - x.min()) / (x.max() - x.min() + 1e-8)
-
-#                     fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-#                     ax[0].imshow(norm_vis(s_pca))
-#                     ax[0].set_title(f"Student (Step {data_iter_step})")
-#                     ax[0].axis('off')
-                    
-#                     ax[1].imshow(norm_vis(t_pca))
-#                     ax[1].set_title("Teacher Target")
-#                     ax[1].axis('off')
-
-#                     vis_path = os.path.join(debug_vis_dir, f"vis_ep{epoch:03d}_step{data_iter_step:05d}.png")
-#                     plt.tight_layout()
-#                     plt.savefig(vis_path)
-#                     plt.close(fig)
-#                     print(f"[DEBUG VIS] Saved PCA comparison: {vis_path}")
-#             except Exception as e:
-#                 print(f"[DEBUG VIS ERROR] {e}")
-#         # =================================================================
-
-#         del loss
-#         del batch
-
-#         metric_logger.update(loss=loss_value, **loss_details)
-
-#         if param_groups_name_to_idx_map is not None:
-#             for submodule_name in param_groups_name_to_idx_map:
-#                 lr_name = f"lr_{submodule_name}" if submodule_name != "default" else "lr"
-#                 group_idx = param_groups_name_to_idx_map[submodule_name][0]
-#                 log_lr = optimizer.param_groups[group_idx]["lr"]
-#                 metric_logger.update(**{lr_name: log_lr})
-
-#     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}

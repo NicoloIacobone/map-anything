@@ -57,6 +57,8 @@ def loss_of_one_batch_multi_view(
     ret=None,
     ignore_keys=None,
     teacher_features=None,
+    save_pca_visualization_path=None,
+    epoch=None,
 ):
     """
     Calculate loss for a batch with multiple views.
@@ -126,8 +128,7 @@ def loss_of_one_batch_multi_view(
                 # pca_visualization(student_features[i], student_features[i])
             
             # Estrai la confidenza appresa (1 canale, softplus attivata)
-            # student_confidences = getattr(base_model, "_last_conf2_8x", None)
-            student_confidences = None  # [MODIFICA] Disabilitata confidenza per ora
+            student_confidences = getattr(base_model, "_last_conf2_8x", None)
         else:
             student_features = None
             student_confidences = None
@@ -180,11 +181,12 @@ def loss_of_one_batch_multi_view(
             # pca_visualization(preds[i]["semantics"], batch[i]["semantics"])
             # pca_visualization(batch[i]["semantics"], preds[i]["semantics"])
     # ==============================================================================
-    # pca_visualization(student_features, teacher_features)
-    if i == 0 and len(batch) > 1:
-        t01 = (batch[0]["semantics"] - batch[1]["semantics"]).abs().mean().item()
-        s01 = (preds[0]["semantics"] - preds[1]["semantics"]).abs().mean().item()
-        print("[DEBUG] teacher v0-v1:", t01, "student v0-v1:", s01)
+    if save_pca_visualization_path is not None:
+        pca_visualization(batch, preds, epoch=epoch, output_dir=save_pca_visualization_path)
+    # if i == 0 and len(batch) > 1:
+    #     t01 = (batch[0]["semantics"] - batch[1]["semantics"]).abs().mean().item()
+    #     s01 = (preds[0]["semantics"] - preds[1]["semantics"]).abs().mean().item()
+    #     print("[DEBUG] teacher v0-v1:", t01, "student v0-v1:", s01)
     
     with torch.autocast("cuda", enabled=False):
         loss = criterion(batch, preds) if criterion is not None else None

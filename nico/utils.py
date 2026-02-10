@@ -266,102 +266,6 @@ def pca_features_to_rgb(
         return rgb, pil_img
     return rgb
 
-def create_student_original_teacher_side_by_side(
-    student_embeddings,
-    teacher_embeddings,
-    img_path,
-    epoch,
-    output_heatmaps,
-    is_overfit_image=False,
-    save_embeddings=False,
-):
-    """
-    Visualizza teacher e student embeddings con colori coerenti.
-    Se is_overfit_image=True → calcola la PCA dai teacher embeddings e la salva/carica localmente.
-    Se False → calcola la PCA dinamicamente dai teacher embeddings (senza salvataggio/caricamento su disco).
-    Salva anche gli embeddings se save_embeddings=True.
-    """
-
-    img_p = Path(img_path)
-    img_name = img_p.stem
-    local_basis_path = img_p.parent / f"{img_name}.pt"
-
-    # --- Step 1: gestisci caricamento/salvataggio base PCA ---
-    if is_overfit_image:
-        if local_basis_path.exists():
-            basis = torch.load(local_basis_path, map_location="cpu")
-        else:
-            print(f"[INFO] Computing PCA basis from teacher embeddings and saving to {local_basis_path}")
-            feats = teacher_embeddings.clone().detach().to("cpu")
-            if feats.dim() == 4:
-                feats = feats[0]  # [C, H, W]
-            feats = feats.permute(1, 2, 0).contiguous().reshape(-1, feats.shape[0])  # [H*W, C]
-            U, S, V = torch.pca_lowrank(feats, q=3, center=True)
-            basis = {"V": V[:, :3], "mean": feats.mean(0)}
-            torch.save(basis, str(local_basis_path))
-    else:
-        feats = teacher_embeddings.clone().detach().to("cpu")
-        if feats.dim() == 4:
-            feats = feats[0]  # [C, H, W]
-        feats = feats.permute(1, 2, 0).contiguous().reshape(-1, feats.shape[0])  # [H*W, C]
-        U, S, V = torch.pca_lowrank(feats, q=3, center=True)
-        basis = {"V": V[:, :3], "mean": feats.mean(0)}
-
-    # --- Step 2: funzione helper per proiettare embeddings con la base caricata ---
-    def project_with_basis(embeddings, basis):
-        feats = embeddings.clone().detach().to("cpu")
-        if feats.dim() == 4:
-            feats = feats[0]
-        feats = feats.permute(1, 2, 0).reshape(-1, feats.shape[0])  # [H*W, C]
-        feats_centered = feats - basis["mean"]
-        proj = feats_centered @ basis["V"]  # [H*W, 3]
-        proj -= proj.min(0, keepdim=True)[0]
-        proj /= proj.max(0, keepdim=True)[0].clamp(min=1e-6)
-        H, W = embeddings.shape[-2:]
-        rgb = proj.reshape(H, W, 3)
-        pil_img = Image.fromarray((rgb.cpu().numpy() * 255).astype("uint8"))
-        return pil_img
-
-    # --- Step 3: proietta teacher e student sulla stessa base ---
-    pil_img_teacher = project_with_basis(teacher_embeddings, basis)
-    pil_img_student = project_with_basis(student_embeddings, basis)
-
-    # --- Step 4: crea immagine combinata ---
-    orig_img = Image.open(img_path).convert("RGB")
-    target_size = orig_img.size
-    pil_img_student = pil_img_student.resize(target_size, Image.BILINEAR)
-    pil_img_teacher = pil_img_teacher.resize(target_size, Image.BILINEAR)
-    w, h = target_size
-    combined_img = Image.new("RGB", (w * 3, h))
-    combined_img.paste(pil_img_student, (0, 0))
-    combined_img.paste(orig_img, (w, 0))
-    combined_img.paste(pil_img_teacher, (w * 2, 0))
-
-    # Etichette
-    draw = ImageDraw.Draw(combined_img)
-    font = ImageFont.load_default(size=32)
-    label_height = 40
-    draw.rectangle([(0, 0), (w, label_height)], fill=(0, 0, 0, 128))
-    draw.rectangle([(w, 0), (w * 2, label_height)], fill=(0, 0, 0, 128))
-    draw.rectangle([(w * 2, 0), (w * 3, label_height)], fill=(0, 0, 0, 128))
-    draw.text((10, 5), "STUDENT EMBEDDINGS", fill=(255, 255, 255), font=font)
-    draw.text((w + 10, 5), "ORIGINAL IMAGE", fill=(255, 255, 255), font=font)
-    draw.text((w * 2 + 10, 5), "TEACHER EMBEDDINGS", fill=(255, 255, 255), font=font)
-
-    # --- Step 5: salva il risultato ---
-    # include image base name together with epoch to make filenames unique
-    combined_path = os.path.join(output_heatmaps, f"{epoch}_{img_name}.png")
-    combined_img.save(combined_path)
-
-    # --- Step 6: salva gli embeddings se richiesto ---
-    if save_embeddings:
-        student_dir = Path(output_heatmaps) / "student"
-        teacher_dir = Path(output_heatmaps) / "teacher"
-        student_dir.mkdir(parents=True, exist_ok=True)
-        teacher_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(student_embeddings.detach().cpu(), student_dir / f"{epoch}.pt")
-        torch.save(teacher_embeddings.detach().cpu(), teacher_dir / f"{epoch}.pt")
-
 def mean_std_difference(student_embeddings, teacher_embeddings):
     """
     Computes and prints the mean and standard deviation of student and teacher embeddings for each batch,
@@ -1174,7 +1078,6 @@ def save_trainer_checkpoint(
     scheduler,
     epoch: int,
     best_val_loss: float,
-    output_dir: str,
     tag: str = "last",
     args=None,
     wandb_available: bool = False,
@@ -1207,6 +1110,8 @@ def save_trainer_checkpoint(
     if wandb_available and wandb.run is not None:
         state["wandb_run_id"] = wandb.run.id
     
+    # Crea la sottocartella checkpoints
+    output_dir = Path(os.path.join(args.output_dir, args.train_params.run_name))
     ckpt_dir = Path(output_dir) / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = ckpt_dir / f"checkpoint_trainer_{tag}.pth"
@@ -1217,7 +1122,6 @@ def save_encoder_checkpoint(
     model_without_ddp,
     epoch: int,
     best_val_loss: float,
-    output_dir: str,
     tag: str = "last",
     args=None,
     wandb_available: bool = False,
@@ -1317,6 +1221,7 @@ def save_encoder_checkpoint(
         state["wandb_run_id"] = wandb.run.id
     
     # Crea la sottocartella checkpoints
+    output_dir = Path(os.path.join(args.output_dir, args.train_params.run_name))
     ckpt_dir = Path(output_dir) / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     
@@ -1328,7 +1233,6 @@ def save_decoder_checkpoint(
     model_without_ddp,
     epoch: int,
     best_val_loss: float,
-    output_dir: str,
     tag: str = "last",
     args=None,
     wandb_available: bool = False,
@@ -1373,6 +1277,7 @@ def save_decoder_checkpoint(
         state["wandb_run_id"] = wandb.run.id
     
     # Crea la sottocartella checkpoints
+    output_dir = Path(os.path.join(args.output_dir, args.train_params.run_name))
     ckpt_dir = Path(output_dir) / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     
@@ -1384,15 +1289,11 @@ def save_model(
     model_without_ddp,
     epoch: int,
     best_val_loss: float,
-    output_dir: str,
     tag: str,
     optimizer=None,
     scheduler=None,
     args=None,
     wandb_available: bool = False,
-    save_encoder: bool = True,
-    save_decoder: bool = True,
-    save_trainer: bool = True,
 ):
     """
     Unified checkpoint saving function that saves encoder, decoder, and trainer state.
@@ -1406,7 +1307,6 @@ def save_model(
         scheduler: Learning rate scheduler
         epoch: Current epoch
         best_val_loss: Best validation loss so far
-        output_dir: Directory to save checkpoints
         tag: Tag for checkpoint filenames (e.g., "best", "last", "epoch10")
         args: Training arguments (for reproducibility)
         wandb_available: Whether wandb is available
@@ -1414,35 +1314,32 @@ def save_model(
         save_decoder: Whether to save decoder checkpoint
         save_trainer: Whether to save trainer checkpoint
     """
-    if save_encoder:
+    if getattr(args.train_params, "save_encoder_ckpt", False):
         save_encoder_checkpoint(
             model_without_ddp=model_without_ddp,
             epoch=epoch,
             best_val_loss=best_val_loss,
-            output_dir=output_dir,
             tag=tag,
             args=args,
             wandb_available=wandb_available,
         )
     
-    if save_decoder:
+    if getattr(args.train_params, "save_decoder_ckpt", False):
         save_decoder_checkpoint(
             model_without_ddp=model_without_ddp,
             epoch=epoch,
             best_val_loss=best_val_loss,
-            output_dir=output_dir,
             tag=tag,
             args=args,
             wandb_available=wandb_available,
         )
     
-    if save_trainer:
+    if getattr(args.train_params, "save_trainer_ckpt", False):
         save_trainer_checkpoint(
             optimizer=optimizer,
             scheduler=scheduler,
             epoch=epoch,
             best_val_loss=best_val_loss,
-            output_dir=output_dir,
             tag=tag,
             args=args,
             wandb_available=wandb_available,
@@ -1454,9 +1351,6 @@ def load_model(
     optimizer=None,
     scheduler=None,
     args=None,
-    encoder_checkpoint_path: str = None,
-    decoder_checkpoint_path: str = None,
-    trainer_checkpoint_path: str = None,
 ) -> Tuple[int, float]:
     """
     Unified checkpoint loading function that loads encoder, decoder, and trainer state.
@@ -1470,9 +1364,9 @@ def load_model(
         optimizer: Optimizer (for loading optimizer state from trainer checkpoint)
         scheduler: Scheduler (for loading scheduler state from trainer checkpoint)
         args: Training arguments with override flags
-        encoder_checkpoint_path: Path to encoder checkpoint (optional)
-        decoder_checkpoint_path: Path to decoder checkpoint (optional)
-        trainer_checkpoint_path: Path to trainer checkpoint (optional)
+        encoder_checkpoint_path: args.train_params.resume_encoder_ckpt,
+        decoder_checkpoint_path: args.train_params.resume_decoder_ckpt,
+        trainer_checkpoint_path: args.train_params.resume_trainer_ckpt,
     
     Returns:
         (start_epoch, best_val_loss): Consolidated values from all loaded checkpoints
@@ -1485,10 +1379,10 @@ def load_model(
     loaded_checkpoints = []
     
     # Load encoder checkpoint
-    if encoder_checkpoint_path and os.path.exists(encoder_checkpoint_path):
+    if args.train_params.resume_encoder_ckpt and os.path.exists(args.train_params.resume_encoder_ckpt):
         enc_epoch, enc_loss = load_encoder_checkpoint(
             model_without_ddp=model_without_ddp,
-            checkpoint_path=encoder_checkpoint_path,
+            checkpoint_path=args.train_params.resume_encoder_ckpt,
             device=device,
         )
         start_epoch = max(start_epoch, enc_epoch)
@@ -1496,10 +1390,10 @@ def load_model(
         loaded_checkpoints.append(f"encoder (epoch {enc_epoch}, loss {enc_loss:.6f})")
     
     # Load decoder checkpoint
-    if decoder_checkpoint_path and os.path.exists(decoder_checkpoint_path):
+    if args.train_params.resume_decoder_ckpt and os.path.exists(args.train_params.resume_decoder_ckpt):
         dec_epoch, dec_loss = load_decoder_checkpoint(
             model_without_ddp=model_without_ddp,
-            checkpoint_path=decoder_checkpoint_path,
+            checkpoint_path=args.train_params.resume_decoder_ckpt,
             device=device,
         )
         start_epoch = max(start_epoch, dec_epoch)
@@ -1507,9 +1401,9 @@ def load_model(
         loaded_checkpoints.append(f"decoder (epoch {dec_epoch}, loss {dec_loss:.6f})")
     
     # Load trainer checkpoint
-    if trainer_checkpoint_path and os.path.exists(trainer_checkpoint_path):
+    if args.train_params.resume_trainer_ckpt and os.path.exists(args.train_params.resume_trainer_ckpt):
         trainer_epoch, trainer_loss = load_trainer_checkpoint(
-            checkpoint_path=trainer_checkpoint_path,
+            checkpoint_path=args.train_params.resume_trainer_ckpt,
             device=device,
             optimizer=optimizer,
             scheduler=scheduler,
@@ -1528,71 +1422,229 @@ def load_model(
     
     return start_epoch, best_val_loss
 
-def pca_visualization(student_features, teacher_features):
-    try:
-        import matplotlib
-        matplotlib.use('Agg') # Fondamentale per SSH
-        import matplotlib.pyplot as plt
-        from sklearn.decomposition import PCA
-        import os
-        import numpy as np
+# def pca_visualization(student_features, teacher_features):
+#     try:
+#         import matplotlib
+#         matplotlib.use('Agg') # Fondamentale per SSH
+#         import matplotlib.pyplot as plt
+#         from sklearn.decomposition import PCA
+#         import os
+#         import numpy as np
 
-        output_path = "/scratch2/nico/distillation/test_visivo"
-        os.makedirs(output_path, exist_ok=True)
+#         output_path = "/scratch2/nico/distillation/test_visivo"
+#         os.makedirs(output_path, exist_ok=True)
         
-        # Prendi il primo elemento del batch se necessario
-        # pred_sem e gt_sem sono attesi come (B, C, H, W) -> prendiamo (C, H, W)
-        s_tensor = student_features[0] if student_features.ndim == 4 else student_features
-        t_tensor = teacher_features[0] if teacher_features.ndim == 4 else teacher_features
+#         # Prendi il primo elemento del batch se necessario
+#         # pred_sem e gt_sem sono attesi come (B, C, H, W) -> prendiamo (C, H, W)
+#         s_tensor = student_features[0] if student_features.ndim == 4 else student_features
+#         t_tensor = teacher_features[0] if teacher_features.ndim == 4 else teacher_features
 
-        # Converti in NumPy (H, W, C)
-        s_feat = s_tensor.detach().cpu().permute(1, 2, 0).numpy()
-        t_feat = t_tensor.detach().cpu().permute(1, 2, 0).numpy()
+#         # Converti in NumPy (H, W, C)
+#         s_feat = s_tensor.detach().cpu().permute(1, 2, 0).numpy()
+#         t_feat = t_tensor.detach().cpu().permute(1, 2, 0).numpy()
 
-        H, W, C = s_feat.shape
+#         H, W, C = s_feat.shape
         
-        # Appiattisci per PCA
-        s_flat = s_feat.reshape(-1, C)
-        t_flat = t_feat.reshape(-1, C)
+#         # Appiattisci per PCA
+#         s_flat = s_feat.reshape(-1, C)
+#         t_flat = t_feat.reshape(-1, C)
 
-        # PCA a 3 componenti (RGB)
-        pca = PCA(n_components=3)
+#         # PCA a 3 componenti (RGB)
+#         pca = PCA(n_components=3)
         
-        # FIT SOLO SUL TEACHER! 
-        # Questo garantisce che "rosso" significhi la stessa cosa per entrambi
-        pca.fit(t_flat)
+#         # FIT SOLO SUL TEACHER! 
+#         # Questo garantisce che "rosso" significhi la stessa cosa per entrambi
+#         pca.fit(t_flat)
 
-        s_pca = pca.transform(s_flat).reshape(H, W, 3)
-        t_pca = pca.transform(t_flat).reshape(H, W, 3)
+#         s_pca = pca.transform(s_flat).reshape(H, W, 3)
+#         t_pca = pca.transform(t_flat).reshape(H, W, 3)
 
-        # Normalizzazione Min-Max indipendente (0-1) per visualizzazione
-        def normalize_vis(x):
-            mi, ma = x.min(), x.max()
-            return (x - mi) / (ma - mi + 1e-8)
+#         # Normalizzazione Min-Max indipendente (0-1) per visualizzazione
+#         def normalize_vis(x):
+#             mi, ma = x.min(), x.max()
+#             return (x - mi) / (ma - mi + 1e-8)
 
-        s_rgb = normalize_vis(s_pca)
-        t_rgb = normalize_vis(t_pca)
+#         s_rgb = normalize_vis(s_pca)
+#         t_rgb = normalize_vis(t_pca)
 
-        # Plotting
-        fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+#         # Plotting
+#         fig, ax = plt.subplots(1, 2, figsize=(10, 5))
         
-        ax[0].imshow(s_rgb)
-        ax[0].set_title(f"Teacher Prediction")
-        ax[0].axis('off')
+#         ax[0].imshow(s_rgb)
+#         ax[0].set_title(f"Teacher Prediction")
+#         ax[0].axis('off')
         
-        ax[1].imshow(t_rgb)
-        ax[1].set_title("Student Target")
-        ax[1].axis('off')
+#         ax[1].imshow(t_rgb)
+#         ax[1].set_title("Student Target")
+#         ax[1].axis('off')
 
-        # Salva con nome univoco (usa un timestamp o un contatore globale se disponibile)
-        import time
-        timestamp = int(time.time() * 1000)
-        save_path = os.path.join(output_path, f"vis_debug_{timestamp}.png")
+#         # Salva con nome univoco (usa un timestamp o un contatore globale se disponibile)
+#         import time
+#         timestamp = int(time.time() * 1000)
+#         save_path = os.path.join(output_path, f"vis_debug_{timestamp}.png")
         
-        plt.tight_layout()
-        plt.savefig(save_path)
-        plt.close(fig)
-        print(f"[DEBUG VIS] Saved PCA comparison to {save_path}")
+#         plt.tight_layout()
+#         plt.savefig(save_path)
+#         plt.close(fig)
+#         print(f"[DEBUG VIS] Saved PCA comparison to {save_path}")
 
-    except Exception as e:
-        print(f"[DEBUG VIS ERROR] {e}")
+#     except Exception as e:
+#         print(f"[DEBUG VIS ERROR] {e}")
+
+def pca_visualization(
+    batch: List[Dict[str, Any]],
+    preds: List[Dict[str, Any]],
+    epoch: int,
+    output_dir: str,
+):
+    """
+    Salva visualizzazioni affiancate basate su PCA di (studente | immagine | teacher).
+
+    Usa batch[i]["semantics"], preds[i]["semantics"], e batch[i]["img"].
+
+    Args:
+        batch: List of input views with semantics and images.
+        preds: List of model predictions with semantics.
+        epoch: Current epoch number.
+        output_dir: Output directory for saving visualizations.
+    """
+    viz_dir = Path(output_dir) / "visualizations"
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    dinov2_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+    dinov2_std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+
+    saved_count = 0
+    global_idx = 0
+
+    for view_idx in range(len(batch)):
+        if "semantics" not in batch[view_idx] or "semantics" not in preds[view_idx]:
+            continue
+
+        student_cpu = preds[view_idx]["semantics"].detach().cpu()
+        teacher_cpu = batch[view_idx]["semantics"].detach().cpu()
+
+        img_tensor = batch[view_idx].get("img")
+        if img_tensor is None:
+            continue
+
+        img_tensor = img_tensor.detach().cpu()
+        img_tensor = img_tensor * dinov2_std + dinov2_mean
+        img_tensor = torch.clamp(img_tensor, 0, 1)
+
+        b = min(student_cpu.shape[0], teacher_cpu.shape[0], img_tensor.shape[0])
+        for batch_idx in range(b):
+            student_single = student_cpu[batch_idx:batch_idx + 1]
+            teacher_single = teacher_cpu[batch_idx:batch_idx + 1]
+
+            img_single = img_tensor[batch_idx]
+            img_np = (img_single.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+            orig_img = Image.fromarray(img_np)
+            orig_img = orig_img.resize((1024, 1024), Image.Resampling.BILINEAR)
+
+            image_name = f"{epoch}_{global_idx}"
+            try:
+                create_student_original_teacher_side_by_side(
+                    student_embeddings=student_single,
+                    teacher_embeddings=teacher_single,
+                    orig_img=orig_img,
+                    epoch=epoch,
+                    output_heatmaps=str(viz_dir),
+                    image_name=image_name,
+                    is_overfit_image=False,
+                )
+                saved_count += 1
+            except Exception as e:
+                print(f"[WARN] Failed to create PCA visualization for {image_name}: {e}")
+            global_idx += 1
+
+    print(f"[VIZ] Saved {saved_count} PCA visualizations to {viz_dir}")
+
+def create_student_original_teacher_side_by_side(
+    student_embeddings,
+    teacher_embeddings,
+    orig_img,
+    epoch,
+    output_heatmaps,
+    image_name,
+    is_overfit_image=False,
+    save_embeddings=False,
+):
+    """
+    Visualizza teacher e student embeddings con colori coerenti.
+    Se is_overfit_image=True → calcola la PCA dai teacher embeddings e la salva/carica localmente.
+    Se False → calcola la PCA dinamicamente dai teacher embeddings (senza salvataggio/caricamento su disco).
+    Salva anche gli embeddings se save_embeddings=True.
+    """
+
+    # --- Step 1: gestisci caricamento/salvataggio base PCA ---
+    if is_overfit_image:
+        print("[INFO] Computing PCA basis from teacher embeddings (no cache)")
+        feats = teacher_embeddings.clone().detach().to("cpu")
+        if feats.dim() == 4:
+            feats = feats[0]  # [C, H, W]
+        feats = feats.permute(1, 2, 0).contiguous().reshape(-1, feats.shape[0])  # [H*W, C]
+        U, S, V = torch.pca_lowrank(feats, q=3, center=True)
+        basis = {"V": V[:, :3], "mean": feats.mean(0)}
+    else:
+        feats = teacher_embeddings.clone().detach().to("cpu")
+        if feats.dim() == 4:
+            feats = feats[0]  # [C, H, W]
+        feats = feats.permute(1, 2, 0).contiguous().reshape(-1, feats.shape[0])  # [H*W, C]
+        U, S, V = torch.pca_lowrank(feats, q=3, center=True)
+        basis = {"V": V[:, :3], "mean": feats.mean(0)}
+
+    # --- Step 2: funzione helper per proiettare embeddings con la base caricata ---
+    def project_with_basis(embeddings, basis):
+        feats = embeddings.clone().detach().to("cpu")
+        if feats.dim() == 4:
+            feats = feats[0]
+        feats = feats.permute(1, 2, 0).reshape(-1, feats.shape[0])  # [H*W, C]
+        feats_centered = feats - basis["mean"]
+        proj = feats_centered @ basis["V"]  # [H*W, 3]
+        proj -= proj.min(0, keepdim=True)[0]
+        proj /= proj.max(0, keepdim=True)[0].clamp(min=1e-6)
+        H, W = embeddings.shape[-2:]
+        rgb = proj.reshape(H, W, 3)
+        pil_img = Image.fromarray((rgb.cpu().numpy() * 255).astype("uint8"))
+        return pil_img
+
+    # --- Step 3: proietta teacher e student sulla stessa base ---
+    pil_img_teacher = project_with_basis(teacher_embeddings, basis)
+    pil_img_student = project_with_basis(student_embeddings, basis)
+
+    # --- Step 4: crea immagine combinata ---
+    orig_img = orig_img.convert("RGB")
+    target_size = orig_img.size
+    pil_img_student = pil_img_student.resize(target_size, Image.BILINEAR)
+    pil_img_teacher = pil_img_teacher.resize(target_size, Image.BILINEAR)
+    w, h = target_size
+    combined_img = Image.new("RGB", (w * 3, h))
+    combined_img.paste(pil_img_student, (0, 0))
+    combined_img.paste(orig_img, (w, 0))
+    combined_img.paste(pil_img_teacher, (w * 2, 0))
+
+    # Etichette
+    draw = ImageDraw.Draw(combined_img)
+    font = ImageFont.load_default(size=32)
+    label_height = 40
+    draw.rectangle([(0, 0), (w, label_height)], fill=(0, 0, 0, 128))
+    draw.rectangle([(w, 0), (w * 2, label_height)], fill=(0, 0, 0, 128))
+    draw.rectangle([(w * 2, 0), (w * 3, label_height)], fill=(0, 0, 0, 128))
+    draw.text((10, 5), "STUDENT EMBEDDINGS", fill=(255, 255, 255), font=font)
+    draw.text((w + 10, 5), "ORIGINAL IMAGE", fill=(255, 255, 255), font=font)
+    draw.text((w * 2 + 10, 5), "TEACHER EMBEDDINGS", fill=(255, 255, 255), font=font)
+
+    # --- Step 5: salva il risultato ---
+    # include image base name together with epoch to make filenames unique
+    combined_path = os.path.join(output_heatmaps, f"{image_name}.png")
+    combined_img.save(combined_path)
+
+    # --- Step 6: salva gli embeddings se richiesto ---
+    if save_embeddings:
+        student_dir = Path(output_heatmaps) / "student"
+        teacher_dir = Path(output_heatmaps) / "teacher"
+        student_dir.mkdir(parents=True, exist_ok=True)
+        teacher_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(student_embeddings.detach().cpu(), student_dir / f"{image_name}.pt")
+        torch.save(teacher_embeddings.detach().cpu(), teacher_dir / f"{image_name}.pt")

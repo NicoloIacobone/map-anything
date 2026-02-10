@@ -1,4 +1,5 @@
-epochs: 5
+run_name: "1000_epochs_overfit_encoder_only"
+epochs: 1000
 eval_freq: 10000
 start_epoch: 0
 batch_size: null
@@ -50,12 +51,12 @@ resume_encoder_ckpt: null
 resume_decoder_ckpt: null
 resume_trainer_ckpt: null
 # ========== SAVE CHECKPOINTS (boolean) ==========
-save_encoder_ckpt: null
+save_encoder_ckpt: true
 save_decoder_ckpt: null
 save_trainer_ckpt: null
 save_combined_ckpt: null
 
-save_freq: 10000
+save_freq: 50
 # =====================================
 
 # ========== UNFREEZE STRATEGY ==========
@@ -78,4 +79,5 @@ disable_cudnn_benchmark: true
 print_freq: 1
 print_trainable: false
 print_optim_params: false
+save_pca_visualization_every: 25
 # =====================================

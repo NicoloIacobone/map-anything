@@ -398,8 +398,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 self.dpt_feature_head_2 = DPTFeature(**pred_head_config["feature_head_2"])
                 # Layer di compatibilità per allineare a SAM2 (256 canali, LayerNorm)
                 dpt_out_dim = pred_head_config["feature_head_2"]["feature_dim"]
-                self.sam2_compat = SAM2CompatibilityLayer(in_channels=dpt_out_dim, out_channels=256) # added +1 for confidence
-                # self.sam2_compat = SAM2CompatibilityLayer(in_channels=dpt_out_dim, out_channels=256+1) # added +1 for confidence
+                self.sam2_compat = SAM2CompatibilityLayer(in_channels=dpt_out_dim, out_channels=256+1) # added +1 for confidence
 
             # Add your head with in_dim inferred
             # dpt_feat_dim = pred_head_config["feature_head"]["feature_dim"]
@@ -1429,22 +1428,19 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
 
                 # Proiezione a 256 canali + 1 confidenza
                 if hasattr(self, "sam2_compat"):
-                    feat_8x = self.sam2_compat(feat_8x)
-                    assert feat_8x.shape[1] == 256, f"Expected 256 channels, got {feat_8x.shape[1]}"
-                    # feat_8x_raw = self.sam2_compat(feat_8x)
+                    feat_8x_raw = self.sam2_compat(feat_8x)
                     
-                    # # [MODIFICA] Splitting: separa feature (256) e confidence (1)
-                    # # feat_8x_raw shape: (B*V, 257, H, W)
-                    # feat_8x = feat_8x_raw[:, :-1, :, :]      # Primi 256 canali: Features
-                    # raw_conf = feat_8x_raw[:, -1:, :, :]     # Ultimo canale: Raw Confidence
+                    # [MODIFICA] Splitting: separa feature (256) e confidence (1)
+                    # feat_8x_raw shape: (B*V, 257, H, W)
+                    feat_8x = feat_8x_raw[:, :-1, :, :]      # Primi 256 canali: Features
+                    raw_conf = feat_8x_raw[:, -1:, :, :]     # Ultimo canale: Raw Confidence
                     
-                    # # [MODIFICA] Attivazione Confidence: range [1, inf] come da paper UNITE
-                    # # Usa softplus per positività e +1 per base minima.
-                    # import torch.nn.functional as F
-                    # self._last_conf2_8x = F.softplus(raw_conf) + 1.0
+                    # [MODIFICA] Attivazione Confidence: range [1, inf] come da paper UNITE
+                    # Usa softplus per positività e +1 per base minima.
+                    import torch.nn.functional as F
+                    self._last_conf2_8x = F.softplus(raw_conf) + 1.0
 
-                    # assert feat_8x.shape[1] == 256, f"Expected 256 channels, got {feat_8x.shape[1]}"
-                    # # print(f"[DPT2] Output feat_8x shape after sam2_compat: {feat_8x.shape}")
+                    assert feat_8x.shape[1] == 256, f"Expected 256 channels, got {feat_8x.shape[1]}"
 
                 self._last_feat2_8x = feat_8x
                 # print(f"[NICO] Stored feat2_8x with shape: {feat_8x.shape}")
@@ -1662,16 +1658,16 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
 
             # Proiezione a 256 canali + 1 confidenza
             if hasattr(self, "sam2_compat"):
-                feat_8x = self.sam2_compat(feat_8x)
-                # feat_8x_raw = self.sam2_compat(feat_8x)
+                # feat_8x = self.sam2_compat(feat_8x)
+                feat_8x_raw = self.sam2_compat(feat_8x)
                 
                 # # [MODIFICA] Splitting: separa feature (256) e confidence (1)
-                # feat_8x = feat_8x_raw[:, :-1, :, :]      # Primi 256 canali: Features
-                # raw_conf = feat_8x_raw[:, -1:, :, :]     # Ultimo canale: Raw Confidence
+                feat_8x = feat_8x_raw[:, :-1, :, :]      # Primi 256 canali: Features
+                raw_conf = feat_8x_raw[:, -1:, :, :]     # Ultimo canale: Raw Confidence
                 
                 # # [MODIFICA] Attivazione Confidence: range [1, inf]
-                # import torch.nn.functional as F
-                # self._last_conf2_8x = F.softplus(raw_conf) + 1.0
+                import torch.nn.functional as F
+                self._last_conf2_8x = F.softplus(raw_conf) + 1.0
             
             # Espone le feature al chiamante (distillation legge questo)
             self._last_feat2_8x = feat_8x

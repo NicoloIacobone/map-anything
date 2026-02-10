@@ -5203,7 +5203,7 @@ class SemanticConsistencyLoss(BaseCriterion):
             - 'sem_conf': (B, 1, H, W)
             - 'pts3d_cam': (B, H, W, 3) (Camera Coordinates) - REQUIRED for Occlusion Check
         """
-        self.test_identity_projection(self.project_to_view)  # Run test on projection function
+        # self.test_identity_projection(self.project_to_view)  # Run test on projection function
         # for index in range(len(batch)):
         #     print("img shape:", batch[index]['img'].shape)
         #     print("teacher features shape:", batch[index]['semantics'].shape)
@@ -5218,9 +5218,6 @@ class SemanticConsistencyLoss(BaseCriterion):
         distillation_losses = []
         consistency_losses = []
         details = {}
-        
-        # DEBUG HEADER
-        print(f"\n[DEBUG] --- Start SemanticConsistencyLoss ---")
         
         if "semantics" not in preds[0]:
             print(f"[DEBUG] ERROR: 'semantics' missing in preds!")
@@ -5239,13 +5236,12 @@ class SemanticConsistencyLoss(BaseCriterion):
             # ==========================
             pred_sem = preds[i]["semantics"] # 1, 256, 64, 64
             gt_sem = batch[i]["semantics"] # 1, 256, 64, 64
-            pca_visualization(gt_sem, pred_sem)
-            # pca_visualization(gt_sem, pred_sem)
+            # pca_visualization(pred_sem, gt_sem)
             
             # ===================== DEBUG CHAT ==========================
-            print("pred_sem.norm(dim=1).mean(): ", pred_sem.norm(dim=1).mean())
-            print("pred_sem.flatten(2).std(dim=2).mean: " ,pred_sem.flatten(2).std(dim=2).mean)
-            print("pred_sem.var(dim(0,2,3)).mean(): " ,pred_sem.var(dim=(0,2,3)).mean())
+            # print("pred_sem.norm(dim=1).mean(): ", pred_sem.norm(dim=1).mean())
+            # print("pred_sem.flatten(2).std(dim=2).mean: " ,pred_sem.flatten(2).std(dim=2).mean)
+            # print("pred_sem.var(dim(0,2,3)).mean(): " ,pred_sem.var(dim=(0,2,3)).mean())
             # ===========================================================
             original = False
             # assert pred_sem.shape == gt_sem.shape
