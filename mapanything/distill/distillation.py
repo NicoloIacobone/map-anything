@@ -36,15 +36,9 @@ from nico.utils import (
 )
 from sam2_minimal.sam2_builder import (
     build_sam_mask_decoder,
-    # load_sam2_feature_extractor,
     load_sam2_teacher_prompt_and_decoder,
 )
-from mapanything.distill.help_me.dataset_dataloader import (
-    TeacherFeatureExtractor,
-    # DistillationDataset,
-    # collate_fn_distillation,
-    # build_distillation_dataloader,
-)
+from mapanything.distill.help_me.dataset_dataloader import TeacherFeatureExtractor
 
 # Enable TF32 precision if supported (for GPU >= Ampere and PyTorch >= 1.12)
 if hasattr(torch.backends.cuda, "matmul") and hasattr(
@@ -62,10 +56,6 @@ def distillation(args):
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
         if args.train_params.run_name and global_rank == 0:
             Path(os.path.join(args.output_dir, args.train_params.run_name)).mkdir(parents=True, exist_ok=True)
-
-    # Print all arguments if required
-    # print("job dir: {}".format(os.path.dirname(os.path.realpath(__file__))))
-    # print("{}".format(args).replace(", ", ",\n"))
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -341,6 +331,7 @@ def distillation(args):
         new_best = False
         test_stats = {}
         if (
+            not args.train_params.overfit and
             args.train_params.eval_freq > 0
             and epoch % args.train_params.eval_freq == 0
             and epoch > 0
@@ -404,6 +395,7 @@ def distillation(args):
             optimizer,
             device,
             epoch,
+            loss_scaler,
             args=args,
             param_groups_name_to_idx_map=param_groups_name_to_idx_map,
         )
@@ -469,6 +461,7 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     epoch: int,
+    loss_scaler,
     args,
     param_groups_name_to_idx_map=None,
 ):
@@ -547,15 +540,23 @@ def train_one_epoch(
         with torch.no_grad():
             teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
         # ==============================================================================================
+
+        if args.train_params.overfit:
+            if args.train_params.save_pca_visualization and (epoch % args.train_params.save_pca_visualization_every == 0 or epoch == 0):
+                save_pca_visualization_path = Path(os.path.join(args.output_dir, args.train_params.run_name))
+            else:
+                save_pca_visualization_path = None
+
         result = loss_of_one_batch_multi_view(
             batch,
             model,
             criterion,
             device,
-            # use_amp=bool(args.train_params.amp),
-            # amp_dtype=args.train_params.amp_dtype,
-            # ret="loss",
+            use_amp=bool(args.train_params.amp),
+            amp_dtype=args.train_params.amp_dtype,
             teacher_features=teacher_features,
+            save_pca_visualization_path=save_pca_visualization_path, # only when overfitting
+            epoch=epoch,
         )
         loss, loss_details = result["loss"]
 
@@ -568,12 +569,17 @@ def train_one_epoch(
         # Scale the loss by the number of gradient accumulation iterations
         loss /= accum_iter
 
-        loss.backward()
+        # Compute the scaled gradients (also clip the gradients to max norm of 1)
+        loss_scaler( # qua dentro viene fatto sia il backward che lo step dell'optimizer ogni accum_iter iterazioni
+            loss,
+            optimizer,
+            parameters=model.parameters(),
+            update_grad=(data_iter_step + 1) % accum_iter == 0,
+            clip_grad=1.0,
+        )
 
+        # Zero out the gradients to prepare for the next iteration of gradient descent
         if (data_iter_step + 1) % accum_iter == 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-
-            optimizer.step()
             optimizer.zero_grad()
 
         del loss
@@ -678,7 +684,7 @@ def test_one_epoch(
         teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
         # ==============================================================================================
 
-        if (args.train_params.save_pca_visualization_every is not None and (epoch % args.train_params.save_pca_visualization_every == 0 or epoch == 0)):
+        if args.train_params.save_pca_visualization:
             save_pca_visualization_path = Path(os.path.join(args.output_dir, args.train_params.run_name))
         else:
             save_pca_visualization_path = None
@@ -688,6 +694,8 @@ def test_one_epoch(
             model,
             criterion,
             device,
+            use_amp=bool(args.train_params.amp),
+            amp_dtype=args.train_params.amp_dtype,
             teacher_features=teacher_features,
             save_pca_visualization_path=save_pca_visualization_path,
             epoch=epoch,

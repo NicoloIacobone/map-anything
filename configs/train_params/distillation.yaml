@@ -1,10 +1,9 @@
-run_name: "test_function_test_one_epoch"
-epochs: 10
-eval_freq: 1
+run_name: "test_amp_mixed_precision"
+epochs: 1000
 start_epoch: 0
 batch_size: null
 accum_iter: 1
-freeze_val_samples_across_all_epochs: true # Freeze the validation samples across all epochs (always use the same val samples)
+max_num_of_imgs_per_gpu: 1
 
 # ============ LEARNING RATE ============
 base_lr: 5e-4
@@ -32,7 +31,6 @@ submodule_configs:
   encoder:
     lr: 5e-5  # base_lr * 0.1 (DINO molto conservativo)
     weight_decay: 1e-4
-# =====================================
 
 # =========== SCHEDULER SETUP ===========
 lr_scheduler: "none"            # "cosine" | "step" | "plateau" | "none"
@@ -44,25 +42,22 @@ plateau_patience: null          # for plateau
 override_lr: null
 overwrite_scheduler_t_max: null # for cosine
 override_scheduler: null
-# =======================================
 
 # ========== RESUME CHECKPOINTS (string) ==========
 resume_encoder_ckpt: null
 resume_decoder_ckpt: null
 resume_trainer_ckpt: null
 # ========== SAVE CHECKPOINTS (boolean) ==========
+save_freq: 0
 save_encoder_ckpt: true
 save_decoder_ckpt: null
 save_trainer_ckpt: null
 save_combined_ckpt: null
 
-save_freq: 0
-# =====================================
 
 # ========== UNFREEZE STRATEGY ==========
 num_info_sharing_blocks_unfreeze: 0
 num_dino_layers_unfreeze: 0
-# =====================================
 
 # ========== DECODER DISTILLATION ==========
 decoder_loss_weight: null
@@ -70,14 +65,21 @@ decoder_tokens_weight: null
 decoder_masks_weight: null
 decoder_iou_weight: null
 amg_points_per_side: null
-# =====================================
+
+# ========== OVERFIT STRATEGY ===========
+overfit: true
+save_pca_visualization_every: 25
+
+# ========== TESTING STRATEGY ===========
+eval_freq: 25
+save_pca_visualization: true
+freeze_val_samples_across_all_epochs: true # Freeze the validation samples across all epochs (always use the same val samples)
 
 # =============== OTHER ===============
 seed: 0
-max_num_of_imgs_per_gpu: 1
 disable_cudnn_benchmark: true
 print_freq: 1
 print_trainable: false
 print_optim_params: false
-save_pca_visualization_every: 1
-# =====================================
+amp: true
+amp_dtype: "bf16"
