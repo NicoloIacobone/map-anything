@@ -248,7 +248,6 @@ def distillation(args):
         print(f"[INFO] Learning rate scheduler disabled. Base LR will remain constant at {args.train_params.base_lr}")
 
     # ========= RESUME FROM CHECKPOINT (IF SPECIFIED) ==========
-    start_epoch = args.train_params.start_epoch
     best_val_loss = float("inf")
     best_so_far = best_val_loss # per tenere traccia del best durante il training
 
@@ -265,9 +264,11 @@ def distillation(args):
         )
 
     # Override start_epoch if explicitly set in args
-    if args.train_params.start_epoch > 0:
-        start_epoch = args.train_params.start_epoch
+    if args.train_params.start_epoch is None:
         print(f"[INFO] Overriding start_epoch from args: {start_epoch}")
+    else:
+        start_epoch = args.train_params.start_epoch
+        print(f"[INFO] Using start_epoch from args: {start_epoch}")
  
     # Handle LR override after loading checkpoints
     if getattr(args.train_params, "override_lr", False):
@@ -310,9 +311,6 @@ def distillation(args):
                     for name in param_groups_name_to_idx_map
                 ])
                 print(f"[INFO] Set CosineAnnealingLR to epoch {resumed_epoch} (LRs: {lr_info})")
-        
-        if start_epoch > 0:
-            print(f"[RESUME] Resumed from epoch {start_epoch}, best_val_loss={best_val_loss:.6f}")
 
     # |=======================================================================================================================================|
     # |============================================================ TRAINING LOOP ============================================================|
@@ -321,6 +319,7 @@ def distillation(args):
     start_time = time.time()
 
     for epoch in range(args.train_params.start_epoch, args.train_params.epochs + 1):
+        print(50*"=")
         # ========== SAVE CHECKPOINT (last epoch + every save_freq epochs) ==========
         if epoch > args.train_params.start_epoch:
             if (
@@ -531,30 +530,23 @@ def train_one_epoch(
         # ========== PREPARE INPUT IMAGES FOR TEACHER ==========
         pil_images = []
         for view in batch:
-            img_tensor = view.get("img")
+            img_tensor = view.get("img") # (N, 3, H, W)
             if img_tensor is None:
                 continue
 
-            # img_tensor è (N, 3, H, W)
             img_tensor = img_tensor * DINOV2_STD + DINOV2_MEAN
             img_tensor = torch.clamp(img_tensor, 0, 1) # check this
 
             for batch_idx in range(img_tensor.shape[0]):
                 img_single = img_tensor[batch_idx]  # (3, H, W)
                 img_np = (img_single.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-                # pil_images.append(Image.fromarray(img_pil))
                 img_pil = Image.fromarray(img_np)
-                img_pil = img_pil.resize((1024, 1024), Image.Resampling.BILINEAR)
                 pil_images.append(img_pil)
 
         # ========== EXTRACT TEACHER FEATURES ==========
         with torch.no_grad():
             teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
         # ==============================================================================================
-        if (args.train_params.save_pca_visualization_every is not None and (epoch % args.train_params.save_pca_visualization_every == 0 or epoch == 0)):
-            save_pca_visualization_path = Path(os.path.join(args.output_dir, args.train_params.run_name))
-        else:
-            save_pca_visualization_path = None
         result = loss_of_one_batch_multi_view(
             batch,
             model,
@@ -564,8 +556,6 @@ def train_one_epoch(
             # amp_dtype=args.train_params.amp_dtype,
             # ret="loss",
             teacher_features=teacher_features,
-            save_pca_visualization_path=save_pca_visualization_path,
-            epoch=epoch,
         )
         loss, loss_details = result["loss"]
 
@@ -578,76 +568,13 @@ def train_one_epoch(
         # Scale the loss by the number of gradient accumulation iterations
         loss /= accum_iter
 
-        def grad_norm(module):
-            total = 0.0
-            for p in module.parameters():
-                if p.grad is not None:
-                    total += p.grad.detach().float().norm(2).item() ** 2
-            return total ** 0.5
-
-        def has_nan(t):
-            return torch.isnan(t).any().item() or torch.isinf(t).any().item()
-
-        def _first_param(module):
-            for p in module.parameters():
-                return p
-            return None
-
-        # print("[BEFORE] dpt_feature_head_2:", grad_norm(model.dpt_feature_head_2))
-        # print("[BEFORE] sam2_compat:", grad_norm(model.sam2_compat))
-
-        # ================== DEBUG CHAT ==================
-        # print("[BEFORE] Grad norms in dpt_feature_head_2:")
-        # for name, p in model.dpt_feature_head_2.named_parameters():
-        #     if p.grad is not None:
-        #         print(name, p.grad.norm().item())
-        # ================================================
-
         loss.backward()
 
-        # ================== DEBUG CHAT ==================
-        # print("[AFTER] Grad norms in dpt_feature_head_2:")
-        # for name, p in model.dpt_feature_head_2.named_parameters():
-        #     if p.grad is not None:
-        #         print(name, p.grad.norm().item())
-        # ================================================
-
-        # print("[AFTER] dpt_feature_head_2:", grad_norm(model.dpt_feature_head_2))
-        # print("[AFTER] sam2_compat:", grad_norm(model.sam2_compat))
-
-        # for name, p in model.dpt_feature_head_2.named_parameters():
-        #     if p.grad is not None and has_nan(p.grad):
-        #         print("[NAN] grad in", name)
-        #     if has_nan(p.data):
-        #         print("[NAN] weight in", name)
-
         if (data_iter_step + 1) % accum_iter == 0:
-            # print(f"[STEP] optimizer step @ iter {data_iter_step}")
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
 
             optimizer.step()
             optimizer.zero_grad()
-
-            # with torch.no_grad():
-            #     w = _first_param(model.dpt_feature_head_2)
-            #     if w is not None:
-            #         w_mean_before = w.mean().item()
-            #         w_std_before = w.std().item()
-            #     else:
-            #         w_mean_before = float("nan")
-            #         w_std_before = float("nan")
-
-
-            # with torch.no_grad():
-            #     w = _first_param(model.dpt_feature_head_2)
-            #     if w is not None:
-            #         w_mean_after = w.mean().item()
-            #         w_std_after = w.std().item()
-            #     else:
-            #         w_mean_after = float("nan")
-            #         w_std_after = float("nan")
-
-            # print(f"[HEAD] w_mean {w_mean_before:.6f} -> {w_mean_after:.6f} | w_std {w_std_before:.6f} -> {w_std_after:.6f}")
 
         del loss
         del batch
@@ -729,6 +656,7 @@ def test_one_epoch(
         metric_logger.log_every(data_loader, args.train_params.print_freq, header)
     ):
         n_views = len(batch)
+        print(f"number of views in batch: {n_views}")
 
         # ========== PREPARE INPUT IMAGES FOR TEACHER ==========
         pil_images = []
@@ -750,12 +678,19 @@ def test_one_epoch(
         teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
         # ==============================================================================================
 
+        if (args.train_params.save_pca_visualization_every is not None and (epoch % args.train_params.save_pca_visualization_every == 0 or epoch == 0)):
+            save_pca_visualization_path = Path(os.path.join(args.output_dir, args.train_params.run_name))
+        else:
+            save_pca_visualization_path = None
+
         result = loss_of_one_batch_multi_view(
             batch,
             model,
             criterion,
             device,
             teacher_features=teacher_features,
+            save_pca_visualization_path=save_pca_visualization_path,
+            epoch=epoch,
         )
         loss_value, loss_details = result["loss"]
 

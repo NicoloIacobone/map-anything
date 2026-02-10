@@ -177,16 +177,9 @@ def loss_of_one_batch_multi_view(
                 B, C, H, W = preds[i]["semantics"].shape
                 device = preds[i]["semantics"].device
                 preds[i]["sem_conf"] = torch.ones(B, 1, H, W, device=device)
-
-            # pca_visualization(preds[i]["semantics"], batch[i]["semantics"])
-            # pca_visualization(batch[i]["semantics"], preds[i]["semantics"])
     # ==============================================================================
     if save_pca_visualization_path is not None:
         pca_visualization(batch, preds, epoch=epoch, output_dir=save_pca_visualization_path)
-    # if i == 0 and len(batch) > 1:
-    #     t01 = (batch[0]["semantics"] - batch[1]["semantics"]).abs().mean().item()
-    #     s01 = (preds[0]["semantics"] - preds[1]["semantics"]).abs().mean().item()
-    #     print("[DEBUG] teacher v0-v1:", t01, "student v0-v1:", s01)
     
     with torch.autocast("cuda", enabled=False):
         loss = criterion(batch, preds) if criterion is not None else None
