@@ -1,9 +1,9 @@
-run_name: "test_cluster"
-epochs: 10
+run_name: "overfit_1_scene_10k_epochs"
+epochs: 10000
 start_epoch: 0
 batch_size: null
 accum_iter: 1
-max_num_of_imgs_per_gpu: 1
+max_num_of_imgs_per_gpu: 4
 
 # ============ LEARNING RATE ============
 base_lr: 5e-4
@@ -48,7 +48,7 @@ resume_encoder_ckpt: null
 resume_decoder_ckpt: null
 resume_trainer_ckpt: null
 # ========== SAVE CHECKPOINTS (boolean) ==========
-save_freq: 0
+save_freq: 100
 save_encoder_ckpt: true
 save_decoder_ckpt: null
 save_trainer_ckpt: null
@@ -67,7 +67,7 @@ amg_points_per_side: null
 
 # ========== OVERFIT STRATEGY ===========
 overfit: true
-save_pca_visualization_every: 1
+save_pca_visualization_every: 100
 
 # ========== TESTING STRATEGY ===========
 eval_freq: 1
@@ -78,7 +78,7 @@ freeze_val_samples_across_all_epochs: true # Freeze the validation samples acros
 seed: 0
 disable_cudnn_benchmark: true
 print_freq: 1
-print_trainable: false
-print_optim_params: false
+print_trainable: true
+print_optim_params: true
 amp: true
 amp_dtype: "bf16"

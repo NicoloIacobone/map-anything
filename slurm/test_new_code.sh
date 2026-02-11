@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=test_new_code
+#SBATCH --job-name=overfit_1_scene_10k_epochs
 #
 # Specify output file.
-#SBATCH --output=test_new_code_%j.log
+#SBATCH --output=overfit_1_scene_10k_epochs%j.log
 #
 # Specify error file.
-#SBATCH --error=test_new_code_%j.err
+#SBATCH --error=overfit_1_scene_10k_epochs%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
