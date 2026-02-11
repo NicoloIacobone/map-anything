@@ -73,6 +73,10 @@ class BlendedMVSWAI(BaseDataset):
             self.scenes = list(split_scene_list)
         else:
             self.scenes = [self.specific_scene_name]
+
+        if self.overfit_num_sets is not None and not self.sample_specific_scene:
+            # Keep a deterministic subset for overfitting runs.
+            self.scenes = sorted(self.scenes)[: int(self.overfit_num_sets)]
         self.num_of_scenes = len(self.scenes)
 
     def _get_views(self, sampled_idx, num_views_to_sample, resolution):

@@ -22,9 +22,7 @@ transform: 'imgnorm'
 data_norm_type: ${model.data_norm_type}
 ROOT: ${root_data_dir}/blendedmvs
 dataset_metadata_dir: ${mapanything_dataset_metadata_dir}
-overfit_num_sets: null
 variable_num_views: ${dataset.train.variable_num_views}
 num_views: ${dataset.num_views}
-covisibility_thres: 0.30
-sample_specific_scene: true
-specific_scene_name: '000000000000000000000000'
+covisibility_thres: 0.50
+overfit_num_sets: 50
