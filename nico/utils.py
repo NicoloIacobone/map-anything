@@ -1613,7 +1613,7 @@ def pca_visualization(
             orig_img = Image.fromarray(img_np)
             orig_img = orig_img.resize((1024, 1024), Image.Resampling.BILINEAR)
 
-            image_name = f"{epoch}_{global_idx}"
+            image_name = f"{epoch}_{batch_idx}_{view_idx}"
             try:
                 create_student_original_teacher_side_by_side(
                     student_embeddings=student_single,

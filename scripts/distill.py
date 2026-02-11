@@ -1,5 +1,6 @@
 import logging
 import sys
+import wandb
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
@@ -31,4 +32,10 @@ def execute_distillation(cfg: DictConfig):
     distillation(cfg)
 
 if __name__ == "__main__":
-    execute_distillation()
+    try:
+        execute_distillation()
+    except KeyboardInterrupt:
+        raise
+    finally:
+        if wandb.run is not None:
+            wandb.finish()

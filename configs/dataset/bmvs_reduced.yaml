@@ -1,9 +1,9 @@
 defaults:
   - default
-  - override blendedmvs_wai/train: distillation_overfit
+  - override blendedmvs_wai/train: distillation_no_augm
 
 # Number of views parameter for the multi-view datasets
-num_views: 1
+num_views: 2
 
 train:
   # If True, the number of views can vary from batch to batch. The maximum number of views is num_views and minimum is 2. (On by default for N-view training)
@@ -12,15 +12,16 @@ train:
 # Train Resolution
 # resolution_train: ${dataset.resolution_options.518_many_ar} <- original, conteneva molte risoluzioni diverse
 resolution_train: ${dataset.resolution_options.518_1_00_ar}
-# ora solo 518x518 per test
+# ora solo 518x518
 
 # Validation Resolution
-resolution_val_blendedmvs: ${dataset.resolution_options.518_1_33_ar}
+# resolution_val_blendedmvs: ${dataset.resolution_options.518_1_33_ar} <- original, conteneva molte risoluzioni diverse
+resolution_val_blendedmvs: ${dataset.resolution_options.518_1_00_ar}
 
 # Training Set
 train_dataset:
-  "+ 1 @ ${dataset.blendedmvs_wai.train.dataset_str}"
+  "+ 100 @ ${dataset.blendedmvs_wai.train.dataset_str}"
 
 # Validation Set
 test_dataset:
-  "+ 1 @ ${dataset.blendedmvs_wai.val.dataset_str}"
+  "+ 10 @ ${dataset.blendedmvs_wai.val.dataset_str}"

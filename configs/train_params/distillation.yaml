@@ -1,10 +1,10 @@
-run_name: "test_wandb"
+run_name: "test_multi_view_multi_scene"
 use_wandb: true
 epochs: 100
 start_epoch: 0
 batch_size: null
 accum_iter: 1
-max_num_of_imgs_per_gpu: 1
+max_num_of_imgs_per_gpu: 4
 
 # ============ LEARNING RATE ============
 base_lr: 5e-4
@@ -68,7 +68,7 @@ amg_points_per_side: null
 
 # ========== OVERFIT STRATEGY ===========
 overfit: false
-save_pca_visualization_every: 100
+save_pca_visualization_every: 1
 
 # ========== TESTING STRATEGY ===========
 eval_freq: 10
