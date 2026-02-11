@@ -11,9 +11,7 @@ dataset_str:
     overfit_num_sets=${dataset.blendedmvs_wai.train.overfit_num_sets},
     variable_num_views=${dataset.blendedmvs_wai.train.variable_num_views},
     num_views=${dataset.blendedmvs_wai.train.num_views},
-    covisibility_thres=${dataset.blendedmvs_wai.train.covisibility_thres},
-    sample_specific_scene=${dataset.blendedmvs_wai.train.sample_specific_scene},
-    specific_scene_name='${dataset.blendedmvs_wai.train.specific_scene_name}')"
+    covisibility_thres=${dataset.blendedmvs_wai.train.covisibility_thres})"
 split: 'train'
 dataset_resolution: ${dataset.resolution_train}
 principal_point_centered: ${dataset.principal_point_centered}
