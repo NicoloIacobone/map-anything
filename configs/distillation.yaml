@@ -5,6 +5,7 @@ defaults:
   - loss: distillation
   - train_params: distillation
   - distributed: disabled
+  - wandb_config: distillation
   - _self_
 
 output_dir: ${machine.output_dir}

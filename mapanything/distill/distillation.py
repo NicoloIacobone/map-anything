@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Sized, Optional
 from PIL import Image
+import wandb
 
 import numpy as np
 import torch
@@ -33,6 +34,8 @@ from nico.utils import (
     setup_freeze_strategy,
     load_model,
     save_model,
+    log_wandb_batch_distill,
+    log_wandb_epoch_distill,
 )
 from sam2_minimal.sam2_builder import (
     build_sam_mask_decoder,
@@ -104,7 +107,6 @@ def distillation(args):
         )
     model.to(device)  # Move model to device
     model_without_ddp = model
-    # print("Model = %s" % str(model_without_ddp))
 
     # ========== INITIALIZE STUDENT DECODER ==========
     print(f"[INFO] Building student MaskDecoder...")
@@ -128,7 +130,6 @@ def distillation(args):
     teacher_extractor = TeacherFeatureExtractor(
         checkpoint_path=args.sam2_path,
         device=str(device),
-        # augment_cfg=augment_cfg,
         augment_cfg = None
     )
     teacher_extractor.to(device)
@@ -301,6 +302,17 @@ def distillation(args):
                     for name in param_groups_name_to_idx_map
                 ])
                 print(f"[INFO] Set CosineAnnealingLR to epoch {resumed_epoch} (LRs: {lr_info})")
+    
+    # ========== INITIALIZE WANDB (only if rank == 0) ==========
+    if args.train_params.use_wandb and global_rank == 0:
+        wandb_kwargs = {
+            "project": args.wandb_config.wandb_project,
+            "name": args.train_params.run_name,
+            "config": vars(args),
+        }
+        if args.wandb_config.wandb_resume_id:
+            wandb_kwargs.update(id=args.wandb_config.wandb_resume_id, resume="allow")
+        wandb.init(**wandb_kwargs)
 
     # |=======================================================================================================================================|
     # |============================================================ TRAINING LOOP ============================================================|
@@ -331,10 +343,11 @@ def distillation(args):
         new_best = False
         test_stats = {}
         if (
-            not args.train_params.overfit and
-            args.train_params.eval_freq > 0
-            and epoch % args.train_params.eval_freq == 0
-            and epoch > 0
+            not args.train_params.overfit
+            and (
+                epoch == 0
+                or (args.train_params.eval_freq > 0 and epoch % args.train_params.eval_freq == 0)
+            )
         ):
             for test_name, testset in data_loader_test.items():
                 print(f"Testing on {test_name} ...")
@@ -405,7 +418,18 @@ def distillation(args):
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
         print("Training time {}".format(total_time_str))
-    pass
+
+        log_wandb_epoch_distill(
+            args=args,
+            epoch=epoch,
+            train_stats=train_stats,
+            test_stats=test_stats,
+            optimizer=optimizer,
+            is_main_process=global_rank == 0,
+        )
+
+    if args.train_params.use_wandb and global_rank == 0:
+        wandb.finish()
 
 def build_dataset(
     dataset, num_workers, test, batch_size=None, max_num_of_imgs_per_gpu=None
@@ -544,8 +568,8 @@ def train_one_epoch(
         if args.train_params.overfit:
             if args.train_params.save_pca_visualization and (epoch % args.train_params.save_pca_visualization_every == 0 or epoch == 0):
                 save_pca_visualization_path = Path(os.path.join(args.output_dir, args.train_params.run_name))
-            else:
-                save_pca_visualization_path = None
+        else:
+            save_pca_visualization_path = None
 
         result = loss_of_one_batch_multi_view(
             batch,
@@ -582,9 +606,6 @@ def train_one_epoch(
         if (data_iter_step + 1) % accum_iter == 0:
             optimizer.zero_grad()
 
-        del loss
-        del batch
-
         metric_logger.update(loss=loss_value, **loss_details)
 
         # Aggiorna i LR per ogni submodule se disponibili i mapping
@@ -596,7 +617,18 @@ def train_one_epoch(
                 log_lr = optimizer.param_groups[group_idx]["lr"]
                 metric_logger.update(**{lr_name: log_lr})
 
-    # # Gather the stats from all processes
+        log_wandb_batch_distill(
+            args=args,
+            data_iter_step=data_iter_step,
+            loss_value=loss_value,
+            loss_details=loss_details,
+            is_main_process=train_tools.get_rank() == 0,
+        )
+        
+        del loss
+        del batch
+
+    # Gather the stats from all processes
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 @torch.no_grad()

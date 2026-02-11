@@ -74,6 +74,77 @@ def branch_wandb(old_id: str, new_name: str, start_epoch: int = 0) -> str:
     new.finish()
     return new.id
 
+def log_wandb_epoch_distill(
+    args,
+    epoch: int,
+    train_stats: dict,
+    test_stats: dict,
+    optimizer,
+    is_main_process: bool,
+) -> None:
+    if not (getattr(args.train_params, "use_wandb", False) and is_main_process):
+        return
+
+    log_dict = {
+        "epoch": epoch + 1,
+        # Encoder metrics (train)
+        "per_epoch/train_semantic_loss": train_stats.get("loss_sem_dist", 0.0),
+        "per_epoch/train_consistency_loss": train_stats.get("loss_consistency", 0.0),
+        # Total loss and metrics (train)
+        "per_epoch/train_loss": train_stats.get("loss", 0.0),
+        "per_epoch/lr": optimizer.param_groups[0]["lr"],
+    }
+
+    if test_stats:
+        dataset_stats = [
+            stats
+            for name, stats in test_stats.items()
+            if name != "Average Test Loss Median" and isinstance(stats, dict)
+        ]
+        if dataset_stats:
+            avg_test_sem = float(
+                np.mean([s.get("loss_sem_dist_avg", 0.0) for s in dataset_stats])
+            )
+            avg_test_cons = float(
+                np.mean([s.get("loss_consistency_avg", 0.0) for s in dataset_stats])
+            )
+            avg_test_loss = float(
+                np.mean([s.get("loss_avg", 0.0) for s in dataset_stats])
+            )
+
+            log_dict.update({
+                # Encoder metrics (val)
+                "per_epoch/test_semantic_loss": avg_test_sem,
+                "per_epoch/test_consistency_loss": avg_test_cons,
+                # Total loss (val)
+                "per_epoch/val_loss": avg_test_loss,
+            })
+
+    wandb.log(log_dict)
+
+def log_wandb_batch_distill(
+    args,
+    data_iter_step: int,
+    loss_value: float,
+    loss_details: dict,
+    is_main_process: bool,
+) -> None:
+    if not (getattr(args.train_params, "use_wandb", False) and is_main_process):
+        return
+
+    if data_iter_step % args.train_params.print_freq != 0:
+        return
+
+    log_dict = {
+        # ===== LOSS TOTALE =====
+        "per_batch/total_loss": float(loss_value),
+
+        # ===== ENCODER (semantic_loss + consistency_loss) =====
+        "per_batch/semantic_loss": float(loss_details.get("loss_sem_dist", 0.0)),
+        "per_batch/consistency_loss": float(loss_details.get("loss_consistency", 0.0)),
+    }
+    wandb.log(log_dict)
+
 def resize_to_64x64(feat: torch.Tensor) -> torch.Tensor:
     # feat: (B, C, H, W)
     H, W = feat.shape[-2:]

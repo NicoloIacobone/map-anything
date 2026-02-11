@@ -1,5 +1,6 @@
-run_name: "overfit_1_scene_10k_epochs"
-epochs: 10000
+run_name: "test_wandb"
+use_wandb: true
+epochs: 100
 start_epoch: 0
 batch_size: null
 accum_iter: 1
@@ -66,11 +67,11 @@ decoder_iou_weight: null
 amg_points_per_side: null
 
 # ========== OVERFIT STRATEGY ===========
-overfit: true
+overfit: false
 save_pca_visualization_every: 100
 
 # ========== TESTING STRATEGY ===========
-eval_freq: 1
+eval_freq: 10
 save_pca_visualization: true
 freeze_val_samples_across_all_epochs: true # Freeze the validation samples across all epochs (always use the same val samples)
 
@@ -78,7 +79,7 @@ freeze_val_samples_across_all_epochs: true # Freeze the validation samples acros
 seed: 0
 disable_cudnn_benchmark: true
 print_freq: 1
-print_trainable: true
-print_optim_params: true
+print_trainable: false
+print_optim_params: false
 amp: true
 amp_dtype: "bf16"
