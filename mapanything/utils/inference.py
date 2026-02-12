@@ -120,8 +120,9 @@ def loss_of_one_batch_multi_view(
     with torch.autocast("cuda", enabled=bool(use_amp), dtype=amp_dtype):
         preds = model(batch)
         # ========= EXTRACT STUDENT FEATURES AND CONFIDENCE IF AVAILABLE =========
-        if hasattr(model, "dpt_feature_head_2"):
-            base_model = model.module if hasattr(model, "module") else model
+        # 1. Ottieni PRIMA il modello base (gestisce sia Single-GPU che DDP)
+        base_model = model.module if hasattr(model, "module") else model
+        if hasattr(base_model, "dpt_feature_head_2"):
             # Estrai le feature (256 canali)
             student_features = getattr(base_model, "_last_feat2_8x", None)
             # for i in range(student_features.shape[0]):

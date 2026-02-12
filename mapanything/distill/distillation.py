@@ -430,6 +430,7 @@ def distillation(args):
 
     if args.train_params.use_wandb and global_rank == 0:
         wandb.finish()
+    
 
 def build_dataset(
     dataset, num_workers, test, batch_size=None, max_num_of_imgs_per_gpu=None
