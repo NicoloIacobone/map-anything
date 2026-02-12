@@ -1,6 +1,6 @@
-run_name: "test_multi_view_multi_scene"
+run_name: "test_consistency_loss_workstation"
 use_wandb: true
-epochs: 100
+epochs: 10000
 start_epoch: 0
 batch_size: null
 accum_iter: 1
@@ -67,8 +67,8 @@ decoder_iou_weight: null
 amg_points_per_side: null
 
 # ========== OVERFIT STRATEGY ===========
-overfit: false
-save_pca_visualization_every: 1
+overfit: true
+save_pca_visualization_every: 50
 
 # ========== TESTING STRATEGY ===========
 eval_freq: 10

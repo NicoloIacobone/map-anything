@@ -5204,16 +5204,8 @@ class SemanticConsistencyLoss(BaseCriterion):
             - 'pts3d_cam': (B, H, W, 3) (Camera Coordinates) - REQUIRED for Occlusion Check
         """
         # self.test_identity_projection(self.project_to_view)  # Run test on projection function
-        # for index in range(len(batch)):
-        #     print("img shape:", batch[index]['img'].shape)
-        #     print("teacher features shape:", batch[index]['semantics'].shape)
-        #     print("student features shape:", preds[index]['semantics'].shape)
-        #     print("student confidence shape:", preds[index]['sem_conf'].shape)
-        #     print("gt pts3d shape:", batch[index]['pts3d'].shape)
-            # if index < len(batch) - 1:
-            #     print(batch[index]['pts3d'] - batch[index + 1]['pts3d'])
 
-        # "pts3d" and "pts3d_cam" -> 1, 518, 392, 3
+        # "pts3d" and "pts3d_cam" -> 1, 512, 512, 3
         n_views = len(batch)
         distillation_losses = []
         consistency_losses = []
@@ -5236,264 +5228,128 @@ class SemanticConsistencyLoss(BaseCriterion):
             # ==========================
             pred_sem = preds[i]["semantics"] # 1, 256, 64, 64
             gt_sem = batch[i]["semantics"] # 1, 256, 64, 64
-            # pca_visualization(pred_sem, gt_sem)
-            
-            # ===================== DEBUG CHAT ==========================
-            # print("pred_sem.norm(dim=1).mean(): ", pred_sem.norm(dim=1).mean())
-            # print("pred_sem.flatten(2).std(dim=2).mean: " ,pred_sem.flatten(2).std(dim=2).mean)
-            # print("pred_sem.var(dim(0,2,3)).mean(): " ,pred_sem.var(dim=(0,2,3)).mean())
-            # ===========================================================
-            original = False
-            # assert pred_sem.shape == gt_sem.shape
-            # assert pred_sem.dim() == 4  # B,C,H,W
 
-            if original:
-                pred_norm = F.normalize(pred_sem, dim=1) # 1, 256, 64, 64
-                gt_norm = F.normalize(gt_sem, dim=1) # 1, 256, 64, 64
+            pred_norm = F.normalize(pred_sem, dim=1) # 1, 256, 64, 64
+            gt_norm = F.normalize(gt_sem, dim=1) # 1, 256, 64, 64
 
-                loss_2d = 1.0 - torch.sum(pred_norm * gt_norm, dim=1) # 1, 64, 64 - per pixel loss
-                # loss_2d = 1.0 - torch.sum(pred_sem * gt_sem, dim=1) # 1, 64, 64 - per pixel loss
+            loss_2d = 1.0 - torch.sum(pred_norm * gt_norm, dim=1) # 1, 64, 64 - per pixel loss
 
-                if loss_2d.numel() > 0:
-                    distillation_losses.append(loss_2d.mean()) # per view loss
-                else:
-                    distillation_losses.append(torch.tensor(0.0, device=pred_sem.device, requires_grad=True))
+            if loss_2d.numel() > 0:
+                distillation_losses.append(loss_2d.mean()) # per view loss
             else:
-                mse_weight = 0.5
-                cosine_weight = 0.5
-                normalize = False
+                distillation_losses.append(torch.tensor(0.0, device=pred_sem.device, requires_grad=True))
 
-                if normalize:
-                    student_norm = F.normalize(pred_sem, dim=1)
-                    teacher_norm = F.normalize(gt_sem, dim=1)
-                else:
-                    student_norm = pred_sem
-                    teacher_norm = gt_sem
-
-                cos_map = F.cosine_similarity(student_norm, teacher_norm, dim=1)
-                cos_sim_per_image = cos_map.flatten(1).mean(dim=1)
-                cos_sim = cos_sim_per_image.mean()
-
-                cos_loss = 1.0 - cos_sim
-
-                mse_per_sample = F.mse_loss(
-                    student_norm, 
-                    teacher_norm, 
-                    reduction='none'  # (B, C, H, W)
-                ).mean(dim=(1, 2, 3))  # Media su (C,H,W) → (B,)
-
-                mse_loss = mse_per_sample.mean()  # Media su batch → scalare
-
-                total_loss = mse_weight * mse_loss + cosine_weight * cos_loss
-
-                distillation_losses.append(total_loss)
-
-        total_dist = sum(distillation_losses) / n_views      # Eq. 2
-        loss = (self.dist_w * total_dist)
-        details["loss_sem_dist"] = total_dist
-        return loss, details
             # ==========================
-            # DEBUGGING BLOCK
+            # PART 2: Multi-View Consistency
             # ==========================
-            # if i == 0: 
+            # 1. GEOMETRIA GT (Anchor) - vengono fatti due permute perché F.interpolate lavora su (B, C, H, W), quindi il primo è per la funzione, il secondo per ritornare all'origine
+            gt_pts_world_high = batch[i]["pts3d"].permute(0, 3, 1, 2) # -> 1, 3, 512, 512
+            # anchor_pts_world contiene la pointcloud in WORLD COORDINATES alla risoluzione semantica (64x64)
+            anchor_pts_world = F.interpolate(gt_pts_world_high, size=img_size_sem, mode='nearest').permute(0, 2, 3, 1) # -> 1, 64, 64, 3
 
-            #     print(f"\n[DEBUG ANALYSIS] View {i}")
-                
-            #     # 1. Analisi Features Studente
-            #     # Calcola deviazione standard lungo i canali (quanto è ricco il vettore?)
-            #     feat_std_ch = pred_sem.std(dim=1).mean().item()
-            #     # Calcola deviazione standard spaziale (l'immagine è piatta?)
-            #     feat_std_spatial = pred_sem.std(dim=(2,3)).mean().item()
-                
-            #     print(f"  > Student Features Stats:")
-            #     print(f"    Min: {pred_sem.min().item():.4f} | Max: {pred_sem.max().item():.4f}")
-            #     print(f"    Mean: {pred_sem.mean().item():.4f}")
-            #     print(f"    Std (Channel-wise): {feat_std_ch:.6f} (Se ~0, il vettore è vuoto)")
-            #     print(f"    Std (Spatial-wise): {feat_std_spatial:.6f} (Se ~0, l'immagine è grigia/piatta)")
+            # Features (Student Features)
+            anchor_feat = preds[i]["semantics"] # 1, 256, 64, 64
 
-            #     # 2. Analisi Confidence
-            #     conf = preds[i]["sem_conf"]
-            #     print(f"  > Student Confidence Stats:")
-            #     print(f"    Min: {conf.min().item():.4f} | Max: {conf.max().item():.4f} | Mean: {conf.mean().item():.4f}")
-                
-            #     # 3. Analisi Teacher (per confronto)
-            #     if batch[i].get("semantics") is not None:
-            #         t_feat = batch[i]["semantics"]
-            #         t_std_spatial = t_feat.std(dim=(2,3)).mean().item()
-            #         print(f"  > Teacher Features Spatial Std: {t_std_spatial:.6f} (Dovrebbe essere alto)")
-            # ==================================================================================================================================
+            # Confidence (Student Confidence) - Necessaria ora per l'inizializzazione
+            anchor_conf = preds[i]["sem_conf"] # 1, 1, 64, 64
 
-            # # Dataset Valid Mask
-            # dataset_mask = batch[i].get("valid_mask", None) # 1, 518, 392
-
-            # import os
-            # import matplotlib.pyplot as plt
-            # import numpy as np
-
-            # # Salva dataset_mask (valid mask) come immagine
-            # output_path = "/scratch2/nico/distillation/test_visivo"
-            # os.makedirs(output_path, exist_ok=True)
-
-            # if dataset_mask is not None:
-            #     # Genera timestamp comune per immagine e maschera
-            #     import time
-            #     timestamp = int(time.time() * 1000)  # Millisecondi per maggiore unicità
-                
-            #     # Converti in numpy
-            #     mask_np = dataset_mask[0].cpu().numpy()  # Prendi primo elemento del batch
-            #     img_to_save = batch[i]["img"][0].cpu().numpy().transpose(1, 2, 0)  # H, W, 3
-                
-            #     # Salva maschera
-            #     plt.figure(figsize=(10, 8))
-            #     plt.imshow(mask_np, cmap='gray')
-            #     plt.title(f'Valid Mask - View {i}')
-            #     plt.colorbar()
-            #     plt.savefig(os.path.join(output_path, f'valid_mask_view{i}_{timestamp}.png'), dpi=150, bbox_inches='tight')
-            #     plt.close()
-                
-            #     # Salva immagine
-            #     # Salva immagine
-            #     plt.figure(figsize=(10, 8))
-            #     img_to_save = batch[i]["img"][0].cpu().numpy().transpose(1, 2, 0)
-
-            #     # DENORMALIZZA (ImageNet standard)
-            #     mean = np.array([0.485, 0.456, 0.406])
-            #     std = np.array([0.229, 0.224, 0.225])
-            #     img_to_save = img_to_save * std + mean
-            #     img_to_save = np.clip(img_to_save, 0, 1)
-
-            #     plt.imshow(img_to_save)
-            #     plt.title(f'Image - View {i}')
-            #     plt.axis('off')
-            #     plt.savefig(os.path.join(output_path, f'image_view{i}_{timestamp}.png'), dpi=150, bbox_inches='tight')
-            #     plt.close()
-
-        #     dataset_mask = None
-
-        #     if dataset_mask is not None:
-        #         if dataset_mask.shape[-2:] != img_size_sem:
-        #             dataset_mask = F.interpolate(dataset_mask.float().unsqueeze(1), size=img_size_sem, mode='nearest').bool().squeeze(1) # 1, 64, 64
+            # --- UNITE PAPER LOGIC: ACCUMULATORS ---
+            # POINT 2 IMPLEMENTATO: Inizializziamo con l'Anchor stesso.
+            # Il target sarà la media di (Anchor + Vicini).
+            sum_weighted_feat = anchor_feat * anchor_conf
+            sum_conf = anchor_conf
             
-        #     # if dataset_mask is not None: # put 0 to invalid pixels
-        #     #     if dataset_mask.ndim == 3: loss_2d = loss_2d[dataset_mask]
-        #     #     elif dataset_mask.ndim == 4: loss_2d = loss_2d[dataset_mask.squeeze(1)]
-
-        #     # ==========================
-        #     # PART 2: Multi-View Consistency
-        #     # ==========================
+            # Maschera per tracciare i pixel che hanno trovato almeno un match valido ALTRUI
+            # (Utile per sapere dove abbiamo effettivamente overlap multi-view)
+            has_matches_mask = torch.zeros((B, H_sem, W_sem), device=anchor_feat.device, dtype=torch.bool)
             
-        #     # 1. GEOMETRIA GT (Anchor) - vengono fatti due permute perché F.interpolate lavora su (B, C, H, W), quindi il primo è per la funzione, il secondo per ritornare all'origine
-        #     gt_pts_world_high = batch[i]["pts3d"].permute(0, 3, 1, 2) # -> 1, 3, 518, 392
-        #     # anchor_pts_world contiene la pointcloud in WORLD COORDINATES alla risoluzione semantica (64x64)
-        #     anchor_pts_world = F.interpolate(gt_pts_world_high, size=img_size_sem, mode='nearest').permute(0, 2, 3, 1) # -> 1, 64, 64, 3
+            # Loop over other views to find correspondences
+            for j in range(n_views):
+                if i == j: continue
 
-        #     # Features (Student Features)
-        #     anchor_feat = preds[i]["semantics"] # 1, 256, 64, 64
+                # Target Data (Student Features)
+                tgt_feat = preds[j]["semantics"] # 1, 256, 64, 64
+                tgt_conf = preds[j]["sem_conf"] # 1, 1, 512, 512
+                if tgt_conf.shape[2:] != img_size_sem:
+                    tgt_conf = F.interpolate(tgt_conf, size=img_size_sem, mode='bilinear', align_corners=False) # 1, 1, 64, 64
+                
+                # 1. Project Anchor (GT) -> Target View j
+                grid, z_proj, fov_mask = self.project_to_view(
+                    anchor_pts_world, # 1, 64, 64, 3
+                    batch[j]["camera_pose"],  # 1, 4, 4
+                    batch[j]["camera_intrinsics"], # 1, 3, 3
+                    img_size_orig # 512, 512
+                )
+                # grid -> 1, 64, 64, 2 -> se il punto nella view 0 si trova in coordinate 0,0 e nella view 1 si trova in coordinate 32, 32, grid in 0,0 conterrà 32,32 (per semplificare non considero normalizzazione)
+                # z_proj -> 1, 1, 64, 64 -> le profondità dei punti visti dalla camera j, se > 0 sono davanti alla camera, altrimenti dietro
+                # fov_mask -> 1, 1, 64, 64 -> maschera booleana che indica se il punto proiettato cade all'interno del FOV della camera j e se è davanti alla camera
+                
+                # 2. Sample Features
+                sampled_feat = F.grid_sample(tgt_feat, grid, align_corners=True, padding_mode="border") # 1, 256, 64, 64 -> campioniamo le feature della view j nei punti proiettati dalla view i
+                sampled_conf = F.grid_sample(tgt_conf, grid, align_corners=True, padding_mode="border") # 1, 1, 64, 64 -> campioniamo le confidence della view j nei punti proiettati dalla view i
 
-        #     # Confidence (Student Confidence) - Necessaria ora per l'inizializzazione
-        #     anchor_conf = preds[i]["sem_conf"] # 1, 1, 518, 392
+                # 3. Occlusion Check (GT Depth)
+                gt_pts_cam_j_high = batch[j]["pts3d_cam"].permute(0, 3, 1, 2)
+                gt_pts_cam_j_low = F.interpolate(gt_pts_cam_j_high, size=img_size_sem, mode='nearest').permute(0, 2, 3, 1)
+                tgt_depth_map = gt_pts_cam_j_low[..., 2].unsqueeze(1).permute(0, 1, 2, 3) # 1, 1, 64, 64 -> profondità dei punti nella view j
+                # tgt_depth_map rappresenta la profondità dei punti nella view j, riorganizzata per il campionamento
+                sampled_tgt_depth = F.grid_sample(tgt_depth_map, grid, align_corners=True, padding_mode="border") # 1, 1, 64, 64 -> profondità campionata nei punti proiettati dalla view i
+                
+                # Soglia 0.5m
+                occ_mask = torch.abs(z_proj - sampled_tgt_depth) < 0.5 # 1, 1, 64, 64 -> maschera booleana che indica se il punto non è occluso (differenza di profondità < soglia)
+                
+                valid_mask = fov_mask & occ_mask # 1, 1, 64, 64 -> maschera booleana finale che indica se il punto è valido (dentro FOV e non occluso)
+                
+                # Update global match mask (traccia solo i vicini validi)
+                has_matches_mask = has_matches_mask | valid_mask.squeeze(1) # 1, 64, 64 -> aggiorniamo la maschera globale
+                
+                # Accumulate
+                s_feat = sampled_feat * valid_mask.float() # 1, 256, 64, 64 -> azzeriamo le feature non valide
+                s_conf = sampled_conf * valid_mask.float() # 1, 1, 64, 64 -> azzeriamo le confidence non valide
+                
+                sum_weighted_feat = sum_weighted_feat + (s_feat * s_conf) # Weighted Sum
+                sum_conf = sum_conf + s_conf # Sum of Confidences
 
-        #     # --- UNITE PAPER LOGIC: ACCUMULATORS ---
-        #     # POINT 2 IMPLEMENTATO: Inizializziamo con l'Anchor stesso.
-        #     # Il target sarà la media di (Anchor + Vicini).
-        #     sum_weighted_feat = anchor_feat * anchor_conf
-        #     sum_conf = anchor_conf
+            # --- CALCOLO TARGET E LOSS ---
             
-        #     # Maschera per tracciare i pixel che hanno trovato almeno un match valido ALTRUI
-        #     # (Utile per sapere dove abbiamo effettivamente overlap multi-view)
-        #     has_matches_mask = torch.zeros((B, H_sem, W_sem), device=anchor_feat.device, dtype=torch.bool)
+            # Mean Consensus (Weighted Average of Anchor + Neighbors)
+            mean_feat = sum_weighted_feat / (sum_conf + 1e-6) # 1, 256, 64, 64 -> media pesata delle feature
+            mean_feat = F.normalize(mean_feat, p=2, dim=1) # Normalizziamo
             
-        #     # Loop over other views to find correspondences
-        #     for j in range(n_views):
-        #         if i == j: continue
+            # STOP GRADIENT
+            target_feat = mean_feat.detach() # 1, 256, 64, 64 -> nograd come nella formula
 
-        #         # Target Data (Student Features)
-        #         tgt_feat = preds[j]["semantics"] # 1, 256, 64, 64
-        #         tgt_conf = preds[j]["sem_conf"] # 1, 1, 518, 392
-        #         if tgt_conf.shape[2:] != img_size_sem:
-        #             tgt_conf = F.interpolate(tgt_conf, size=img_size_sem, mode='bilinear', align_corners=False) # 1, 1, 64, 64
-                
-        #         # 1. Project Anchor (GT) -> Target View j
-        #         grid, z_proj, fov_mask = self.project_to_view(
-        #             anchor_pts_world, # 1, 64, 64, 3
-        #             batch[j]["camera_pose"],  # 1, 4, 4
-        #             batch[j]["camera_intrinsics"], # 1, 3, 3
-        #             img_size_orig # 518, 392
-        #         )
-        #         # grid -> 1, 64, 64, 2 -> se il punto nella view 0 si trova in coordinate 0,0 e nella view 1 si trova in coordinate 32, 32, grid in 0,0 conterrà 32,32 (per semplificare non considero normalizzazione)
-        #         # z_proj -> 1, 1, 64, 64 -> le profondità dei punti visti dalla camera j, se > 0 sono davanti alla camera, altrimenti dietro
-        #         # fov_mask -> 1, 1, 64, 64 -> maschera booleana che indica se il punto proiettato cade all'interno del FOV della camera j e se è davanti alla camera
-                
-        #         # 2. Sample Features
-        #         sampled_feat = F.grid_sample(tgt_feat, grid, align_corners=True, padding_mode="border") # 1, 256, 64, 64 -> campioniamo le feature della view j nei punti proiettati dalla view i
-        #         sampled_conf = F.grid_sample(tgt_conf, grid, align_corners=True, padding_mode="border") # 1, 1, 64, 64 -> campioniamo le confidence della view j nei punti proiettati dalla view i
-
-        #         # 3. Occlusion Check (GT Depth)
-        #         gt_pts_cam_j_high = batch[j]["pts3d_cam"].permute(0, 3, 1, 2)
-        #         gt_pts_cam_j_low = F.interpolate(gt_pts_cam_j_high, size=img_size_sem, mode='nearest').permute(0, 2, 3, 1)
-        #         tgt_depth_map = gt_pts_cam_j_low[..., 2].unsqueeze(1).permute(0, 1, 2, 3) # 1, 1, 64, 64 -> profondità dei punti nella view j
-        #         # tgt_depth_map rappresenta la profondità dei punti nella view j, riorganizzata per il campionamento
-        #         sampled_tgt_depth = F.grid_sample(tgt_depth_map, grid, align_corners=True, padding_mode="border") # 1, 1, 64, 64 -> profondità campionata nei punti proiettati dalla view i
-                
-        #         # Soglia 0.5m
-        #         occ_mask = torch.abs(z_proj - sampled_tgt_depth) < 0.5 # 1, 1, 64, 64 -> maschera booleana che indica se il punto non è occluso (differenza di profondità < soglia)
-                
-        #         valid_mask = fov_mask & occ_mask # 1, 1, 64, 64 -> maschera booleana finale che indica se il punto è valido (dentro FOV e non occluso)
-                
-        #         # Update global match mask (traccia solo i vicini validi)
-        #         has_matches_mask = has_matches_mask | valid_mask.squeeze(1) # 1, 64, 64 -> aggiorniamo la maschera globale
-                
-        #         # Accumulate
-        #         s_feat = sampled_feat * valid_mask.float() # 1, 256, 64, 64 -> azzeriamo le feature non valide
-        #         s_conf = sampled_conf * valid_mask.float() # 1, 1, 64, 64 -> azzeriamo le confidence non valide
-                
-        #         sum_weighted_feat = sum_weighted_feat + (s_feat * s_conf) # Weighted Sum
-        #         sum_conf = sum_conf + s_conf # Sum of Confidences
-
-        #     # --- CALCOLO TARGET E LOSS ---
+            # Consistency Loss
+            sim_i = torch.sum(F.normalize(anchor_feat, p=2, dim=1) * target_feat, dim=1) # 1, 64, 64 - cosine similarity
+            loss_i = 1.0 - sim_i # 1, 64, 64 - per pixel loss
             
-        #     # Mean Consensus (Weighted Average of Anchor + Neighbors)
-        #     mean_feat = sum_weighted_feat / (sum_conf + 1e-6) # 1, 256, 64, 64 -> media pesata delle feature
-        #     mean_feat = F.normalize(mean_feat, p=2, dim=1) # Normalizziamo
+            # Filtering Finale
+            # Calcoliamo la loss SOLO su pixel che hanno overlap multi-view.
+            # Se calcolassimo la loss anche dove has_matches_mask è False,
+            # staremmo confrontando l'Anchor con se stesso (Target = Anchor), Loss = 0.
+            final_mask = has_matches_mask # 1, 64, 64 - manteniamo solo pixel con match validi
             
-        #     # STOP GRADIENT
-        #     target_feat = mean_feat.detach() # 1, 256, 64, 64 -> nograd come nella formula
+            print(f"[DEBUG] View {i} - Consistency Valid Pixels: {final_mask.sum().item()}/{final_mask.numel()} ({final_mask.sum()/final_mask.numel():.2%})")
 
-        #     # Consistency Loss
-        #     sim_i = torch.sum(F.normalize(anchor_feat, p=2, dim=1) * target_feat, dim=1) # 1, 64, 64 - cosine similarity
-        #     loss_i = 1.0 - sim_i # 1, 64, 64 - per pixel loss
-            
-        #     # Filtering Finale
-        #     # Calcoliamo la loss SOLO su pixel che hanno overlap multi-view.
-        #     # Se calcolassimo la loss anche dove has_matches_mask è False,
-        #     # staremmo confrontando l'Anchor con se stesso (Target = Anchor), Loss = 0.
-        #     final_mask = has_matches_mask # 1, 64, 64 - manteniamo solo pixel con match validi
-        #     if dataset_mask is not None:
-        #         if dataset_mask.ndim == 3: final_mask = final_mask & dataset_mask
-        #         else: final_mask = final_mask & dataset_mask.squeeze(1)
-            
-        #     print(f"[DEBUG] View {i} - Consistency Valid Pixels: {final_mask.sum().item()}/{final_mask.numel()} ({final_mask.sum()/final_mask.numel():.2%})")
+            loss_i = loss_i[final_mask]
 
-        #     loss_i = loss_i[final_mask]
+            if loss_i.numel() > 0:
+                cons_mean = loss_i.mean() # per view consistency loss 
+                consistency_losses.append(cons_mean)
+                print(f"[DEBUG] View {i} - Consistency Loss: {cons_mean.item():.4f}")
+            else:
+                consistency_losses.append(torch.tensor(0.0, device=anchor_pts_world.device, requires_grad=True))
 
-        #     if loss_i.numel() > 0:
-        #         cons_mean = loss_i.mean() # per view consistency loss 
-        #         consistency_losses.append(cons_mean)
-        #         print(f"[DEBUG] View {i} - Consistency Loss: {cons_mean.item():.4f}")
-        #     else:
-        #         consistency_losses.append(torch.tensor(0.0, device=anchor_pts_world.device, requires_grad=True))
-
-        # # --- AGGREGATE LOSSES ---
+        # --- AGGREGATE LOSSES ---
         total_dist = sum(distillation_losses) / n_views      # Eq. 2
-        # total_cons = sum(consistency_losses) / n_views     # Eq. 4, 5
+        total_cons = sum(consistency_losses) / n_views     # Eq. 4, 5
         
-        # print(f"[DEBUG] TOTAL Dist: {total_dist.item():.4f} | TOTAL Cons: {total_cons.item():.4f}")
+        print(f"[DEBUG] TOTAL Dist: {total_dist.item():.4f} | TOTAL Cons: {total_cons.item():.4f}")
         
-        # loss = (self.dist_w * total_dist) + (self.cons_w * total_cons)
-        loss = (self.dist_w * total_dist)
+        loss = (self.dist_w * total_dist) + (self.cons_w * total_cons)
         
         details["loss_sem_dist"] = total_dist
-        # details["loss_sem_cons"] = total_cons
+        details["loss_sem_cons"] = total_cons
 
         return loss, details
 

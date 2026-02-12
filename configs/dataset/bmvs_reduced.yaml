@@ -14,16 +14,16 @@ train:
 
 # Train Resolution
 # resolution_train: ${dataset.resolution_options.518_many_ar} <- original, conteneva molte risoluzioni diverse
-resolution_train: ${dataset.resolution_options.512_1_00_ar}
-# ora solo 512x512
+resolution_train: ${dataset.resolution_options.518_1_00_ar}
+# ora solo 518x518
 
 # Validation Resolution
 # resolution_val_blendedmvs: ${dataset.resolution_options.518_1_33_ar} <- original, conteneva molte risoluzioni diverse
-resolution_val_blendedmvs: ${dataset.resolution_options.512_1_00_ar}
+resolution_val_blendedmvs: ${dataset.resolution_options.518_1_00_ar}
 
 # Training Set
 train_dataset:
-  "+ 200 @ ${dataset.blendedmvs_wai.train.dataset_str}"
+  "+ 2 @ ${dataset.blendedmvs_wai.train.dataset_str}"
 
 # Validation Set
 test_dataset:

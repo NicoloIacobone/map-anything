@@ -23,4 +23,4 @@ dataset_metadata_dir: ${mapanything_dataset_metadata_dir}
 variable_num_views: ${dataset.train.variable_num_views}
 num_views: ${dataset.num_views}
 covisibility_thres: 0.50
-overfit_num_sets: 50
+overfit_num_sets: 1

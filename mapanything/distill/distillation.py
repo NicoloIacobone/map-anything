@@ -566,11 +566,10 @@ def train_one_epoch(
             teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
         # ==============================================================================================
 
+        save_pca_visualization_path = None
         if args.train_params.overfit:
             if args.train_params.save_pca_visualization and (epoch % args.train_params.save_pca_visualization_every == 0 or epoch == 0):
                 save_pca_visualization_path = Path(os.path.join(args.output_dir, args.train_params.run_name))
-        else:
-            save_pca_visualization_path = None
 
         result = loss_of_one_batch_multi_view(
             batch,

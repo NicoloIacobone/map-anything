@@ -4,7 +4,7 @@ defaults:
   - dataset: bmvs_reduced
   - loss: distillation
   - train_params: distillation
-  - distributed: default
+  - distributed: disabled
   - wandb_config: distillation
   - _self_
 
