@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=test_cluster_2
+#SBATCH --job-name=test_cluster_3
 #
 # Specify output file.
-#SBATCH --output=test_cluster_2_%j.log
+#SBATCH --output=test_cluster_3_%j.log
 #
 # Specify error file.
-#SBATCH --error=test_cluster_2_%j.err
+#SBATCH --error=test_cluster_3_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -51,7 +51,7 @@ echo "Starting MapAnything distillation..."
 
 export WANDB_API_KEY=$(cat "/cluster/home/niacobone/.config/wandb/wandb_api_key.txt")
 
-python distill.py machine=cluster train_params.run_name=test_cluster_2
+python distill.py machine=cluster train_params.run_name=test_cluster_3
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
