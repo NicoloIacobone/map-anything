@@ -589,7 +589,7 @@ def train_one_epoch(
             loss = loss * (
                 2 / n_views
             )  # scale the loss relative to the number of views (base is 2 views)
-        loss_value = float(loss) # questo serve per il logging
+        loss_value = float(loss.detach()) # questo serve per il logging
 
         # Scale the loss by the number of gradient accumulation iterations
         loss /= accum_iter
