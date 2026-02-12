@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=overfit_1_scene_10k_epochs
+#SBATCH --job-name=test_cluster_2
 #
 # Specify output file.
-#SBATCH --output=overfit_1_scene_10k_epochs%j.log
+#SBATCH --output=test_cluster_2_%j.log
 #
 # Specify error file.
-#SBATCH --error=overfit_1_scene_10k_epochs%j.err
+#SBATCH --error=test_cluster_2_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -49,7 +49,7 @@ echo "Activated Python venv: $(which python)"
 cd /cluster/scratch/niacobone/map-anything/scripts
 echo "Starting MapAnything distillation..."
 
-python distill.py machine=cluster train_params.run_name=test_cluster
+python distill.py machine=cluster train_params.run_name=test_cluster_2
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
