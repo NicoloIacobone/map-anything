@@ -1,5 +1,5 @@
-run_name: "test_consistency_loss_workstation"
-use_wandb: true
+run_name: "debug_consistency_loss"
+use_wandb: false
 epochs: 10000
 start_epoch: 0
 batch_size: null
