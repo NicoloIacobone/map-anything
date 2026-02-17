@@ -46,7 +46,7 @@ source /cluster/scratch/niacobone/map-anything/myenv/bin/activate
 echo "Activated Python venv: $(which python)"
 
 # Execute
-cd /cluster/scratch/niacobone/map-anything/scripts
+cd /cluster/scratch/niacobone/map-anything
 echo "Starting MapAnything distillation..."
 
 python extract_pca_visualization.py \
