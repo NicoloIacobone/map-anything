@@ -58,7 +58,7 @@ from nico.utils import *
 
 from sam2_minimal.modeling.sam.prompt_encoder import PromptEncoder
 from sam2_minimal.modeling.sam.mask_decoder import MaskDecoder
-from sam2_builder import (
+from sam2_minimal.sam2_builder import (
     load_sam2_feature_extractor,
     load_sam2_teacher_prompt_and_decoder,
     build_sam_mask_decoder,
