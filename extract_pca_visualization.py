@@ -33,9 +33,11 @@ def load_model_with_checkpoint(checkpoint_path: str, device: torch.device):
     
     # Carica modello base
     model = MapAnything.from_pretrained(
-        "Trellis3D/map_anything",
-        torch_dtype=torch.float32,
-    ).to(device)
+            "facebook/map-anything",
+            revision="562de9ff7077addd5780415661c5fb031eb8003e",
+            strict=False,
+            # local_files_only=True,
+        ).to(device)
     
     print(f"[INFO] Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
     

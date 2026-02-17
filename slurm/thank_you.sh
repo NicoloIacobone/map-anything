@@ -1,13 +1,13 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=Thank_You
+#SBATCH --job-name=distillation_backup
 #
 # Specify output file.
-#SBATCH --output=Thank_You_%j.log
+#SBATCH --output=distillation_backup_%j.log
 #
 # Specify error file.
-#SBATCH --error=Thank_You_%j.err
+#SBATCH --error=distillation_backup_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
@@ -49,10 +49,7 @@ echo "Activated Python venv: $(which python)"
 cd /cluster/scratch/niacobone/map-anything
 echo "Starting MapAnything distillation..."
 
-python extract_pca_visualization.py \
-    --checkpoint_path /cluster/work/igp_psr/niacobone/distillation/output/SV_03_new/checkpoints/checkpoint_best.pth \
-    --image_path /cluster/work/igp_psr/niacobone/distillation/Thank_You.jpg \
-    --output_dir ./output_pca
+python distillation_backup.py --save_visualizations_encoder
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
