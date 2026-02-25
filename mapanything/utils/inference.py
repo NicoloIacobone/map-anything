@@ -24,7 +24,7 @@ from mapanything.utils.geometry import (
 )
 from mapanything.utils.image import rgb
 
-from nico.utils import pca_visualization
+from nico.utils import pca_visualization, pca_visualization_student_only
 
 # Hard constraints - exactly what users can provide
 ALLOWED_VIEW_KEYS = {
@@ -180,7 +180,8 @@ def loss_of_one_batch_multi_view(
                 preds[i]["sem_conf"] = torch.ones(B, 1, H, W, device=device)
     # ==============================================================================
     if save_pca_visualization_path is not None:
-        pca_visualization(batch, preds, epoch=epoch, output_dir=save_pca_visualization_path)
+        # pca_visualization(batch, preds, epoch=epoch, output_dir=save_pca_visualization_path)
+        pca_visualization_student_only(batch, preds, epoch, save_pca_visualization_path)
     
     with torch.autocast("cuda", enabled=False):
         loss = criterion(batch, preds) if criterion is not None else None

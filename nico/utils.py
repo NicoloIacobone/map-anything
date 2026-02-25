@@ -1493,75 +1493,6 @@ def load_model(
     
     return start_epoch, best_val_loss
 
-# def pca_visualization(student_features, teacher_features):
-#     try:
-#         import matplotlib
-#         matplotlib.use('Agg') # Fondamentale per SSH
-#         import matplotlib.pyplot as plt
-#         from sklearn.decomposition import PCA
-#         import os
-#         import numpy as np
-
-#         output_path = "/scratch2/nico/distillation/test_visivo"
-#         os.makedirs(output_path, exist_ok=True)
-        
-#         # Prendi il primo elemento del batch se necessario
-#         # pred_sem e gt_sem sono attesi come (B, C, H, W) -> prendiamo (C, H, W)
-#         s_tensor = student_features[0] if student_features.ndim == 4 else student_features
-#         t_tensor = teacher_features[0] if teacher_features.ndim == 4 else teacher_features
-
-#         # Converti in NumPy (H, W, C)
-#         s_feat = s_tensor.detach().cpu().permute(1, 2, 0).numpy()
-#         t_feat = t_tensor.detach().cpu().permute(1, 2, 0).numpy()
-
-#         H, W, C = s_feat.shape
-        
-#         # Appiattisci per PCA
-#         s_flat = s_feat.reshape(-1, C)
-#         t_flat = t_feat.reshape(-1, C)
-
-#         # PCA a 3 componenti (RGB)
-#         pca = PCA(n_components=3)
-        
-#         # FIT SOLO SUL TEACHER! 
-#         # Questo garantisce che "rosso" significhi la stessa cosa per entrambi
-#         pca.fit(t_flat)
-
-#         s_pca = pca.transform(s_flat).reshape(H, W, 3)
-#         t_pca = pca.transform(t_flat).reshape(H, W, 3)
-
-#         # Normalizzazione Min-Max indipendente (0-1) per visualizzazione
-#         def normalize_vis(x):
-#             mi, ma = x.min(), x.max()
-#             return (x - mi) / (ma - mi + 1e-8)
-
-#         s_rgb = normalize_vis(s_pca)
-#         t_rgb = normalize_vis(t_pca)
-
-#         # Plotting
-#         fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-        
-#         ax[0].imshow(s_rgb)
-#         ax[0].set_title(f"Teacher Prediction")
-#         ax[0].axis('off')
-        
-#         ax[1].imshow(t_rgb)
-#         ax[1].set_title("Student Target")
-#         ax[1].axis('off')
-
-#         # Salva con nome univoco (usa un timestamp o un contatore globale se disponibile)
-#         import time
-#         timestamp = int(time.time() * 1000)
-#         save_path = os.path.join(output_path, f"vis_debug_{timestamp}.png")
-        
-#         plt.tight_layout()
-#         plt.savefig(save_path)
-#         plt.close(fig)
-#         print(f"[DEBUG VIS] Saved PCA comparison to {save_path}")
-
-#     except Exception as e:
-#         print(f"[DEBUG VIS ERROR] {e}")
-
 def pca_visualization(
     batch: List[Dict[str, Any]],
     preds: List[Dict[str, Any]],
@@ -1719,3 +1650,208 @@ def create_student_original_teacher_side_by_side(
         teacher_dir.mkdir(parents=True, exist_ok=True)
         torch.save(student_embeddings.detach().cpu(), student_dir / f"{image_name}.pt")
         torch.save(teacher_embeddings.detach().cpu(), teacher_dir / f"{image_name}.pt")
+
+def pca_visualization_student_only(
+    batch: List[Dict[str, Any]],
+    preds: List[Dict[str, Any]],
+    epoch: int,
+    output_dir: str,
+):
+    """
+    Salva visualizzazioni PCA in griglia (n righe x 2 colonne) di student features.
+    
+    Usa una BASE PCA COMUNE calcolata da TUTTE le student features messe insieme,
+    permettendo di confrontare se features semanticamente simili (es. lo stesso castello
+    visto da due angoli) hanno gli stessi colori nella visualizzazione PCA.
+    
+    Struttura output:
+        Riga 0: [student_pca_view0] [immagine_view0]
+        Riga 1: [student_pca_view1] [immagine_view1]
+        ...
+        Riga n: [student_pca_viewN] [immagine_viewN]
+    
+    Args:
+        batch: List of input views with images.
+        preds: List of model predictions with student semantics.
+        epoch: Current epoch number.
+        output_dir: Output directory for saving visualizations.
+    """
+    viz_dir = Path(output_dir) / "visualizations_student_only"
+    viz_dir.mkdir(parents=True, exist_ok=True)
+
+    dinov2_mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+    dinov2_std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+
+    # === STEP 1: Raccogli tutte le student features e immagini ===
+    all_student_embeddings = []
+    all_images = []
+    all_view_indices = []
+    all_batch_indices = []
+
+    for view_idx in range(len(batch)):
+        if "semantics" not in preds[view_idx]:
+            continue
+
+        student_cpu = preds[view_idx]["semantics"].detach().cpu()
+        img_tensor = batch[view_idx].get("img")
+        
+        if img_tensor is None:
+            continue
+
+        img_tensor = img_tensor.detach().cpu()
+        img_tensor = img_tensor * dinov2_std + dinov2_mean
+        img_tensor = torch.clamp(img_tensor, 0, 1)
+
+        b = min(student_cpu.shape[0], img_tensor.shape[0])
+        for batch_idx in range(b):
+            all_student_embeddings.append(student_cpu[batch_idx:batch_idx + 1])
+            all_images.append(img_tensor[batch_idx])
+            all_view_indices.append(view_idx)
+            all_batch_indices.append(batch_idx)
+
+    if not all_student_embeddings:
+        print(f"[VIZ] No student embeddings found for visualization")
+        return
+
+    # === STEP 2: Calcola base PCA COMUNE da tutte le features messe insieme ===
+    print(f"[VIZ] Computing common PCA basis from {len(all_student_embeddings)} feature maps...")
+    
+    # Concatena tutte le features per calcolare la PCA basis globale
+    all_feats_list = []
+    for embeddings in all_student_embeddings:
+        feats = embeddings.clone().detach().to("cpu")
+        if feats.dim() == 4:
+            feats = feats[0]  # [C, H, W]
+        feats = feats.permute(1, 2, 0).contiguous().reshape(-1, feats.shape[0])  # [H*W, C]
+        all_feats_list.append(feats)
+
+    all_feats_combined = torch.cat(all_feats_list, dim=0)  # [H*W*N, C]
+    U, S, V = torch.pca_lowrank(all_feats_combined, q=3, center=True)
+    common_basis = {"V": V[:, :3], "mean": all_feats_combined.mean(0)}
+    print(f"[VIZ] Common PCA basis computed (mean shape: {common_basis['mean'].shape}, V shape: {common_basis['V'].shape})")
+
+    # === STEP 3: Helper function per proiettare features con la base comune ===
+    def project_with_basis(embeddings, basis):
+        feats = embeddings.clone().detach().to("cpu")
+        if feats.dim() == 4:
+            feats = feats[0]
+        feats = feats.permute(1, 2, 0).reshape(-1, feats.shape[0])  # [H*W, C]
+        feats_centered = feats - basis["mean"]
+        proj = feats_centered @ basis["V"]  # [H*W, 3]
+        proj -= proj.min(0, keepdim=True)[0]
+        proj /= proj.max(0, keepdim=True)[0].clamp(min=1e-6)
+        H, W = embeddings.shape[-2:]
+        rgb = proj.reshape(H, W, 3)
+        pil_img = Image.fromarray((rgb.cpu().numpy() * 255).astype("uint8"))
+        return pil_img
+
+    # === STEP 4: Crea e salva griglia per ogni scena ===
+    # Raggruppa per batch_idx per creare una griglia per scena
+    from collections import defaultdict
+    scenes = defaultdict(list)
+    for i, (view_idx, batch_idx) in enumerate(zip(all_view_indices, all_batch_indices)):
+        scenes[batch_idx].append(i)
+
+    saved_count = 0
+    for scene_idx, indices in sorted(scenes.items()):
+        try:
+            create_student_grid_pca(
+                student_embeddings_list=[all_student_embeddings[i] for i in indices],
+                images_list=[all_images[i] for i in indices],
+                view_indices=[all_view_indices[i] for i in indices],
+                batch_idx=scene_idx,
+                epoch=epoch,
+                output_dir=str(viz_dir),
+                common_basis=common_basis,
+                project_func=project_with_basis,
+            )
+            saved_count += 1
+        except Exception as e:
+            print(f"[WARN] Failed to create student-only PCA grid for scene {scene_idx}: {e}")
+
+    print(f"[VIZ] Saved {saved_count} PCA student-only grids to {viz_dir}")
+
+def create_student_grid_pca(
+    student_embeddings_list,
+    images_list,
+    view_indices,
+    batch_idx,
+    epoch,
+    output_dir,
+    common_basis,
+    project_func,
+):
+    """
+    Crea una griglia n x 2 (student_pca | immagine) usando la base PCA comune.
+    
+    Args:
+        student_embeddings_list: Lista di tensor student features (uno per view)
+        images_list: Lista di immagini (una per view)
+        view_indices: Lista di indici view corrispondenti
+        batch_idx: Indice della scena/batch
+        epoch: Numero epoch corrente
+        output_dir: Directory di output
+        common_basis: Base PCA comune (precomputed)
+        project_func: Funzione per proiettare features usando la base PCA
+    """
+    n_views = len(student_embeddings_list)
+    
+    # Ricava dimensioni dall'immagine originale (la ridimensioniamo a 512x512 per consistenza)
+    first_img = images_list[0]
+    target_size = (512, 512)
+    
+    # Width: 2 colonne (student_pca + immagine), Height: n_views righe
+    grid_width = target_size[0] * 2
+    grid_height = target_size[1] * n_views
+    
+    grid_img = Image.new("RGB", (grid_width, grid_height))
+    draw = ImageDraw.Draw(grid_img)
+    font = ImageFont.load_default(size=20)
+    label_height = 30
+    
+    # Itera su cada view e riempie la griglia
+    for row_idx, (student_emb, img, view_idx) in enumerate(
+        zip(student_embeddings_list, images_list, view_indices)
+    ):
+        y_offset = row_idx * target_size[1]
+        
+        # === STUDENT PCA (colonna sinistra) ===
+        pil_img_student = project_func(student_emb, common_basis)
+        pil_img_student = pil_img_student.resize(target_size, Image.BILINEAR)
+        grid_img.paste(pil_img_student, (0, y_offset))
+        
+        # Etichetta student
+        draw.rectangle(
+            [(0, y_offset), (target_size[0], y_offset + label_height)],
+            fill=(0, 0, 0, 180)
+        )
+        draw.text(
+            (5, y_offset + 5),
+            f"STUD_VIEW{view_idx}",
+            fill=(255, 255, 255),
+            font=font
+        )
+        
+        # === IMMAGINE ORIGINALE (colonna destra) ===
+        img_np = (img.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+        orig_img_pil = Image.fromarray(img_np)
+        orig_img_pil = orig_img_pil.resize(target_size, Image.BILINEAR)
+        grid_img.paste(orig_img_pil, (target_size[0], y_offset))
+        
+        # Etichetta immagine
+        draw.rectangle(
+            [(target_size[0], y_offset), (target_size[0] * 2, y_offset + label_height)],
+            fill=(0, 0, 0, 180)
+        )
+        draw.text(
+            (target_size[0] + 5, y_offset + 5),
+            f"IMG_VIEW{view_idx}",
+            fill=(255, 255, 255),
+            font=font
+        )
+    
+    # Salva la griglia combinata
+    grid_filename = f"student_grid_epoch{epoch}_batch{batch_idx}_views{n_views}.png"
+    grid_path = os.path.join(output_dir, grid_filename)
+    grid_img.save(grid_path)
+    print(f"[VIZ] Saved student-only PCA grid ({n_views} views) to {grid_path}")
