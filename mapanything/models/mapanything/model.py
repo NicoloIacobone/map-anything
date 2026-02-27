@@ -1402,7 +1402,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 if use_encoder_features:
                     dpt_head_inputs = list(self._dino_4layer_features)
                 else:
-                    dpt_head_inputs = dense_head_inputs
+                    dpt_head_inputs = dense_head_inputs # [B*V, 1024, 37, 37] con input images (518, 518)
                 
                 dpt_features_2 = self.dpt_feature_head_2(
                     PredictionHeadLayeredInput(
@@ -1410,14 +1410,14 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                         target_output_shape=target_hw_2,
                     )
                 )
-                feat_8x = dpt_features_2.features_upsampled_8x  # (B*V, C, H, W)
+                feat_8x = dpt_features_2.features_upsampled_8x  # (B*V, C, H, W), (B*V, 256, 296, 296) con input images (518, 518)
                 # print(f"[DPT2] Output feat_8x shape before resize: {feat_8x.shape}")
                 # print(f"[NICO] Extracted feat2_8x with shape: {feat_8x.shape}")
 
                 # Garantisce dimensione spaziale fissa
                 if feat_8x.shape[-2:] != target_hw_2:
                     import torch.nn.functional as F
-                    feat_8x = F.interpolate(
+                    feat_8x = F.interpolate( # (B*V, 256, 64, 64) con input images (518, 518)
                         feat_8x,
                         size=target_hw_2,
                         mode="bilinear",

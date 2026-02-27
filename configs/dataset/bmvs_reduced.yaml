@@ -4,7 +4,7 @@ defaults:
   - override blendedmvs_wai/val: distillation_overfit
 
 # Number of views parameter for the multi-view datasets
-num_views: 2
+num_views: 4
 # Number of workers for dataloader
 num_workers: 8
 
@@ -23,7 +23,7 @@ resolution_val_blendedmvs: ${dataset.resolution_options.518_1_00_ar}
 
 # Training Set
 train_dataset:
-  "+ 2 @ ${dataset.blendedmvs_wai.train.dataset_str}"
+  "+ 4 @ ${dataset.blendedmvs_wai.train.dataset_str}"
 
 # Validation Set
 test_dataset:
