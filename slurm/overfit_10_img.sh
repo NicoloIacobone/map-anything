@@ -1,19 +1,19 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=overfit_1_img
+#SBATCH --job-name=overfit_10_img
 #
 # Specify output file.
-#SBATCH --output=overfit_1_img_%j.log
+#SBATCH --output=overfit_10_img_%j.log
 #
 # Specify error file.
-#SBATCH --error=overfit_1_img_%j.err
+#SBATCH --error=overfit_10_img_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -70,13 +70,13 @@ echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 torchrun --nproc_per_node=$NUM_GPUS distillation_backup.py \
   --distributed \
   --use_wandb \
-  --wandb_name "overfit_1_img" \
+  --wandb_name "overfit_10_img" \
   --dataset coco2017 \
-  --lr 6.25e-5 \
-  --batch_size 1 \
+  --lr 5e-4 \
+  --batch_size 8 \
   --num_workers 8 \
   --epochs 10000 \
-  --debug_max_train_images 1 \
+  --debug_max_train_images 10 \
   --debug_max_val_images 1 \
   --save_freq 500 \
   --save_visualizations_encoder \
