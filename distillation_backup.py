@@ -1026,7 +1026,6 @@ def train_one_epoch_distillation(
         sum_total_loss += total_loss_value * batch_size
 
         # Clean up
-        del loss, student_features, teacher_features
         
         # Update metrics
         metric_logger.update(epoch=epoch_f)
@@ -1041,6 +1040,8 @@ def train_one_epoch_distillation(
                 epoch=epoch,
                 output_dir=args.output_dir,
             )
+        
+        del loss, student_features, teacher_features
 
     # Return averaged stats
     denom = max(1, total_samples)

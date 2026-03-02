@@ -73,7 +73,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_backup.py \
   --wandb_name "overfit_1_img" \
   --dataset coco2017 \
   --lr 1e-3 \
-  --batch_size 16 \
+  --batch_size 1 \
   --num_workers 8 \
   --epochs 10000 \
   --debug_max_train_images 1 \
