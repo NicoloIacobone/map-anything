@@ -270,4 +270,4 @@ def load_sam2_feature_extractor(
     # total_params = sum(p.numel() for p in feature_extractor.parameters())
     # print(f"[INFO] Feature extractor total parameters: {total_params:,}")
     
-    # return feature_extractor
+    return feature_extractor

@@ -58,7 +58,7 @@ from nico.utils import *
 
 from sam2_minimal.modeling.sam.prompt_encoder import PromptEncoder
 from sam2_minimal.modeling.sam.mask_decoder import MaskDecoder
-from sam2_builder import (
+from sam2_minimal.sam2_builder import (
     load_sam2_feature_extractor,
     load_sam2_teacher_prompt_and_decoder,
     build_sam_mask_decoder,
@@ -535,7 +535,7 @@ def build_distillation_dataloader(
     teacher_extractor: Optional[TeacherFeatureExtractor] = None,
     batch_size: int = 1,
     num_workers: int = 4,
-    shuffle: bool = True,
+    shuffle: bool = False, # TODO: RIMETTERE A TRUE QUANDO FINISCI TEST OVERFIT
     image_paths: Optional[List[str]] = None,
     pin_memory: bool = True,
     distributed: bool = False,
@@ -1033,6 +1033,15 @@ def train_one_epoch_distillation(
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(loss=total_loss_value, **loss_details)
 
+        if args.save_visualizations_encoder and data_iter_step == 0 and args.overfit:
+            save_pca_visualizations(
+                student_features=student_features,
+                teacher_features=teacher_features,
+                image_paths=image_paths,
+                epoch=epoch,
+                output_dir=args.output_dir,
+            )
+
     # Return averaged stats
     denom = max(1, total_samples)
     results = {
@@ -1344,19 +1353,7 @@ def save_pca_visualizations(
                 epoch=epoch,
                 output_heatmaps=str(viz_dir),
                 is_overfit_image=False,  # Dynamic PCA basis (not saved/loaded from disk)
-            )
-            student_save_path = Path(str(viz_dir)) / "student"
-            student_save_path.mkdir(parents=True, exist_ok=True)
-            teacher_save_path = Path(str(viz_dir)) / "teacher"
-            teacher_save_path.mkdir(parents=True, exist_ok=True)
-            print(f"Image path: {img_path}")
-
-            # Ensure tensors are detached, cloned, and contiguous before saving
-            student_single = student_single.detach().cpu().contiguous().clone()
-            teacher_single = teacher_single.detach().cpu().contiguous().clone()
-            img_basename = Path(img_path).stem  # Es: "000000544826"
-            torch.save(student_single, student_save_path / f"{epoch}_{img_basename}.pt")
-            torch.save(teacher_single, teacher_save_path / f"{epoch}_{img_basename}.pt")
+            )            
         except Exception as e:
             print(f"[WARN] Failed to create PCA visualization for {img_path}: {e}")
             continue
@@ -1553,19 +1550,22 @@ def distill(args):
     print(f"[INFO] Model loaded. Has dpt_feature_head_2: {hasattr(model, 'dpt_feature_head_2')}")
 
     # ========== INITIALIZE STUDENT DECODER ==========
-    print(f"[INFO] Building student MaskDecoder...")
-    sam_mask_decoder_student = build_sam_mask_decoder(
-        embed_dim=256,
-        num_multimask_outputs=3,
-        use_high_res_features=False,
-        pred_obj_scores=False,
-        pred_obj_scores_mlp=False,
-        iou_prediction_use_sigmoid=False,
-    ).to(device)
-    print(f"[INFO] Student MaskDecoder built: {sum(p.numel() for p in sam_mask_decoder_student.parameters()):,} params")
+    if args.decoder_loss_weight > 0:
+        print(f"[INFO] Building student MaskDecoder...")
+        sam_mask_decoder_student = build_sam_mask_decoder(
+            embed_dim=256,
+            num_multimask_outputs=3,
+            use_high_res_features=False,
+            pred_obj_scores=False,
+            pred_obj_scores_mlp=False,
+            iou_prediction_use_sigmoid=False,
+        ).to(device)
+        print(f"[INFO] Student MaskDecoder built: {sum(p.numel() for p in sam_mask_decoder_student.parameters()):,} params")
 
-    # Attach student decoder to model
-    model_without_ddp.sam2_mask_decoder_student = sam_mask_decoder_student
+        # Attach student decoder to model
+        model_without_ddp.sam2_mask_decoder_student = sam_mask_decoder_student
+    else:
+        sam_mask_decoder_student = None
 
     # ========== INITIALIZE TEACHER ENCODER ==========
     print(f"[INFO] Preparing teacher feature extractor...")
@@ -1585,15 +1585,19 @@ def distill(args):
     teacher_extractor.to(device)
 
     # ========== INITIALIZE TEACHER DECODER ==========
-    print(f"[INFO] Loading teacher PromptEncoder and MaskDecoder...")
-    sam_prompt_encoder_teacher, sam_mask_decoder_teacher = load_sam2_teacher_prompt_and_decoder(
-        checkpoint_path=SAM2_PATH,
-        device=str(device),
-        image_size=1024,
-        backbone_stride=16,
-        embed_dim=256,
-    )
-    print(f"[INFO] Teacher decoder components loaded and frozen")
+    if(args.decoder_loss_weight > 0):
+        print(f"[INFO] Loading teacher PromptEncoder and MaskDecoder...")
+        sam_prompt_encoder_teacher, sam_mask_decoder_teacher = load_sam2_teacher_prompt_and_decoder(
+            checkpoint_path=SAM2_PATH,
+            device=str(device),
+            image_size=1024,
+            backbone_stride=16,
+            embed_dim=256,
+        )
+        print(f"[INFO] Teacher decoder components loaded and frozen")
+    else:
+        sam_prompt_encoder_teacher = None
+        sam_mask_decoder_teacher = None
 
     # ========== BUILD DATALOADERS ==========
     
@@ -1781,11 +1785,14 @@ def distill(args):
     ).to(device)
 
     # Initialize criterion for STUDENT DECODER distillation
-    decoder_criterion = DecoderDistillationLoss(
-        weight_masks=args.decoder_masks_weight,
-        weight_iou=args.decoder_iou_weight,
-        weight_tokens=args.decoder_tokens_weight,
-    ).to(device)
+    if(args.decoder_loss_weight > 0):
+        decoder_criterion = DecoderDistillationLoss(
+            weight_masks=args.decoder_masks_weight,
+            weight_iou=args.decoder_iou_weight,
+            weight_tokens=args.decoder_tokens_weight,
+        ).to(device)
+    else:
+        decoder_criterion = None
 
     # ========== VERIFICHE LOSS WEIGHTS ==========
     # print("\n" + "="*80)
@@ -2052,7 +2059,7 @@ def distill(args):
         
         # Validation
         val_stats = {}
-        if args.eval_freq > 0 and (epoch + 1) % args.eval_freq == 0:
+        if not args.overfit and args.eval_freq > 0 and (epoch + 1) % args.eval_freq == 0:
             val_stats = validate_one_epoch_distillation(
             model=model,
             criterion=criterion,
@@ -2916,7 +2923,7 @@ def get_args_parser():
     parser.add_argument("--eval_freq", type=int, default=1, help="Run validation every N epochs")
     
     # Logging
-    parser.add_argument("--print_freq", type=int, default=10, help="Print frequency (iterations)")
+    parser.add_argument("--print_freq", type=int, default=1, help="Print frequency (iterations)")
     parser.add_argument("--print_trainable", action="store_true", help="Print detailed trainable parameters and exit")
     parser.add_argument("--use_wandb", action="store_true", help="Use Weights & Biases logging")
     parser.add_argument("--wandb_project", type=str, default="mapanything-distillation", help="W&B project name")
@@ -2943,11 +2950,14 @@ def get_args_parser():
     parser.add_argument("--lr_transformer_scale", type=float, default=1.0, help="Scale factor MULTI-VIEW TRANSFORMER LR")
 
     # Decoder distillation
-    parser.add_argument("--decoder_loss_weight", type=float, default=1.0, help="Weight for total decoder loss")
-    parser.add_argument("--decoder_tokens_weight", type=float, default=1.0, help="Weight for tokens loss component")
-    parser.add_argument("--decoder_masks_weight", type=float, default=0.5, help="Weight for masks loss component")
-    parser.add_argument("--decoder_iou_weight", type=float, default=0.3, help="Weight for IoU loss component")
+    parser.add_argument("--decoder_loss_weight", type=float, default=0.0, help="Weight for total decoder loss")
+    parser.add_argument("--decoder_tokens_weight", type=float, default=0.0, help="Weight for tokens loss component")
+    parser.add_argument("--decoder_masks_weight", type=float, default=0.0, help="Weight for masks loss component")
+    parser.add_argument("--decoder_iou_weight", type=float, default=0.0, help="Weight for IoU loss component")
     parser.add_argument("--amg_points_per_side", type=int, default=3, help="Points per side for decoder prompt grid")
+
+    # Overft
+    parser.add_argument("--overfit", action="store_true", help="Enable Overfit mode (debugging) to print pca visualization during training")
     
     # comando debug pc lab
     # python distillation_test_multi_view_gemini.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2

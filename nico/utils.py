@@ -1565,10 +1565,10 @@ def pca_visualization(
 def create_student_original_teacher_side_by_side(
     student_embeddings,
     teacher_embeddings,
-    orig_img,
+    img_path,
     epoch,
     output_heatmaps,
-    image_name,
+    image_name=None,
     is_overfit_image=False,
     save_embeddings=False,
 ):
@@ -1578,6 +1578,12 @@ def create_student_original_teacher_side_by_side(
     Se False → calcola la PCA dinamicamente dai teacher embeddings (senza salvataggio/caricamento su disco).
     Salva anche gli embeddings se save_embeddings=True.
     """
+    
+    # --- Step 0: carica l'immagine originale dal path ---
+    orig_img = Image.open(img_path).convert("RGB")
+
+    if image_name is None:
+        image_name = os.path.splitext(img_path.split("/")[-1])[0]
 
     # --- Step 1: gestisci caricamento/salvataggio base PCA ---
     if is_overfit_image:
@@ -1639,17 +1645,21 @@ def create_student_original_teacher_side_by_side(
 
     # --- Step 5: salva il risultato ---
     # include image base name together with epoch to make filenames unique
-    combined_path = os.path.join(output_heatmaps, f"{image_name}.png")
+    combined_path = os.path.join(output_heatmaps, f"{image_name}_epoch_{epoch}.png")
     combined_img.save(combined_path)
 
     # --- Step 6: salva gli embeddings se richiesto ---
     if save_embeddings:
-        student_dir = Path(output_heatmaps) / "student"
-        teacher_dir = Path(output_heatmaps) / "teacher"
-        student_dir.mkdir(parents=True, exist_ok=True)
-        teacher_dir.mkdir(parents=True, exist_ok=True)
-        torch.save(student_embeddings.detach().cpu(), student_dir / f"{image_name}.pt")
-        torch.save(teacher_embeddings.detach().cpu(), teacher_dir / f"{image_name}.pt")
+        student_save_path = Path(str(output_heatmaps)) / "student"
+        student_save_path.mkdir(parents=True, exist_ok=True)
+        teacher_save_path = Path(str(output_heatmaps)) / "teacher"
+        teacher_save_path.mkdir(parents=True, exist_ok=True)
+        
+        # Ensure tensors are detached, cloned, and contiguous before saving
+        student_embeddings = student_embeddings.detach().cpu().contiguous().clone()
+        teacher_embeddings = teacher_embeddings.detach().cpu().contiguous().clone()
+        torch.save(student_embeddings, student_save_path / f"{image_name}_epoch_{epoch}.pt")
+        torch.save(teacher_embeddings, teacher_save_path / f"{image_name}_epoch_{epoch}.pt")
 
 def pca_visualization_student_only(
     batch: List[Dict[str, Any]],
