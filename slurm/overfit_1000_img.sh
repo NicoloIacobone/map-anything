@@ -75,7 +75,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_backup.py \
   --lr 1e-3 \
   --batch_size 16 \
   --num_workers 8 \
-  --epochs 10000 \
+  --epochs 5000 \
   --debug_max_train_images 1000 \
   --debug_max_val_images 1 \
   --save_freq 500 \

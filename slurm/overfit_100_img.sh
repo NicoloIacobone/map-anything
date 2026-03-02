@@ -13,7 +13,7 @@
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -75,7 +75,7 @@ torchrun --nproc_per_node=$NUM_GPUS distillation_backup.py \
   --lr 1e-3 \
   --batch_size 16 \
   --num_workers 8 \
-  --epochs 10000 \
+  --epochs 5000 \
   --debug_max_train_images 100 \
   --debug_max_val_images 1 \
   --save_freq 500 \
