@@ -264,4 +264,10 @@ def load_sam2_feature_extractor(
             print(f"      {k}")
     
     feature_extractor = SAM2FeatureExtractor(image_encoder, resolution=1024)
-    return feature_extractor.to(device)
+    # feature_extractor = feature_extractor.to(device)
+    
+    # # Print total number of parameters
+    # total_params = sum(p.numel() for p in feature_extractor.parameters())
+    # print(f"[INFO] Feature extractor total parameters: {total_params:,}")
+    
+    # return feature_extractor
