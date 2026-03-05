@@ -1016,8 +1016,8 @@ def train_one_epoch_distillation(
                 teacher_features=teacher_features,
                 image_paths=image_paths,
                 epoch=epoch,
-                output_dir=args.output_dir
-                # upsample=True
+                output_dir=args.output_dir,
+                # upsample=False
             )
         
         # Clean up
@@ -1231,6 +1231,7 @@ def validate_one_epoch_distillation(
                 image_paths=image_paths,
                 epoch=epoch,
                 output_dir=args.output_dir,
+                # upsample=True
             )
 
         # if args.save_visualizations_decoder and batch_idx == 0:
@@ -1289,7 +1290,7 @@ def save_pca_visualizations(
     teacher_features: torch.Tensor,
     image_paths: List[str],
     epoch: int,
-    output_dir: str
+    output_dir: str,
     # upsample: bool = False,
 ):
     """
@@ -1328,7 +1329,10 @@ def save_pca_visualizations(
         student_single = student_cpu[batch_idx:batch_idx+1]  # (1, C, H, W)
         teacher_single = teacher_cpu[batch_idx:batch_idx+1]  # (1, C, H, W)
 
-        # Upsample a risoluzione originale immagine (opzionale)
+        # print("Student features shape before upsampling:", student_single.shape)
+        # print("Teacher features shape before upsampling:", teacher_single.shape)
+
+        # # Upsample a risoluzione originale immagine (opzionale)
         # if feature_upsampler is not None:
         #     try:
         #         with Image.open(img_path) as img:
@@ -1346,6 +1350,9 @@ def save_pca_visualizations(
         #             teacher_single, size=target_hw, mode="bilinear", align_corners=False
         #         )
         
+        # print("Student features shape after upsampling:", student_single.shape)
+        # print("Teacher features shape after upsampling:", teacher_single.shape)
+
         # Create and save side-by-side visualization using nico.utils function
         # This function handles PCA, image loading, compositing, and saving
         try:
