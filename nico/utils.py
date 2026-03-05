@@ -14,6 +14,18 @@ import cv2
 from typing import List, Dict, Any, Tuple
 from sam2_minimal.utils.amg import batched_mask_to_box, box_xyxy_to_xywh
 
+class FixedFeatureUpsampler(nn.Module):
+    def __init__(self, mode: str = "bilinear", align_corners: bool = False):
+        super().__init__()
+        self.mode = mode
+        self.align_corners = align_corners
+
+    def forward(self, x: torch.Tensor, target_hw: tuple[int, int]) -> torch.Tensor:
+        # x: (B, 256, 64, 64) -> (B, 256, H, W)
+        return F.interpolate(
+            x, size=target_hw, mode=self.mode, align_corners=self.align_corners
+        )
+
 class SAM2CompatibilityLayer(nn.Module):
     def __init__(self, in_channels: int, out_channels: int = 256):
         super().__init__()

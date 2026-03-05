@@ -65,8 +65,7 @@ python distillation_backup.py \
   --save_visualizations_encoder \
   --amp \
   --print_freq 100 \
-  --no_save_decoder_ckpt \
-  --no_save_trainer_ckpt \
+  --save_encoder_ckpt \
   --overfit
 
 echo "=== Job finished at $(date) ==="

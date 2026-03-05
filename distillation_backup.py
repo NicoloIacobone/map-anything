@@ -35,6 +35,8 @@ import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader, Dataset
 from PIL import Image
 
+# from nico.utils import FixedFeatureUpsampler
+
 # Optional: psutil for CPU memory monitoring
 try:
     import psutil
@@ -977,32 +979,10 @@ def train_one_epoch_distillation(
         loss.backward()
 
         if (data_iter_step + 1) % accum_iter == 0:
-            # print("\n" + "="*80)
-            # print("GRAD CHECK - Sample gradient norms per group:")
-            # for i, group in enumerate(optimizer.param_groups):
-            #     grad_squares = [p.grad**2 for p in group['params'] if p.grad is not None]
-            #     if len(grad_squares) > 0:
-            #         grad_norm = torch.sqrt(sum((g.sum() for g in grad_squares)))
-            #         group_name = ["encoder", "decoder", "transformer", "dino"][i] if i < 4 else f"group_{i}"
-            #         print(f"  [{group_name}] Grad norm: {grad_norm.item():.6e}")
-            #     else:
-            #         group_name = ["encoder", "decoder", "transformer", "dino"][i] if i < 4 else f"group_{i}"
-            #         print(f"  [{group_name}] Grad norm: 0.0 (no gradients)")
-            # print("="*80 + "\n")
             if args.clip_grad > 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_grad)
             optimizer.step()
             optimizer.zero_grad()
-
-            # ========== PRINT LR DOPO PRIMO STEP ==========
-            # if data_iter_step == 0 and epoch == 0:
-            #     print("\n" + "="*80)
-            #     print("LEARNING RATES AFTER FIRST OPTIMIZER STEP")
-            #     print("="*80)
-            #     for i, group in enumerate(optimizer.param_groups):
-            #         group_name = ["encoder", "decoder", "transformer", "dino"][i] if i < 4 else f"group_{i}"
-            #         print(f"  [{group_name}] Current LR: {group['lr']:.6e}")
-            #     print("="*80 + "\n")
 
         # Accumulate weighted sums
         batch_size = student_features.shape[0]
@@ -1025,8 +1005,6 @@ def train_one_epoch_distillation(
         # ===== TOTALE =====
         sum_total_loss += total_loss_value * batch_size
 
-        # Clean up
-        
         # Update metrics
         metric_logger.update(epoch=epoch_f)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
@@ -1038,9 +1016,11 @@ def train_one_epoch_distillation(
                 teacher_features=teacher_features,
                 image_paths=image_paths,
                 epoch=epoch,
-                output_dir=args.output_dir,
+                output_dir=args.output_dir
+                # upsample=True
             )
         
+        # Clean up
         del loss, student_features, teacher_features
 
     # Return averaged stats
@@ -1309,7 +1289,8 @@ def save_pca_visualizations(
     teacher_features: torch.Tensor,
     image_paths: List[str],
     epoch: int,
-    output_dir: str,
+    output_dir: str
+    # upsample: bool = False,
 ):
     """
     Salva visualizzazioni affiancate basate su PCA di (studente | immagine | teacher).
@@ -1334,6 +1315,9 @@ def save_pca_visualizations(
     # Move to CPU
     student_cpu = student_features.detach().cpu()  # (B, C, H, W)
     teacher_cpu = teacher_features.detach().cpu()  # (B, C, H, W)
+
+    # Upsampler opzionale verso risoluzione immagine originale
+    # feature_upsampler = FixedFeatureUpsampler(mode="bilinear", align_corners=False) if upsample else None
     
     B = student_cpu.shape[0]
     
@@ -1343,6 +1327,24 @@ def save_pca_visualizations(
         # Extract single image features (keep batch dimension for nico.utils compatibility)
         student_single = student_cpu[batch_idx:batch_idx+1]  # (1, C, H, W)
         teacher_single = teacher_cpu[batch_idx:batch_idx+1]  # (1, C, H, W)
+
+        # Upsample a risoluzione originale immagine (opzionale)
+        # if feature_upsampler is not None:
+        #     try:
+        #         with Image.open(img_path) as img:
+        #             target_hw = (img.height, img.width)  # (H, W)
+
+        #         # Se FixedFeatureUpsampler accetta (x, target_hw)
+        #         student_single = feature_upsampler(student_single, target_hw)
+        #         teacher_single = feature_upsampler(teacher_single, target_hw)
+        #     except TypeError:
+        #         # Fallback se l'implementazione ha firma diversa
+        #         student_single = F.interpolate(
+        #             student_single, size=target_hw, mode="bilinear", align_corners=False
+        #         )
+        #         teacher_single = F.interpolate(
+        #             teacher_single, size=target_hw, mode="bilinear", align_corners=False
+        #         )
         
         # Create and save side-by-side visualization using nico.utils function
         # This function handles PCA, image loading, compositing, and saving
@@ -2916,10 +2918,10 @@ def get_args_parser():
     parser.add_argument("--resume_encoder_ckpt", type=str, default=None, help="Path to encoder checkpoint to load")
     parser.add_argument("--resume_decoder_ckpt", type=str, default=None, help="Path to decoder checkpoint to load")
     parser.add_argument("--resume_trainer_ckpt", type=str, default=None, help="Path to trainer checkpoint (optimizer/scheduler) to load")
-    parser.add_argument("--no_save_encoder_ckpt", action="store_false", default=True, help="Disable separate encoder checkpoint saving (saves by default)")
-    parser.add_argument("--no_save_decoder_ckpt", action="store_false", default=True, help="Disable separate decoder checkpoint saving (saves by default)")
-    parser.add_argument("--no_save_trainer_ckpt", action="store_false", default=True, help="Disable separate trainer checkpoint saving (saves by default)")
-    parser.add_argument("--save_combined_ckpt", action="store_true", default=False, help="Save encoder and decoder in a single combined checkpoint file (legacy behavior)")
+    parser.add_argument("--save_encoder_ckpt", action="store_true", help="Enable separate encoder checkpoint saving (saves by default)")
+    parser.add_argument("--save_decoder_ckpt", action="store_true", help="Enable separate decoder checkpoint saving (saves by default)")
+    parser.add_argument("--save_trainer_ckpt", action="store_true", help="Enable separate trainer checkpoint saving (saves by default)")
+    parser.add_argument("--save_combined_ckpt", action="store_true", help="Save encoder and decoder in a single combined checkpoint file (legacy behavior)")
     parser.add_argument("--save_freq", type=int, default=10, help="Save checkpoint every N epochs")
     parser.add_argument("--eval_freq", type=int, default=1, help="Run validation every N epochs")
     
