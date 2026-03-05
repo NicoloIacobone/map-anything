@@ -1032,7 +1032,7 @@ def train_one_epoch_distillation(
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(loss=total_loss_value, **loss_details)
 
-        if args.save_visualizations_encoder and data_iter_step == 0 and args.overfit:
+        if args.save_visualizations_encoder and data_iter_step == 0 and (epoch + 1) % args.save_viz_every == 0 and args.overfit or (args.overfit and epoch == 0):
             save_pca_visualizations(
                 student_features=student_features,
                 teacher_features=teacher_features,
@@ -2916,9 +2916,9 @@ def get_args_parser():
     parser.add_argument("--resume_encoder_ckpt", type=str, default=None, help="Path to encoder checkpoint to load")
     parser.add_argument("--resume_decoder_ckpt", type=str, default=None, help="Path to decoder checkpoint to load")
     parser.add_argument("--resume_trainer_ckpt", type=str, default=None, help="Path to trainer checkpoint (optimizer/scheduler) to load")
-    parser.add_argument("--save_encoder_ckpt", action="store_false", default=True, help="Disable separate encoder checkpoint saving (saves by default)")
-    parser.add_argument("--save_decoder_ckpt", action="store_false", default=True, help="Disable separate decoder checkpoint saving (saves by default)")
-    parser.add_argument("--save_trainer_ckpt", action="store_false", default=True, help="Disable separate trainer checkpoint saving (saves by default)")
+    parser.add_argument("--no_save_encoder_ckpt", action="store_false", default=True, help="Disable separate encoder checkpoint saving (saves by default)")
+    parser.add_argument("--no_save_decoder_ckpt", action="store_false", default=True, help="Disable separate decoder checkpoint saving (saves by default)")
+    parser.add_argument("--no_save_trainer_ckpt", action="store_false", default=True, help="Disable separate trainer checkpoint saving (saves by default)")
     parser.add_argument("--save_combined_ckpt", action="store_true", default=False, help="Save encoder and decoder in a single combined checkpoint file (legacy behavior)")
     parser.add_argument("--save_freq", type=int, default=10, help="Save checkpoint every N epochs")
     parser.add_argument("--eval_freq", type=int, default=1, help="Run validation every N epochs")
@@ -2959,6 +2959,7 @@ def get_args_parser():
 
     # Overft
     parser.add_argument("--overfit", action="store_true", help="Enable Overfit mode (debugging) to print pca visualization during training")
+    parser.add_argument("--save_viz_every", type=int, default=50, help="Save visualizations every N epochs in Overfit mode")
     
     # comando debug pc lab
     # python distillation_test_multi_view_gemini.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2

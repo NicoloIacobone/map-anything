@@ -1865,3 +1865,303 @@ def create_student_grid_pca(
     grid_path = os.path.join(output_dir, grid_filename)
     grid_img.save(grid_path)
     print(f"[VIZ] Saved student-only PCA grid ({n_views} views) to {grid_path}")
+
+import torch
+import numpy as np
+from PIL import Image
+from pathlib import Path
+from typing import Optional, Tuple, Dict, List
+import torchvision.transforms as tv_transforms
+
+def sobel_gradients(img: torch.Tensor) -> torch.Tensor:
+    """
+    Calcola i gradienti Sobel di un'immagine.
+    
+    Args:
+        img: Tensor [B, C, H, W]
+    Returns:
+        Tensor [B, C*2, H, W] con gradienti x e y concatenati
+    """
+    import torch.nn.functional as TF
+    
+    sobel_x = torch.tensor([[-1., 0., 1.], [-2., 0., 2.], [-1., 0., 1.]]).view(1, 1, 3, 3).to(img.device)
+    sobel_y = torch.tensor([[-1., -2., -1.], [0., 0., 0.], [1., 2., 1.]]).view(1, 1, 3, 3).to(img.device)
+    
+    grad_x = TF.conv2d(img, sobel_x, padding=1)
+    grad_y = TF.conv2d(img, sobel_y, padding=1)
+    
+    return torch.concat((grad_x, grad_y), dim=1)
+
+
+def compute_semantic_pca_visualization(
+    semantic_features: torch.Tensor,
+    rgb_image: torch.Tensor,
+    num_pca_components: int = 4,
+    enable_outlier_rejection: bool = False,
+    process_geometry: bool = True,
+    gradient_thresholds: List[float] = [0.1, 0.2, 0.3, 0.4, 0.5],
+    visualize: bool = False,
+    save_path: Optional[Path] = None,
+    device: str = "cuda",
+    channels_first: bool = True
+) -> Dict:
+    """
+    Replica il processo PCA completo di SPINE per visualizzare embedding semantici.
+    
+    Args:
+        semantic_features: Tensor [H, W, D] con le feature semantiche (es. da CLIP/DINO)
+        rgb_image: Tensor [H, W, 3] immagine RGB originale in range [0, 1]
+        num_pca_components: Numero di componenti PCA (default: 4)
+        enable_outlier_rejection: Abilita rimozione outlier (stile Nerfstudio)
+        process_geometry: Abilita validazione con Sobel gradients
+        gradient_thresholds: Soglie per edge detection
+        visualize: Mostra le immagini
+        save_path: Path per salvare i risultati
+        device: Device PyTorch
+    
+    Returns:
+        Dict con:
+            - 'pca_rgb': Immagine PCA a 3 canali [H, W, 3] normalizzata in [0, 1]
+            - 'pca_bgd': Componente background [H, W, 1]
+            - 'pca_projection': Matrice di proiezione V [D, num_pca_components]
+            - 'geometry_stats': Statistiche dei bordi (se process_geometry=True)
+            - 'rgb_pil': PIL Image RGB
+            - 'sem_pil': PIL Image PCA
+    """
+    
+    # Sposta su device
+    semantic_features = semantic_features.to(device)
+    rgb_image = rgb_image.to(device)
+    
+    # ========== GESTIONE FORMATO ==========
+    if channels_first:
+        # Converti da [C, H, W] a [H, W, C]
+        print(f"Input shape (channels-first): {semantic_features.shape}")
+        semantic_features = semantic_features.permute(1, 2, 0)
+        print(f"Converted to (channels-last): {semantic_features.shape}")
+    
+    # Verifica dimensioni RGB
+    if rgb_image.dim() == 3 and rgb_image.shape[0] == 3:
+        # RGB è [3, H, W], converti a [H, W, 3]
+        rgb_image = rgb_image.permute(1, 2, 0)
+    
+    # Salva forma originale
+    H, W, D = semantic_features.shape
+    print(f"Processing features: H={H}, W={W}, D={D}")
+    # ======================================
+    
+    # 1. RESHAPE: Flatten delle feature [H*W, D]
+    sem_features_flat = semantic_features.reshape(-1, D).float()
+    
+    # 2. PCA: Calcolo componenti principali
+    print(f"Computing PCA on features with shape {sem_features_flat.shape}...")
+    U_pca, S_pca, V_pca = torch.pca_lowrank(
+        A=sem_features_flat,
+        q=num_pca_components,
+        center=True,  # Centra i dati (sottrae media)
+        niter=20,     # Numero di iterazioni per convergenza
+    )
+    
+    # 3. PROIEZIONE: Proietta sulle prime componenti principali
+    semantic_proj = sem_features_flat @ V_pca[:, :num_pca_components]  # [H*W, num_pca_components]
+    
+    # 4. ESTRAZIONE: Separa background (1° comp.) e RGB (prime 3 comp.)
+    semantic_bgd = semantic_proj[..., 0:1].detach().clone()  # [H*W, 1]
+    semantic_rgb = semantic_proj[..., 0:3]                    # [H*W, 3]
+    
+    # 5. NORMALIZZAZIONE
+    if enable_outlier_rejection:
+        print("Applying outlier rejection...")
+        # Metodo median-based (da Nerfstudio)
+        d = torch.abs(semantic_rgb - torch.median(semantic_rgb, dim=0).values)
+        mdev = torch.median(d, dim=0).values
+        s = d / mdev
+        m = 2.0  # Hyperparam: quanti std dev per outliers
+        
+        # Estrai inliers per ogni canale
+        rins = semantic_rgb[s[:, 0] < m, 0]
+        gins = semantic_rgb[s[:, 1] < m, 1]
+        bins = semantic_rgb[s[:, 2] < m, 2]
+        
+        # Normalizza basandosi sugli inliers
+        semantic_rgb[:, 0] = (semantic_rgb[:, 0] - rins.min()) / (rins.max() - rins.min())
+        semantic_rgb[:, 1] = (semantic_rgb[:, 1] - gins.min()) / (gins.max() - gins.min())
+        semantic_rgb[:, 2] = (semantic_rgb[:, 2] - bins.min()) / (bins.max() - bins.min())
+        
+        # Clamp in [0, 1]
+        semantic_rgb = torch.clamp(semantic_rgb, 0, 1)
+    else:
+        # Normalizzazione standard min-max per ogni canale
+        semantic_rgb -= semantic_rgb.min(dim=0, keepdim=True)[0]
+        semantic_rgb /= semantic_rgb.max(dim=0, keepdim=True)[0]
+    
+    # 6. RESHAPE: Torna alla forma immagine
+    pca_rgb = semantic_rgb.reshape(H, W, 3)      # [H, W, 3]
+    pca_bgd = semantic_bgd.reshape(H, W, 1)      # [H, W, 1]
+    
+    # 7. CONVERSIONE a PIL per visualizzazione/salvataggio
+    rgb_pil = Image.fromarray((rgb_image.cpu().numpy() * 255).astype(np.uint8))
+    sem_pil = Image.fromarray((pca_rgb.cpu().numpy() * 255).astype(np.uint8))
+    
+    # 8. VISUALIZZAZIONE (opzionale)
+    if visualize:
+        rgb_pil.show(title="RGB Original")
+        sem_pil.show(title="PCA Semantic")
+    
+    # 9. SALVATAGGIO (opzionale)
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        base_path, ext = save_path.stem, save_path.suffix
+        
+        rgb_pil.save(save_path.parent / f"{base_path}_rgb{ext}")
+        sem_pil.save(save_path.parent / f"{base_path}_pca_sem{ext}")
+        print(f"Saved to {save_path.parent}")
+    
+    # 10. VALIDAZIONE GEOMETRICA (opzionale)
+    geometry_stats = {}
+    if process_geometry:
+        print("Processing geometry with Sobel gradients...")
+        geometry_stats = _validate_geometry_with_sobel(
+            rgb_pil=rgb_pil,
+            sem_pil=sem_pil,
+            gradient_thresholds=gradient_thresholds,
+            device=device,
+            save_path=save_path,
+            visualize=visualize
+        )
+    
+    # Output completo
+    return {
+        'pca_rgb': pca_rgb,           # Tensor [H, W, 3]
+        'pca_bgd': pca_bgd,           # Tensor [H, W, 1]
+        'pca_projection': V_pca,      # Matrice proiezione [D, num_pca_components]
+        'singular_values': S_pca,     # Valori singolari
+        'geometry_stats': geometry_stats,
+        'rgb_pil': rgb_pil,
+        'sem_pil': sem_pil,
+    }
+
+
+def _validate_geometry_with_sobel(
+    rgb_pil: Image.Image,
+    sem_pil: Image.Image,
+    gradient_thresholds: List[float],
+    device: str,
+    save_path: Optional[Path] = None,
+    visualize: bool = False
+) -> Dict:
+    """
+    Valida che la rappresentazione PCA preservi la struttura geometrica
+    confrontando i bordi estratti con Sobel.
+    """
+    
+    geometry_stats = {}
+    
+    for img_key, img_pil in [("rgb", rgb_pil), ("sem", sem_pil)]:
+        # Converti in grayscale
+        img_gray = img_pil.convert("L")
+        
+        # Tensor [1, 1, H, W] normalizzato
+        img_tensor = torch.tensor(
+            np.asarray(img_gray)[..., None] / 255.0
+        ).float().to(device)
+        img_tensor = img_tensor.moveaxis(-1, 0)[None]
+        
+        # Calcola gradienti Sobel
+        img_sobel_grad = sobel_gradients(img_tensor)  # [1, 2, H, W]
+        
+        # Norma del gradiente
+        img_sobel_norm = torch.linalg.norm(img_sobel_grad, dim=1, keepdim=True)  # [1, 1, H, W]
+        
+        # Statistiche per varie soglie
+        stats = {
+            "thresholds": gradient_thresholds,
+            "num_edges": [],
+            "total_norm": torch.linalg.norm(img_sobel_norm).item(),
+            "post_threshold_norm": [],
+        }
+        
+        for threshold in gradient_thresholds:
+            # Maschera bordi sopra soglia
+            edge_mask = img_sobel_norm > threshold
+            
+            # Statistiche
+            num_edges = edge_mask.sum().item()
+            post_norm = torch.linalg.norm(img_sobel_norm[edge_mask]).item() if num_edges > 0 else 0.0
+            
+            stats["num_edges"].append(num_edges)
+            stats["post_threshold_norm"].append(post_norm)
+            
+            # Salva immagine bordi (opzionale)
+            if save_path is not None and threshold == gradient_thresholds[0]:
+                sobel_img = torch.zeros_like(img_sobel_norm)
+                sobel_img[edge_mask] = 1
+                sobel_pil = Image.fromarray(
+                    (sobel_img.squeeze().cpu().numpy() * 255).astype(np.uint8)
+                )
+                save_path = Path(save_path)
+                sobel_pil.save(save_path.parent / f"{save_path.stem}_{img_key}_edges{save_path.suffix}")
+        
+        geometry_stats[img_key] = stats
+    
+    # Confronto RGB vs Semantic
+    if "rgb" in geometry_stats and "sem" in geometry_stats:
+        print(f"\n📊 Geometry Validation:")
+        print(f"  RGB edges: {geometry_stats['rgb']['num_edges'][0]:,}")
+        print(f"  Semantic edges: {geometry_stats['sem']['num_edges'][0]:,}")
+        correlation = np.corrcoef(
+            geometry_stats['rgb']['num_edges'],
+            geometry_stats['sem']['num_edges']
+        )[0, 1]
+        print(f"  Edge correlation: {correlation:.3f}")
+        geometry_stats['edge_correlation'] = correlation
+    
+    return geometry_stats
+
+
+# ============================================
+# ESEMPIO DI UTILIZZO
+# ============================================
+
+def example_usage():
+    """
+    Esempio di come usare la funzione con un encoder semantico.
+    """
+    
+    # 1. Carica immagine RGB
+    rgb_image = Image.open("path/to/image.jpg")
+    rgb_tensor = torch.tensor(np.array(rgb_image) / 255.0).float().permute(2, 0, 1)  # [3, H, W]
+    
+    # 2. Genera embedding semantici (esempio con encoder fittizio)
+    # In SPINE puoi usare CLIP, DINO, o VGGT
+    # semantic_features = your_encoder.encode_image(rgb_tensor)
+    
+    # Simulazione: feature casuali [H, W, 512]
+    semantic_features = torch.randn(512, 64, 64)
+    
+    # 3. Applica PCA
+    results = compute_semantic_pca_visualization(
+        semantic_features=semantic_features,
+        rgb_image=rgb_tensor,
+        num_pca_components=4,
+        enable_outlier_rejection=False,
+        process_geometry=True,
+        gradient_thresholds=[0.1, 0.2, 0.3, 0.4, 0.5],
+        visualize=True,
+        save_path=Path("outputs/pca_result.png"),
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        channels_first=True
+    )
+    
+    # 4. Accedi ai risultati
+    pca_visualization = results['pca_rgb']      # Tensor [H, W, 3]
+    background_comp = results['pca_bgd']        # Tensor [H, W, 1]
+    projection_matrix = results['pca_projection']  # [D, 4]
+    edge_stats = results['geometry_stats']
+    
+    print(f"✅ PCA completata!")
+    print(f"  Output shape: {pca_visualization.shape}")
+    print(f"  Explained variance: {results['singular_values'][:3].cpu().numpy()}")
+    
+    return results
