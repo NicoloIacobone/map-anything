@@ -1,19 +1,19 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=test_consistency_loss_cluster
+#SBATCH --job-name=test_inference_MV
 #
 # Specify output file.
-#SBATCH --output=test_consistency_loss_cluster_%j.log
+#SBATCH --output=test_inference_MV_%j.log
 #
 # Specify error file.
-#SBATCH --error=test_consistency_loss_cluster_%j.err
+#SBATCH --error=test_inference_MV_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=08:00:00
+#SBATCH --time=00:15:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -29,10 +29,6 @@
 #
 # Specify disk limit on local scratch.
 #SBATCH --tmp=500000
-#
-# Specify email notifications.
-# #SBATCH --mail-type=BEGIN,END,FAIL
-# #SBATCH --mail-user=niacobone@student.ethz.ch
 
 echo "=== Job starting on $(hostname) at $(date) ==="
 # DATE_VAR=$(date +%Y%m%d%H%M%S)
@@ -46,12 +42,10 @@ source /cluster/scratch/niacobone/map-anything/myenv/bin/activate
 echo "Activated Python venv: $(which python)"
 
 # Execute
-cd /cluster/scratch/niacobone/map-anything/scripts
-echo "Starting MapAnything distillation..."
+cd /cluster/scratch/niacobone/map-anything/benchmarking/3d_instance_segmentation/
+echo "Starting segmentation..."
 
-export WANDB_API_KEY=$(cat "/cluster/home/niacobone/.config/wandb/wandb_api_key.txt")
-
-python distill.py machine=cluster train_params.run_name=test_consistency_loss_cluster
+python segmentation.py --image_folder /cluster/scratch/niacobone/distillation/dataset/scannet
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
