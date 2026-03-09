@@ -26,6 +26,23 @@ from mapanything.utils.image import rgb
 
 from nico.utils import pca_visualization, pca_visualization_student_only
 
+# Import for semantic feature processing
+try:
+    from sklearn.decomposition import PCA
+    import hdbscan
+    SKLEARN_AVAILABLE = True
+    warnings.filterwarnings(
+        "ignore",
+        message=".*force_all_finite.*ensure_all_finite.*",
+        category=FutureWarning,
+    )
+    # Keep clustering tractable at inference time.
+    MAX_HDBSCAN_POINTS = 30000
+    HDBSCAN_PCA_DIM = 32
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    warnings.warn("sklearn and/or hdbscan not available. Semantic feature processing will be disabled.")
+
 # Hard constraints - exactly what users can provide
 ALLOWED_VIEW_KEYS = {
     "img",  # Required - input images
@@ -392,6 +409,9 @@ def postprocess_model_outputs_for_inference(
             - 'intrinsics': Recovered pinhole camera intrinsics (B, 3, 3) if ray directions available
             - 'camera_poses': 4x4 pose matrices (B, 4, 4) if pose data available
             - 'mask': comprehensive mask for dense geometry outputs (B, H, W, 1) if requested
+            - 'semantic_features': raw semantic features (B, H, W, 256) if feat_8x available
+            - 'semantic_pca_rgb': PCA-reduced RGB visualization (B, H, W, 3) if feat_8x available
+            - 'semantic_clusters': HDBSCAN cluster labels (B, H, W) if feat_8x available
 
     """
     processed_outputs = []
@@ -441,6 +461,105 @@ def postprocess_model_outputs_for_inference(
             pose_matrices[:, :3, 3] = cam_trans
 
             processed_output["camera_poses"] = pose_matrices  # (B, 4, 4)
+
+        # ========== PROCESS SEMANTIC FEATURES (feat_8x) ==========
+        # Process semantic features if available (from distilled SAM2 DPT head)
+        if "feat_8x" in processed_output and SKLEARN_AVAILABLE:
+            feat_8x = processed_output["feat_8x"]  # (B, 256, 64, 64)
+            B, C, H_feat, W_feat = feat_8x.shape
+            H_img, W_img = img.shape[-2:]
+            
+            # Upsample to image resolution if necessary
+            if (H_feat, W_feat) != (H_img, W_img):
+                feat_8x_upsampled = torch.nn.functional.interpolate(
+                    feat_8x,
+                    size=(H_img, W_img),
+                    mode='bilinear',
+                    align_corners=False
+                )
+            else:
+                feat_8x_upsampled = feat_8x
+            
+            # Convert to HWC format for alignment with pts3d
+            semantic_features = feat_8x_upsampled.permute(0, 2, 3, 1).contiguous()  # (B, H, W, 256)
+            
+            # Store raw semantic features
+            processed_output["semantic_features"] = semantic_features
+            
+            # Process each batch element independently
+            semantic_pca_rgb_list = []
+            semantic_clusters_list = []
+            
+            for b in range(B):
+                feat_b = semantic_features[b].cpu().numpy()  # (H, W, 256)
+                H, W, C = feat_b.shape
+                
+                # Reshape to (N, 256) for processing
+                feat_flat = feat_b.reshape(-1, C)  # (H*W, 256)
+                
+                # ===== PCA: Reduce 256D → 3D (RGB) for visualization =====
+                try:
+                    pca = PCA(n_components=3)
+                    feat_pca = pca.fit_transform(feat_flat)  # (H*W, 3)
+                    
+                    # Normalize to [0, 1] for RGB visualization
+                    feat_pca_min = feat_pca.min(axis=0, keepdims=True)
+                    feat_pca_max = feat_pca.max(axis=0, keepdims=True)
+                    feat_pca_norm = (feat_pca - feat_pca_min) / (feat_pca_max - feat_pca_min + 1e-8)
+                    
+                    # Reshape back to (H, W, 3)
+                    pca_rgb = feat_pca_norm.reshape(H, W, 3)
+                    semantic_pca_rgb_list.append(torch.from_numpy(pca_rgb).float())
+                except Exception as e:
+                    warnings.warn(f"PCA failed for batch {b}: {e}")
+                    # Fallback: zeros
+                    semantic_pca_rgb_list.append(torch.zeros(H, W, 3))
+                
+                # ===== HDBSCAN: Cluster semantic features =====
+                try:
+                    total_points = H * W
+                    stride = max(1, int(np.ceil(np.sqrt(total_points / MAX_HDBSCAN_POINTS))))
+                    feat_small = feat_b[::stride, ::stride, :]
+                    hs, ws, _ = feat_small.shape
+                    feat_small_flat = feat_small.reshape(-1, C).astype(np.float32, copy=False)
+
+                    cluster_dim = min(HDBSCAN_PCA_DIM, C, feat_small_flat.shape[0])
+                    if cluster_dim >= 2:
+                        pca_cluster = PCA(
+                            n_components=cluster_dim,
+                            svd_solver="randomized",
+                            random_state=0,
+                        )
+                        feat_small_cluster = pca_cluster.fit_transform(feat_small_flat)
+                    else:
+                        feat_small_cluster = feat_small_flat
+
+                    clusterer = hdbscan.HDBSCAN(
+                        min_cluster_size=50,  # Adjust based on image size
+                        min_samples=10,
+                        metric='euclidean',
+                        cluster_selection_epsilon=0.0,
+                    )
+                    cluster_labels_small = clusterer.fit_predict(feat_small_cluster)
+
+                    clusters_small = cluster_labels_small.reshape(hs, ws)
+                    clusters = np.repeat(
+                        np.repeat(clusters_small, stride, axis=0),
+                        stride,
+                        axis=1,
+                    )[:H, :W]
+                    semantic_clusters_list.append(torch.from_numpy(clusters).long())
+                except Exception as e:
+                    warnings.warn(f"HDBSCAN failed for batch {b}: {e}")
+                    # Fallback: all noise (-1)
+                    semantic_clusters_list.append(torch.full((H, W), -1, dtype=torch.long))
+            
+            # Stack batch results
+            semantic_pca_rgb = torch.stack(semantic_pca_rgb_list, dim=0).to(feat_8x.device)  # (B, H, W, 3)
+            semantic_clusters = torch.stack(semantic_clusters_list, dim=0).to(feat_8x.device)  # (B, H, W)
+            
+            processed_output["semantic_pca_rgb"] = semantic_pca_rgb
+            processed_output["semantic_clusters"] = semantic_clusters
 
         # 5. Apply comprehensive mask to dense geometry outputs if requested
         if apply_mask:
@@ -535,6 +654,21 @@ def postprocess_model_outputs_for_inference(
                 for key in dense_geometry_keys:
                     if key in processed_output:
                         processed_output[key] = processed_output[key] * final_mask_torch
+
+                # Apply mask to semantic features (zero out invalid regions)
+                semantic_keys_3d = ["semantic_features", "semantic_pca_rgb"]
+                for key in semantic_keys_3d:
+                    if key in processed_output:
+                        processed_output[key] = processed_output[key] * final_mask_torch
+                
+                # Apply mask to semantic clusters (set invalid to -1 = noise)
+                if "semantic_clusters" in processed_output:
+                    final_mask_2d = final_mask_torch.squeeze(-1)  # (B, H, W)
+                    processed_output["semantic_clusters"] = torch.where(
+                        final_mask_2d,
+                        processed_output["semantic_clusters"],
+                        torch.full_like(processed_output["semantic_clusters"], -1)
+                    )
 
                 # Add mask to processed output
                 processed_output["mask"] = final_mask_torch

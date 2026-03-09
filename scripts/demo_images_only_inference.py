@@ -29,7 +29,8 @@ from mapanything.utils.viz import (
 
 
 def log_data_to_rerun(
-    image, depthmap, pose, intrinsics, pts3d, mask, base_name, pts_name, viz_mask=None
+    image, depthmap, pose, intrinsics, pts3d, mask, base_name, pts_name, viz_mask=None,
+    semantic_pca_rgb=None, semantic_clusters=None, log_semantic_pointcloud=False
 ):
     """Log visualization data to Rerun"""
     # Log camera info and loaded data
@@ -64,8 +65,21 @@ def log_data_to_rerun(
             f"{base_name}/pinhole/mask",
             rr.SegmentationImage(viz_mask.astype(int)),
         )
+    
+    # Log semantic visualizations if available
+    if semantic_pca_rgb is not None:
+        rr.log(
+            f"{base_name}/pinhole/semantic_pca",
+            rr.Image(semantic_pca_rgb),
+        )
+    
+    if semantic_clusters is not None:
+        rr.log(
+            f"{base_name}/pinhole/semantic_clusters",
+            rr.SegmentationImage(semantic_clusters.astype(np.int32)),
+        )
 
-    # Log points in 3D
+    # Log points in 3D with RGB colors
     filtered_pts = pts3d[mask]
     filtered_pts_col = image[mask]
 
@@ -76,6 +90,45 @@ def log_data_to_rerun(
             colors=filtered_pts_col.reshape(-1, 3),
         ),
     )
+    
+    # Log semantic point clouds if requested
+    if log_semantic_pointcloud:
+        if semantic_pca_rgb is not None:
+            filtered_semantic_pca = semantic_pca_rgb[mask]
+            rr.log(
+                f"{pts_name}_semantic_pca",
+                rr.Points3D(
+                    positions=filtered_pts.reshape(-1, 3),
+                    colors=filtered_semantic_pca.reshape(-1, 3),
+                ),
+            )
+        
+        if semantic_clusters is not None:
+            filtered_clusters = semantic_clusters[mask]
+            # Convert cluster IDs to colors
+            unique_labels = np.unique(filtered_clusters)
+            n_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
+            
+            # Simple colormap for clusters
+            from matplotlib import cm
+            cmap = cm.get_cmap('tab20', n_clusters + 1)
+            
+            cluster_colors = np.zeros((len(filtered_clusters), 3))
+            for label in unique_labels:
+                cluster_mask = filtered_clusters == label
+                if label == -1:
+                    cluster_colors[cluster_mask] = [0.5, 0.5, 0.5]  # Gray for noise
+                else:
+                    color_idx = label % 20
+                    cluster_colors[cluster_mask] = cmap(color_idx)[:3]
+            
+            rr.log(
+                f"{pts_name}_semantic_clusters",
+                rr.Points3D(
+                    positions=filtered_pts.reshape(-1, 3),
+                    colors=cluster_colors,
+                ),
+            )
 
 
 def get_parser():
@@ -105,6 +158,18 @@ def get_parser():
         action="store_true",
         default=False,
         help="Enable visualization with Rerun",
+    )
+    parser.add_argument(
+        "--viz_semantic",
+        action="store_true",
+        default=False,
+        help="Enable semantic feature visualization (PCA and clustering)",
+    )
+    parser.add_argument(
+        "--viz_semantic_pointcloud",
+        action="store_true",
+        default=False,
+        help="Enable semantic point cloud visualization (requires --viz_semantic)",
     )
     parser.add_argument(
         "--save_glb",
@@ -141,7 +206,12 @@ def main():
     else:
         model_name = "facebook/map-anything"
         print("Loading CC-BY-NC 4.0 licensed MapAnything model...")
-    model = MapAnything.from_pretrained(model_name).to(device)
+    # model = MapAnything.from_pretrained(model_name).to(device)
+    model = MapAnything.from_pretrained(
+            model_name,
+            revision="562de9ff7077addd5780415661c5fb031eb8003e",
+            strict=False,
+        ).to(device)
 
     # Load images
     print(f"Loading images from: {args.image_folder}")
@@ -185,6 +255,21 @@ def main():
         mask = mask & valid_mask.cpu().numpy()  # Combine with valid depth mask
         pts3d_np = pts3d_computed.cpu().numpy()
         image_np = pred["img_no_norm"][0].cpu().numpy()
+        
+        # Extract semantic features if available and requested
+        semantic_pca_rgb_np = None
+        semantic_clusters_np = None
+        
+        if args.viz_semantic:
+            if "semantic_pca_rgb" in pred:
+                semantic_pca_rgb_np = pred["semantic_pca_rgb"][0].cpu().numpy()
+            else:
+                print(f"Warning: semantic_pca_rgb not available in predictions for view {view_idx}")
+            
+            if "semantic_clusters" in pred:
+                semantic_clusters_np = pred["semantic_clusters"][0].cpu().numpy()
+            else:
+                print(f"Warning: semantic_clusters not available in predictions for view {view_idx}")
 
         # Store data for GLB export if needed
         if args.save_glb:
@@ -204,10 +289,19 @@ def main():
                 base_name=f"mapanything/view_{view_idx}",
                 pts_name=f"mapanything/pointcloud_view_{view_idx}",
                 viz_mask=mask,
+                semantic_pca_rgb=semantic_pca_rgb_np,
+                semantic_clusters=semantic_clusters_np,
+                log_semantic_pointcloud=args.viz_semantic_pointcloud,
             )
 
     if args.viz:
         print("Visualization complete! Check the Rerun viewer.")
+        if args.viz_semantic:
+            print("  - Semantic PCA visualization: mapanything/view_*/pinhole/semantic_pca")
+            print("  - Semantic clusters: mapanything/view_*/pinhole/semantic_clusters")
+        if args.viz_semantic_pointcloud:
+            print("  - Semantic PCA point cloud: mapanything/pointcloud_view_*_semantic_pca")
+            print("  - Semantic cluster point cloud: mapanything/pointcloud_view_*_semantic_clusters")
 
     # Export GLB if requested
     if args.save_glb:

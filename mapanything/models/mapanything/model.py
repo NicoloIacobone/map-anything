@@ -1449,7 +1449,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 f"Invalid pred_head_type: {self.pred_head_type}. Valid options: ['linear', 'dpt', 'dpt+pose']"
             )
 
-        return dense_final_outputs
+        return dense_final_outputs, feat_8x if hasattr(self, "_last_feat2_8x") else None
 
     def downstream_head(
         self,
@@ -1507,12 +1507,6 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 )
                 dense_final_outputs_list.append(dense_final_outputs_batch)
 
-                # Accumula embedding/fg_logit se calcolati nella dense head (per memory_efficient_inference)
-                if hasattr(self, "_last_inst_embeddings"):
-                    if not hasattr(self, "_inst_emb_accum"):
-                        self._inst_emb_accum = []
-                    self._inst_emb_accum.append(self._last_inst_embeddings)
-
                 # Pose prediction (mini-batched)
                 if self.pred_head_type == "dpt+pose":
                     pose_head_inputs_batch = dense_head_inputs[-1][start_idx:end_idx]
@@ -1539,11 +1533,6 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 **dense_pred_data_dict
             )
 
-            # Concatena gli embedding accumulati su tutti i mini-batch, se presenti
-            if hasattr(self, "_inst_emb_accum"):
-                self._last_inst_embeddings = torch.cat(self._inst_emb_accum, dim=0)
-                del self._inst_emb_accum
-
             # Concatenate the pose prediction head outputs from all mini-batches
             pose_final_outputs = None
             if self.pred_head_type == "dpt+pose":
@@ -1565,7 +1554,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         else:
             # Run prediction for all (batch_size * num_views) in one go
             # Dense prediction
-            dense_final_outputs = self.downstream_dense_head(
+            dense_final_outputs, feat_8x = self.downstream_dense_head(
                 dense_head_inputs, img_shape, use_encoder_features=use_encoder_features
             )
 
@@ -1598,7 +1587,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
         if memory_efficient_inference and device.type == "cuda":
             torch.cuda.empty_cache()
 
-        return dense_final_outputs, pose_final_outputs, scale_final_output
+        return dense_final_outputs, pose_final_outputs, scale_final_output, feat_8x if hasattr(self, "_last_feat2_8x") else None
 
     def forward(self, views, memory_efficient_inference=False, use_encoder_features=False):
         """
@@ -1832,7 +1821,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
             #       [x.shape for x in dense_head_inputs] if isinstance(dense_head_inputs, list) else dense_head_inputs.shape)
         
             # Run the downstream heads
-            dense_final_outputs, pose_final_outputs, scale_final_output = (
+            dense_final_outputs, pose_final_outputs, scale_final_output, feat_8x = (
                 self.downstream_head(
                     dense_head_inputs=dense_head_inputs,
                     scale_head_inputs=scale_head_inputs,
@@ -2087,7 +2076,6 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                             "metric_scaling_factor": scale_final_output,
                         }
                     )
-
             else:
                 raise ValueError(
                     f"Invalid scene_rep_type: {self.scene_rep_type}. \
@@ -2109,15 +2097,6 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 # Add the confidences to the result
                 for i in range(num_views):
                     res[i]["conf"] = output_confidences_per_view[i]
-
-            # Aggiungi embedding istanza e (opzionale) fg_logit per view, se calcolati
-            if hasattr(self, "_last_inst_embeddings"):
-                # Nuovo formato salvato direttamente come (B*V, C_emb, 64, 64)
-                emb_map = self._last_inst_embeddings  # 4D tensor
-                bv, c_emb, h8, w8 = emb_map.shape
-                emb_per_view = emb_map.chunk(num_views, dim=0)
-                for i in range(num_views):
-                    res[i]["inst_embeddings_8x"] = emb_per_view[i]
 
             # Get the output masks (and logits) for all views (if available) and add them to the result
             if "mask" in self.scene_rep_type:
@@ -2142,6 +2121,13 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                     res[i]["non_ambiguous_mask"] = output_masks_per_view[i]
                     res[i]["non_ambiguous_mask_logits"] = output_mask_logits_per_view[i]
 
+            # Get the output features from the second DPT head (distilled SAM2 features)
+            if feat_8x is not None:
+                # Split the features back to their respective views
+                feat_8x_per_view = feat_8x.chunk(num_views, dim=0)
+                # Add the features to the result
+                for i in range(num_views):
+                    res[i]["feat_8x"] = feat_8x_per_view[i]
 
         ##################################################
         return res
