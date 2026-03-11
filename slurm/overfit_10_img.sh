@@ -70,7 +70,7 @@ echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
 torchrun --nproc_per_node=$NUM_GPUS distillation_backup.py \
   --distributed \
   --use_wandb \
-  --wandb_name "overfit_10_img" \
+  --wandb_name "overfit_10_img_2" \
   --dataset coco2017 \
   --lr 0.0001125 \
   --batch_size 4 \
