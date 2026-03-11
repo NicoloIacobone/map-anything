@@ -49,7 +49,7 @@ echo "Activated Python venv: $(which python)"
 cd /cluster/scratch/niacobone/map-anything
 echo "Starting MapAnything distillation..."
 
-python distillation_backup.py --dataset coco2017_red --epochs 1000 --save_freq 25 --save_visualizations_encoder --overfit --save_viz_every 1 --save_encoder_ckpt
+python distillation_backup.py --dataset coco2017_red --epochs 1000 --save_freq 100 --save_encoder_ckpt --save_visualizations_encoder --overfit --save_viz_every 100
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
