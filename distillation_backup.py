@@ -1010,7 +1010,8 @@ def train_one_epoch_distillation(
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(loss=total_loss_value, **loss_details)
 
-        if args.save_visualizations_encoder and data_iter_step == 0 and (epoch + 1) % args.save_viz_every == 0 and args.overfit or (args.overfit and epoch == 0):
+        # if args.save_visualizations_encoder and data_iter_step == 0 and (epoch + 1) % args.save_viz_every == 0 and args.overfit or (args.overfit and epoch == 0):
+        if args.save_visualizations_encoder and args.overfit:
             save_pca_visualizations(
                 student_features=student_features,
                 teacher_features=teacher_features,
@@ -1224,7 +1225,8 @@ def validate_one_epoch_distillation(
         metric_logger.update(loss=loss_value, **loss_details)
         
         # Salva visualizzazioni se richiesto
-        if args.save_visualizations_encoder and batch_idx == 0:
+        # if args.save_visualizations_encoder and batch_idx == 0:
+        if args.save_visualizations_encoder:
             save_pca_visualizations(
                 student_features=student_features,
                 teacher_features=teacher_features,
@@ -1316,9 +1318,6 @@ def save_pca_visualizations(
     # Move to CPU
     student_cpu = student_features.detach().cpu()  # (B, C, H, W)
     teacher_cpu = teacher_features.detach().cpu()  # (B, C, H, W)
-
-    # Upsampler opzionale verso risoluzione immagine originale
-    # feature_upsampler = FixedFeatureUpsampler(mode="bilinear", align_corners=False) if upsample else None
     
     B = student_cpu.shape[0]
     
@@ -1328,30 +1327,6 @@ def save_pca_visualizations(
         # Extract single image features (keep batch dimension for nico.utils compatibility)
         student_single = student_cpu[batch_idx:batch_idx+1]  # (1, C, H, W)
         teacher_single = teacher_cpu[batch_idx:batch_idx+1]  # (1, C, H, W)
-
-        # print("Student features shape before upsampling:", student_single.shape)
-        # print("Teacher features shape before upsampling:", teacher_single.shape)
-
-        # # Upsample a risoluzione originale immagine (opzionale)
-        # if feature_upsampler is not None:
-        #     try:
-        #         with Image.open(img_path) as img:
-        #             target_hw = (img.height, img.width)  # (H, W)
-
-        #         # Se FixedFeatureUpsampler accetta (x, target_hw)
-        #         student_single = feature_upsampler(student_single, target_hw)
-        #         teacher_single = feature_upsampler(teacher_single, target_hw)
-        #     except TypeError:
-        #         # Fallback se l'implementazione ha firma diversa
-        #         student_single = F.interpolate(
-        #             student_single, size=target_hw, mode="bilinear", align_corners=False
-        #         )
-        #         teacher_single = F.interpolate(
-        #             teacher_single, size=target_hw, mode="bilinear", align_corners=False
-        #         )
-        
-        # print("Student features shape after upsampling:", student_single.shape)
-        # print("Teacher features shape after upsampling:", teacher_single.shape)
 
         # Create and save side-by-side visualization using nico.utils function
         # This function handles PCA, image loading, compositing, and saving
@@ -1363,7 +1338,8 @@ def save_pca_visualizations(
                 epoch=epoch,
                 output_heatmaps=str(viz_dir),
                 is_overfit_image=False,  # Dynamic PCA basis (not saved/loaded from disk)
-            )            
+                save_embeddings=True,
+            )
         except Exception as e:
             print(f"[WARN] Failed to create PCA visualization for {img_path}: {e}")
             continue

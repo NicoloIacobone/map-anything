@@ -1664,14 +1664,14 @@ def create_student_original_teacher_side_by_side(
     if save_embeddings:
         student_save_path = Path(str(output_heatmaps)) / "student"
         student_save_path.mkdir(parents=True, exist_ok=True)
-        teacher_save_path = Path(str(output_heatmaps)) / "teacher"
-        teacher_save_path.mkdir(parents=True, exist_ok=True)
-        
-        # Ensure tensors are detached, cloned, and contiguous before saving
         student_embeddings = student_embeddings.detach().cpu().contiguous().clone()
-        teacher_embeddings = teacher_embeddings.detach().cpu().contiguous().clone()
         torch.save(student_embeddings, student_save_path / f"{image_name}_epoch_{epoch}.pt")
-        torch.save(teacher_embeddings, teacher_save_path / f"{image_name}_epoch_{epoch}.pt")
+        
+        if epoch == 0:
+            teacher_save_path = Path(str(output_heatmaps)) / "teacher"
+            teacher_save_path.mkdir(parents=True, exist_ok=True)
+            teacher_embeddings = teacher_embeddings.detach().cpu().contiguous().clone()
+            torch.save(teacher_embeddings, teacher_save_path / f"{image_name}_epoch_{epoch}.pt")
 
 def pca_visualization_student_only(
     batch: List[Dict[str, Any]],

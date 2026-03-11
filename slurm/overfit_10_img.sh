@@ -25,7 +25,7 @@
 #SBATCH --mem-per-cpu=4096
 #
 # Specify number of required GPUs.
-#SBATCH --gpus=rtx_4090:2
+#SBATCH --gpus=rtx_4090:1
 #
 # Specify disk limit on local scratch.
 #SBATCH --tmp=500000
@@ -49,41 +49,7 @@ echo "Activated Python venv: $(which python)"
 cd /cluster/scratch/niacobone/map-anything
 echo "Starting MapAnything distillation..."
 
-export WANDB_API_KEY=$(cat "/cluster/home/niacobone/.config/wandb/wandb_api_key.txt")
-
-# Rileva automaticamente il numero di GPU allocate da SLURM
-# SLURM_GPUS_ON_NODE contiene il numero di GPU (es. "4")
-# CUDA_VISIBLE_DEVICES contiene gli ID separati da virgola (es. "0,1,2,3")
-if [ -n "$SLURM_GPUS_ON_NODE" ]; then
-    NUM_GPUS=$SLURM_GPUS_ON_NODE
-elif [ -n "$CUDA_VISIBLE_DEVICES" ]; then
-    # Conta le virgole + 1 per ottenere il numero di GPU
-    NUM_GPUS=$(echo "$CUDA_VISIBLE_DEVICES" | awk -F',' '{print NF}')
-else
-    # Fallback: usa nvidia-smi
-    NUM_GPUS=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)
-fi
-
-echo "Detected $NUM_GPUS GPUs: $CUDA_VISIBLE_DEVICES"
-
-# Usa automaticamente tutte le GPU disponibili
-torchrun --nproc_per_node=$NUM_GPUS distillation_backup.py \
-  --distributed \
-  --use_wandb \
-  --wandb_name "overfit_10_img_2" \
-  --dataset coco2017 \
-  --lr 0.0001125 \
-  --batch_size 4 \
-  --num_workers 4 \
-  --epochs 5000 \
-  --debug_max_train_images 10 \
-  --debug_max_val_images 1 \
-  --save_freq 500 \
-  --save_visualizations_encoder \
-  --amp \
-  --print_freq 100 \
-  --save_encoder_ckpt \
-  --overfit
+python distillation_backup.py --epochs 1000 --debug_max_train_images 10 --save_freq 25 --save_visualizations_encoder --overfit --save_viz_every 1 --save_encoder_ckpt
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
