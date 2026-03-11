@@ -103,7 +103,7 @@ def setup_runtime_paths(args):
     # Usa args.dataset
     DATASET = args.dataset  # "coco2017" o "ETH3D"
 
-    if DATASET == "coco2017" or DATASET == "coco2017_red":
+    if DATASET == "coco2017" or DATASET == "coco2017_red" or DATASET == "coco2017_red_10":
         TRAIN_SPLIT = "train2017"
         VAL_SPLIT = "val2017"
     else:
@@ -2887,7 +2887,7 @@ def get_args_parser():
     parser.add_argument("--normalize_features", action="store_true", help="Normalize features before loss")
     
     # Data
-    parser.add_argument("--dataset", type=str, default="coco2017", choices=["coco2017", "coco2017_red", "ETH3D", "ETH3D_single"], help="Seleziona il dataset")
+    parser.add_argument("--dataset", type=str, default="coco2017", choices=["coco2017", "coco2017_red", "coco2017_red_10", "ETH3D", "ETH3D_single"], help="Seleziona il dataset")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
     parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging")
     parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
@@ -2947,6 +2947,8 @@ def get_args_parser():
     parser.add_argument("--overfit", action="store_true", help="Enable Overfit mode (debugging) to print pca visualization during training")
     parser.add_argument("--save_viz_every", type=int, default=50, help="Save visualizations every N epochs in Overfit mode")
     
+    # python distillation_backup.py --dataset coco2017_red_10 --epochs 501 --save_visualizations_encoder --overfit --save_viz_every 1 --resume_encoder_ckpt /scratch2/nico/distillation/output/overfit_100_img/checkpoints/checkpoint_encoder_epoch500.pth
+
     # comando debug pc lab
     # python distillation_test_multi_view_gemini.py --epochs 5 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 2
     # python distillation_test_multi_view_gemini.py --epochs 10 --log_freq 1 --debug_max_train_images 10 --debug_max_val_images 5 --save_freq 1 --save_visualizations --num_info_sharing_blocks_unfreeze 4 --resume_ckpt /scratch2/nico/distillation/output/distill_20251125_143157/checkpoints/checkpoint_best.pth
