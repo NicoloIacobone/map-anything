@@ -103,7 +103,7 @@ def setup_runtime_paths(args):
     # Usa args.dataset
     DATASET = args.dataset  # "coco2017" o "ETH3D"
 
-    if DATASET == "coco2017":
+    if DATASET == "coco2017" or DATASET == "coco2017_red":
         TRAIN_SPLIT = "train2017"
         VAL_SPLIT = "val2017"
     else:
@@ -2886,7 +2886,7 @@ def get_args_parser():
     parser.add_argument("--normalize_features", action="store_true", help="Normalize features before loss")
     
     # Data
-    parser.add_argument("--dataset", type=str, default="coco2017", choices=["coco2017", "ETH3D", "ETH3D_single"], help="Seleziona il dataset")
+    parser.add_argument("--dataset", type=str, default="coco2017", choices=["coco2017", "coco2017_red", "ETH3D", "ETH3D_single"], help="Seleziona il dataset")
     parser.add_argument("--num_workers", type=int, default=4, help="Number of dataloader workers")
     parser.add_argument("--debug_max_train_images", type=int, default=None, help="Limit training images for debugging")
     parser.add_argument("--debug_max_val_images", type=int, default=None, help="Limit validation images for debugging")
