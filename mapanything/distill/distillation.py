@@ -359,7 +359,6 @@ def distillation(args):
                     device,
                     epoch,
                     args=args,
-                    prefix=test_name,
                 )
                 test_stats[test_name] = stats
 
@@ -640,7 +639,6 @@ def test_one_epoch(
     device: torch.device,
     epoch: int,
     args,
-    prefix="test",
 ):
     """
     Evaluates the model on a test dataset for one epoch.

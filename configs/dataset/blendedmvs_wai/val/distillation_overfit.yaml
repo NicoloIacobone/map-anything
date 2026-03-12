@@ -3,6 +3,7 @@ dataset_str:
     split='${dataset.blendedmvs_wai.val.split}',
     resolution=${dataset.blendedmvs_wai.val.dataset_resolution},
     principal_point_centered=${dataset.blendedmvs_wai.val.principal_point_centered},
+    aug_crop=${dataset.blendedmvs_wai.train.aug_crop},
     seed=${dataset.blendedmvs_wai.val.seed},
     transform='${dataset.blendedmvs_wai.val.transform}',
     data_norm_type='${dataset.blendedmvs_wai.val.data_norm_type}',
@@ -16,6 +17,7 @@ split: 'val'
 dataset_resolution: ${dataset.resolution_val_blendedmvs}
 principal_point_centered: ${dataset.principal_point_centered}
 seed: 777
+aug_crop: 0
 transform: 'imgnorm'
 data_norm_type: ${model.data_norm_type}
 ROOT: ${root_data_dir}/blendedmvs

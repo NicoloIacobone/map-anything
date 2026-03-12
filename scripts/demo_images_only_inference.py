@@ -26,7 +26,98 @@ from mapanything.utils.viz import (
     predictions_to_glb,
     script_add_rerun_args,
 )
+from typing import Tuple
 
+def load_encoder_checkpoint(
+    model_without_ddp,
+    checkpoint_path: str,
+    device: torch.device,
+) -> Tuple[int, float]:
+    """
+    Load checkpoint containing only ENCODER trainable components.
+    
+    Loads:
+        - dpt_feature_head_2 (student encoder)
+        - sam2_compat (student encoder compatibility layer)
+        - unfrozen info_sharing blocks (multi-view transformer)
+        - unfrozen DINOv2 encoder blocks
+    
+    Args:
+        model_without_ddp: Model without DDP wrapper
+        checkpoint_path: Path to encoder checkpoint
+        device: Device to load checkpoint on
+        args: Training arguments (optional, not required for loading)
+    
+    Returns:
+        (start_epoch, best_val_loss) tuple from checkpoint
+    """
+    print(f"[LOAD] Loading encoder checkpoint: {checkpoint_path}")
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    print(f"[DEBUG] Checkpoint content: {ckpt.keys()}")
+    
+    # Load encoder head
+    if "dpt_feature_head_2" in ckpt:
+        model_without_ddp.dpt_feature_head_2.load_state_dict(ckpt["dpt_feature_head_2"])
+        print("[INFO] Loaded dpt_feature_head_2")
+    else:
+        print("[WARN] dpt_feature_head_2 not found in encoder checkpoint!")
+    
+    # Load sam2_compat if present
+    if "sam2_compat" in ckpt and hasattr(model_without_ddp, "sam2_compat"):
+        model_without_ddp.sam2_compat.load_state_dict(ckpt["sam2_compat"])
+        print("[INFO] Loaded sam2_compat")
+    elif hasattr(model_without_ddp, "sam2_compat"):
+        print("[INFO] sam2_compat not in encoder checkpoint; using random initialization")
+    
+    # Load info_sharing blocks (NO dipendenza da args)
+    if "info_sharing_blocks" in ckpt and hasattr(model_without_ddp, "info_sharing"):
+        info = model_without_ddp.info_sharing
+        blocks = getattr(info, "self_attention_blocks", None)
+        if blocks:
+            for idx, state_dict in ckpt["info_sharing_blocks"].items():
+                if idx < len(blocks):
+                    try:
+                        blocks[idx].load_state_dict(state_dict)
+                    except Exception as e:
+                        print(f"[WARN] Failed loading info_sharing block {idx}: {e}")
+            print(f"[INFO] Restored {len(ckpt['info_sharing_blocks'])} info_sharing blocks")
+        
+        if "info_sharing_wrappers" in ckpt:
+            for name, data in ckpt["info_sharing_wrappers"].items():
+                try:
+                    param = dict(info.named_parameters())[name]
+                    param.data.copy_(data)
+                except Exception as e:
+                    print(f"[WARN] Failed loading wrapper param {name}: {e}")
+            print(f"[INFO] Restored {len(ckpt['info_sharing_wrappers'])} info_sharing wrapper params")
+    
+    # Load DINOv2 blocks (NO dipendenza da args)
+    if "dino_encoder_blocks" in ckpt and hasattr(model_without_ddp, "encoder"):
+        dino_encoder = model_without_ddp.encoder
+        dino_model = dino_encoder.model if hasattr(dino_encoder, "model") else dino_encoder
+        blocks = getattr(dino_model, "blocks", None)
+        if blocks:
+            for idx, state_dict in ckpt["dino_encoder_blocks"].items():
+                if idx < len(blocks):
+                    try:
+                        blocks[idx].load_state_dict(state_dict)
+                    except Exception as e:
+                        print(f"[WARN] Failed loading DINOv2 block {idx}: {e}")
+            print(f"[INFO] Restored {len(ckpt['dino_encoder_blocks'])} DINOv2 blocks")
+        
+        if "dino_encoder_wrappers" in ckpt:
+            for name, data in ckpt["dino_encoder_wrappers"].items():
+                try:
+                    param = dict(dino_model.named_parameters())[name]
+                    param.data.copy_(data)
+                except Exception as e:
+                    print(f"[WARN] Failed loading wrapper param {name}: {e}")
+            print(f"[INFO] Restored {len(ckpt['dino_encoder_wrappers'])} DINOv2 wrapper params")
+    
+    start_epoch = ckpt.get("epoch", 0) + 1
+    best_val_loss = ckpt.get("best_val_loss", float("inf"))
+    
+    return start_epoch, best_val_loss
 
 def log_data_to_rerun(
     image, depthmap, pose, intrinsics, pts3d, mask, base_name, pts_name, viz_mask=None,
@@ -212,6 +303,13 @@ def main():
             revision="562de9ff7077addd5780415661c5fb031eb8003e",
             strict=False,
         ).to(device)
+
+    _, _ = load_encoder_checkpoint(
+            model_without_ddp=model,
+            # checkpoint_path="/scratch2/nico/distillation/output/overfit_1000_img/checkpoints/checkpoint_encoder_epoch1500.pth",
+            checkpoint_path="/scratch2/nico/distillation/output/test_consistency_loss_cluster/checkpoints/checkpoint_encoder_10000.pth",
+            device=device,
+        )
 
     # Load images
     print(f"Loading images from: {args.image_folder}")

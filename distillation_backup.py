@@ -1010,8 +1010,8 @@ def train_one_epoch_distillation(
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(loss=total_loss_value, **loss_details)
 
-        # if args.save_visualizations_encoder and data_iter_step == 0 and (epoch + 1) % args.save_viz_every == 0 and args.overfit or (args.overfit and epoch == 0):
-        if args.save_visualizations_encoder and (epoch + 1) % args.save_viz_every == 0 and args.overfit or (args.overfit and epoch == 0):
+        if args.save_visualizations_encoder and data_iter_step == 0 and (epoch + 1) % args.save_viz_every == 0 and args.overfit or (args.overfit and epoch == 0):
+        # if args.save_visualizations_encoder and (epoch + 1) % args.save_viz_every == 0 and args.overfit or (args.overfit and epoch == 0):
         # if args.save_visualizations_encoder and args.overfit:
             save_pca_visualizations(
                 student_features=student_features,

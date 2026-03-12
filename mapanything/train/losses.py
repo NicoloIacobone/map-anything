@@ -5329,14 +5329,14 @@ class SemanticConsistencyLoss(BaseCriterion):
             # staremmo confrontando l'Anchor con se stesso (Target = Anchor), Loss = 0.
             final_mask = has_matches_mask # 1, 64, 64 - manteniamo solo pixel con match validi
             
-            print(f"[DEBUG] View {i} - Consistency Valid Pixels: {final_mask.sum().item()}/{final_mask.numel()} ({final_mask.sum()/final_mask.numel():.2%})")
+            # print(f"[DEBUG] View {i} - Consistency Valid Pixels: {final_mask.sum().item()}/{final_mask.numel()} ({final_mask.sum()/final_mask.numel():.2%})")
 
             loss_i = loss_i[final_mask]
 
             if loss_i.numel() > 0:
                 cons_mean = loss_i.mean() # per view consistency loss 
                 consistency_losses.append(cons_mean)
-                print(f"[DEBUG] View {i} - Consistency Loss: {cons_mean.item():.4f}")
+                # print(f"[DEBUG] View {i} - Consistency Loss: {cons_mean.item():.4f}")
             else:
                 consistency_losses.append(torch.tensor(0.0, device=anchor_pts_world.device, requires_grad=True))
 
@@ -5344,7 +5344,7 @@ class SemanticConsistencyLoss(BaseCriterion):
         total_dist = sum(distillation_losses) / n_views      # Eq. 2
         total_cons = sum(consistency_losses) / n_views     # Eq. 4, 5
         
-        print(f"[DEBUG] TOTAL Dist: {total_dist.item():.4f} | TOTAL Cons: {total_cons.item():.4f}")
+        # print(f"[DEBUG] TOTAL Dist: {total_dist.item():.4f} | TOTAL Cons: {total_cons.item():.4f}")
         
         loss = (self.dist_w * total_dist) + (self.cons_w * total_cons)
         

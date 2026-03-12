@@ -3,6 +3,7 @@ dataset_str:
     split='${dataset.blendedmvs_wai.train.split}',
     resolution=${dataset.blendedmvs_wai.train.dataset_resolution},
     principal_point_centered=${dataset.blendedmvs_wai.train.principal_point_centered},
+    seed=${dataset.blendedmvs_wai.train.seed},
     aug_crop=${dataset.blendedmvs_wai.train.aug_crop},
     transform='${dataset.blendedmvs_wai.train.transform}',
     data_norm_type='${dataset.blendedmvs_wai.train.data_norm_type}',
@@ -15,6 +16,7 @@ dataset_str:
 split: 'train'
 dataset_resolution: ${dataset.resolution_train}
 principal_point_centered: ${dataset.principal_point_centered}
+seed: 777
 aug_crop: 0
 transform: 'imgnorm'
 data_norm_type: ${model.data_norm_type}
@@ -23,4 +25,4 @@ dataset_metadata_dir: ${mapanything_dataset_metadata_dir}
 variable_num_views: ${dataset.train.variable_num_views}
 num_views: ${dataset.num_views}
 covisibility_thres: 0.50
-overfit_num_sets: 1
+overfit_num_sets: 50
