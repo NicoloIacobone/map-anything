@@ -307,7 +307,7 @@ def main():
     _, _ = load_encoder_checkpoint(
             model_without_ddp=model,
             # checkpoint_path="/scratch2/nico/distillation/output/overfit_1000_img/checkpoints/checkpoint_encoder_epoch1500.pth",
-            checkpoint_path="/scratch2/nico/distillation/output/test_consistency_loss_cluster/checkpoints/checkpoint_encoder_10000.pth",
+            checkpoint_path="/scratch2/nico/distillation/output/SV_03_new/checkpoints/checkpoint_epoch17.pth",
             device=device,
         )
 
