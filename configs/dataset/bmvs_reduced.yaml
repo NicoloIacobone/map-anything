@@ -23,7 +23,7 @@ resolution_val_blendedmvs: ${dataset.resolution_options.518_1_00_ar}
 
 # Training Set
 train_dataset:
-  "+ 40 @ ${dataset.blendedmvs_wai.train.dataset_str}"
+  "+ 2 @ ${dataset.blendedmvs_wai.train.dataset_str}"
 
 # Validation Set
 test_dataset:
