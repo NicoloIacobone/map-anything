@@ -14,14 +14,14 @@ train:
 
 # Train Resolution
 # resolution_train: ${dataset.resolution_options.518_many_ar} <- original, conteneva molte risoluzioni diverse
-resolution_train: ${dataset.resolution_options.518_1_00_ar}
-# ora solo 518x518
+resolution_train: ${dataset.resolution_options.224_1_00_ar}
+# ora solo 224x224
 
 # Validation Resolution
 # resolution_val_blendedmvs: ${dataset.resolution_options.518_1_33_ar} <- original, conteneva molte risoluzioni diverse
-resolution_val_blendedmvs: ${dataset.resolution_options.518_1_00_ar}
+resolution_val_blendedmvs: ${dataset.resolution_options.224_1_00_ar}
 
-# Training Set
+# Training Set - num_scene @ dataset_setting - es. if num_views = 4 -> 2 @ 4 = 8 tot imgs
 train_dataset:
   "+ 2 @ ${dataset.blendedmvs_wai.train.dataset_str}"
 

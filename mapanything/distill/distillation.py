@@ -18,10 +18,10 @@ import torch.optim as optim
 # from torch.utils.tensorboard import SummaryWriter
 
 # Visualizzazione PCA
-import matplotlib
-matplotlib.use('Agg') # Fondamentale per SSH / No-GUI environment
-import matplotlib.pyplot as plt
-from sklearn.decomposition import PCA
+# import matplotlib
+# matplotlib.use('Agg') # Fondamentale per SSH / No-GUI environment
+# import matplotlib.pyplot as plt
+# from sklearn.decomposition import PCA
 
 import mapanything.utils.train_tools as train_tools
 from mapanything.datasets import get_test_data_loader, get_train_data_loader
@@ -37,10 +37,10 @@ from nico.utils import (
     log_wandb_batch_distill,
     log_wandb_epoch_distill,
 )
-from sam2_minimal.sam2_builder import (
-    build_sam_mask_decoder,
-    load_sam2_teacher_prompt_and_decoder,
-)
+# from sam2_minimal.sam2_builder import (
+#     build_sam_mask_decoder,
+#     load_sam2_teacher_prompt_and_decoder,
+# )
 from mapanything.distill.help_me.dataset_dataloader import TeacherFeatureExtractor
 
 # Enable TF32 precision if supported (for GPU >= Ampere and PyTorch >= 1.12)
@@ -109,19 +109,19 @@ def distillation(args):
     model_without_ddp = model
 
     # ========== INITIALIZE STUDENT DECODER ==========
-    print(f"[INFO] Building student MaskDecoder...")
-    sam_mask_decoder_student = build_sam_mask_decoder(
-        embed_dim=256,
-        num_multimask_outputs=3,
-        use_high_res_features=False,
-        pred_obj_scores=False,
-        pred_obj_scores_mlp=False,
-        iou_prediction_use_sigmoid=False,
-    ).to(device)
-    print(f"[INFO] Student MaskDecoder built: {sum(p.numel() for p in sam_mask_decoder_student.parameters()):,} params")
+    # print(f"[INFO] Building student MaskDecoder...")
+    # sam_mask_decoder_student = build_sam_mask_decoder(
+    #     embed_dim=256,
+    #     num_multimask_outputs=3,
+    #     use_high_res_features=False,
+    #     pred_obj_scores=False,
+    #     pred_obj_scores_mlp=False,
+    #     iou_prediction_use_sigmoid=False,
+    # ).to(device)
+    # print(f"[INFO] Student MaskDecoder built: {sum(p.numel() for p in sam_mask_decoder_student.parameters()):,} params")
 
-    # Attach student decoder to model
-    model_without_ddp.sam2_mask_decoder_student = sam_mask_decoder_student
+    # # Attach student decoder to model
+    # model_without_ddp.sam2_mask_decoder_student = sam_mask_decoder_student
 
     # ========== INITIALIZE TEACHER ENCODER ==========
     print(f"[INFO] Preparing teacher feature extractor...")
@@ -135,15 +135,15 @@ def distillation(args):
     teacher_extractor.to(device)
 
     # ========== INITIALIZE TEACHER DECODER ==========
-    print(f"[INFO] Loading teacher PromptEncoder and MaskDecoder...")
-    sam_prompt_encoder_teacher, sam_mask_decoder_teacher = load_sam2_teacher_prompt_and_decoder(
-        checkpoint_path=args.sam2_path,
-        device=str(device),
-        image_size=1024,
-        backbone_stride=16,
-        embed_dim=256,
-    )
-    print(f"[INFO] Teacher decoder components loaded and frozen")
+    # print(f"[INFO] Loading teacher PromptEncoder and MaskDecoder...")
+    # sam_prompt_encoder_teacher, sam_mask_decoder_teacher = load_sam2_teacher_prompt_and_decoder(
+    #     checkpoint_path=args.sam2_path,
+    #     device=str(device),
+    #     image_size=1024,
+    #     backbone_stride=16,
+    #     embed_dim=256,
+    # )
+    # print(f"[INFO] Teacher decoder components loaded and frozen")
 
     # ========== FREEZE STRATEGY ==========
     freeze_info = setup_freeze_strategy(
@@ -172,7 +172,7 @@ def distillation(args):
             model,
             device_ids=[args.distributed.gpu],
             find_unused_parameters=False, # perché tutti i moduli trainable sono sempre usati nella forward
-            static_graph=False, # il grafo cambia perché usiamo diversi numeri di views in diverse scene, in single view va bene False
+            static_graph=args.dataset.train.variable_num_views, # il graph è statico se abbiamo un numero fisso di views, altrimenti è dinamico.
         )
         model_without_ddp = model.module
 
