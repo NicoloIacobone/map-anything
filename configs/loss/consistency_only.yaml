@@ -1,0 +1,2 @@
+train_criterion: "SemanticConsistencyLoss(distillation_weight=0.0, consistency_weight=1.0, min_conf=1.0)"
+test_criterion: "SemanticConsistencyLoss(distillation_weight=0.0, consistency_weight=1.0, min_conf=1.0)"

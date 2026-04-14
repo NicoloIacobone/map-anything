@@ -2,7 +2,7 @@ defaults:
   - machine: local
   - model: mapanything_distillation
   - dataset: bmvs_reduced
-  - loss: distillation
+  - loss: distillation_only
   - train_params: distillation
   - distributed: disabled
   - wandb_config: distillation

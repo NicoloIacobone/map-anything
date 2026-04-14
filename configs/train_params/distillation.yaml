@@ -1,6 +1,6 @@
-run_name: "test_2nd_part"
+run_name: "test"
 use_wandb: false
-epochs: 1000
+epochs: 10000
 start_epoch: 0
 batch_size: null
 accum_iter: 1
@@ -49,7 +49,7 @@ resume_encoder_ckpt: null
 resume_decoder_ckpt: null
 resume_trainer_ckpt: null
 # ========== SAVE CHECKPOINTS (boolean) ==========
-save_freq: 10
+save_freq: 250
 save_encoder_ckpt: true
 save_decoder_ckpt: null
 save_trainer_ckpt: null
@@ -71,7 +71,7 @@ overfit: false
 save_pca_visualization_every: 1
 
 # ========== TESTING STRATEGY ===========
-eval_freq: 10
+eval_freq: 250
 save_pca_visualization: true
 freeze_val_samples_across_all_epochs: true # Freeze the validation samples across all epochs (always use the same val samples)
 
