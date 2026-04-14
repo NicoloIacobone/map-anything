@@ -4,7 +4,7 @@ defaults:
   - override blendedmvs_wai/val: distillation_overfit
 
 # Number of views parameter for the multi-view datasets
-num_views: 4
+num_views: 1
 # Number of workers for dataloader
 num_workers: 8
 

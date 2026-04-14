@@ -27,6 +27,7 @@ Per evitare di confondermi ho splittato in 3 le configurazioni della loss, in mo
 Cose imparate:
 - Il cluster in single GPU con stessa configurazione del locale è circa 7 volte più veloce (3H vs 21H), quindi per test non va mai usato il locale.
 - Quando vengono modificati i parametri del dataset (max_num_of_imgs_per_gpu, num_views, ecc) è necessario controllare che il numero di immagini totali per scena sia sufficiente per il batch size e il numero di epoche, altrimenti va in errore.
+- Il probema delle features strane non deriva dalla risoluzione
 
 Cose da risolvere:
 - Capire perché la distillazione solo con distillation loss fa generare una strana noise visualizzabile con PCA dello student, nonostante la loss sia bassa. Ipotizzo centri qualcosa con la fusione delle features per scena.
