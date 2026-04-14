@@ -79,7 +79,7 @@ freeze_val_samples_across_all_epochs: true # Freeze the validation samples acros
 seed: 0
 disable_cudnn_benchmark: true
 print_freq: 1
-print_trainable: true
-print_optim_params: true
+print_trainable: false
+print_optim_params: false
 amp: true
 amp_dtype: "bf16"

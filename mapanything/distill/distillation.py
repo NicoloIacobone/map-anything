@@ -581,13 +581,25 @@ def train_one_epoch(
             save_pca_visualization_path=save_pca_visualization_path, # only when overfitting
             epoch=epoch,
         )
-        loss, loss_details = result["loss"]
+        _, loss_details = result["loss"]
 
-        if n_views > 2:
-            loss = loss * (
-                2 / n_views
-            )  # scale the loss relative to the number of views (base is 2 views)
-        loss_value = float(loss.detach()) # questo serve per il logging
+        # if n_views > 2:
+        #     loss = loss * (
+        #         2 / n_views
+        #     )  # scale the loss relative to the number of views (base is 2 views)
+        # loss_value = float(loss.detach()) # questo serve per il logging
+
+        # scala solo consistency quando n_views > 2
+        cons_scale = (2.0 / n_views) if n_views > 2 else 1.0
+
+        # ricostruisci la loss dai componenti
+        loss = (
+            criterion.dist_w * loss_details["loss_sem_dist"] +
+            criterion.cons_w * cons_scale * loss_details["loss_sem_cons"]
+        )
+
+        # valore per logging
+        loss_value = float(loss.detach())
 
         # Scale the loss by the number of gradient accumulation iterations
         loss /= accum_iter
@@ -730,12 +742,20 @@ def test_one_epoch(
             save_pca_visualization_path=save_pca_visualization_path,
             epoch=epoch,
         )
-        loss_value, loss_details = result["loss"]
+        _, loss_details = result["loss"]
 
-        if n_views > 2:
-            loss_value = loss_value * (
-                2 / n_views
-            )  # scale the loss relative to the number of views (base is 2 views)
+        # if n_views > 2:
+        #     loss_value = loss_value * (
+        #         2 / n_views
+        #     )  # scale the loss relative to the number of views (base is 2 views)
+        # metric_logger.update(loss=float(loss_value), **loss_details)
+
+        cons_scale = (2.0 / n_views) if n_views > 2 else 1.0
+        loss_value = (
+            criterion.dist_w * loss_details["loss_sem_dist"] +
+            criterion.cons_w * cons_scale * loss_details["loss_sem_cons"]
+        )
+
         metric_logger.update(loss=float(loss_value), **loss_details)
 
     aggs = [("avg", "global_avg"), ("med", "median")]

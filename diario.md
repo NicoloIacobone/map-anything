@@ -1,4 +1,4 @@
-13/04/2026
+## 13/04/2026
 Oggi ho ripreso a lavorare al progetto, ricontrollando un pò il codice e lanciando alcune run di test per vedere se è tutto ok.
 In particolare sono stati testati i dataloader e il processo di save/resume checkpoint.
 Al momento ho lanciato una distillazione da 1000 epoche senza usare la consistency loss per verificare se e quanto le features dello student sono coerenti tra loro.
@@ -18,7 +18,7 @@ TODO LIST:
 - Implementare validazione per ottenere metriche quantitative di coerenza e segmentazione
 - Implementare decoder D4RT in versione semantic segmentation
 
-14/04/2026
+## 14/04/2026
 Ho analizzato i risultati della distillazione con e senza consistency loss, e mi sembrano uguali.
 Il problema è che ho fatto un resume ma lasciando la configurazione della loss con entrambe le loss, quindi il risultato finale è lo stesso.
 Faccio ripartire solo la distillazione con distillation loss.
@@ -26,3 +26,13 @@ Per evitare di confondermi ho splittato in 3 le configurazioni della loss, in mo
 
 Cose imparate:
 - Il cluster in single GPU con stessa configurazione del locale è circa 7 volte più veloce (3H vs 21H), quindi per test non va mai usato il locale.
+- Quando vengono modificati i parametri del dataset (max_num_of_imgs_per_gpu, num_views, ecc) è necessario controllare che il numero di immagini totali per scena sia sufficiente per il batch size e il numero di epoche, altrimenti va in errore.
+
+Cose da risolvere:
+- Capire perché la distillazione solo con distillation loss fa generare una strana noise visualizzabile con PCA dello student, nonostante la loss sia bassa. Ipotizzo centri qualcosa con la fusione delle features per scena.
+
+Modifiche:
+- Rimosso lo scaling della distillation loss in quanto deve essere 1:1 tra teacher e student, Lasciato invariato lo scaling per la consistency loss.
+
+Test in corso:
+- Distillazione solo con distillation loss e num_view = 1, per capire se il problema del noise è legato ad un numero di views maggiore di 1.

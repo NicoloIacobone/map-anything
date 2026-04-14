@@ -5203,154 +5203,155 @@ class SemanticConsistencyLoss(BaseCriterion):
             - 'sem_conf': (B, 1, H, W)
             - 'pts3d_cam': (B, H, W, 3) (Camera Coordinates) - REQUIRED for Occlusion Check
         """
-        # self.test_identity_projection(self.project_to_view)  # Run test on projection function
-
-        # "pts3d" and "pts3d_cam" -> 1, 512, 512, 3
         n_views = len(batch)
-        distillation_losses = []
-        consistency_losses = []
         details = {}
-        
+    
+        device = preds[0]["pts3d"].device
+        sem_dtype = preds[0]["semantics"].dtype if "semantics" in preds[0] else preds[0]["pts3d"].dtype
+        zero = torch.zeros((), device=device, dtype=sem_dtype)
+    
+        eps = 1e-12
+        compute_dist = float(self.dist_w) > eps
+        compute_cons = float(self.cons_w) > eps
+    
+        # Se entrambe le loss sono spente, ritorna subito una loss scalare valida per backward
+        if not compute_dist and not compute_cons:
+            loss = torch.zeros((), device=device, dtype=sem_dtype, requires_grad=True)
+            details["loss_sem_dist"] = zero
+            details["loss_sem_cons"] = zero
+            return loss, details
+    
         if "semantics" not in preds[0]:
-            print(f"[DEBUG] ERROR: 'semantics' missing in preds!")
-            return torch.tensor(0.0, device=preds[0]['pts3d'].device, requires_grad=True), {}
-
-        # 1. Setup Resolutions
+            print("[DEBUG] ERROR: 'semantics' missing in preds!")
+            return torch.tensor(0.0, device=device, requires_grad=True), {}
+    
         B, C, H_sem, W_sem = preds[0]["semantics"].shape
         img_size_sem = (H_sem, W_sem)
         H_orig, W_orig = preds[0]["pts3d"].shape[1:3]
         img_size_orig = (H_orig, W_orig)
-
-        # --- LOOP OVER VIEWS ---
+    
+        distillation_losses = []
+        consistency_losses = []
+    
         for i in range(n_views):
+            pred_sem = preds[i]["semantics"]  # (B, 256, 64, 64)
+            gt_sem = batch[i]["semantics"]    # (B, 256, 64, 64)
+    
             # ==========================
             # PART 1: 2D Distillation
             # ==========================
-            pred_sem = preds[i]["semantics"] # 1, 256, 64, 64
-            gt_sem = batch[i]["semantics"] # 1, 256, 64, 64
-
-            pred_norm = F.normalize(pred_sem, dim=1) # 1, 256, 64, 64
-            gt_norm = F.normalize(gt_sem, dim=1) # 1, 256, 64, 64
-
-            loss_2d = 1.0 - torch.sum(pred_norm * gt_norm, dim=1) # 1, 64, 64 - per pixel loss
-
-            if loss_2d.numel() > 0:
-                distillation_losses.append(loss_2d.mean()) # per view loss
-            else:
-                distillation_losses.append(torch.tensor(0.0, device=pred_sem.device, requires_grad=True))
-
+            if compute_dist:
+                pred_norm = F.normalize(pred_sem, dim=1)
+                gt_norm = F.normalize(gt_sem, dim=1)
+                loss_2d = 1.0 - torch.sum(pred_norm * gt_norm, dim=1)  # (B, H, W)
+                if loss_2d.numel() > 0:
+                    distillation_losses.append(loss_2d.mean())
+                else:
+                    distillation_losses.append(torch.zeros((), device=pred_sem.device, dtype=pred_sem.dtype))
+    
             # ==========================
             # PART 2: Multi-View Consistency
             # ==========================
-            # 1. GEOMETRIA GT (Anchor) - vengono fatti due permute perché F.interpolate lavora su (B, C, H, W), quindi il primo è per la funzione, il secondo per ritornare all'origine
-            gt_pts_world_high = batch[i]["pts3d"].permute(0, 3, 1, 2) # -> 1, 3, 512, 512
-            # anchor_pts_world contiene la pointcloud in WORLD COORDINATES alla risoluzione semantica (64x64)
-            anchor_pts_world = F.interpolate(gt_pts_world_high, size=img_size_sem, mode='nearest').permute(0, 2, 3, 1) # -> 1, 64, 64, 3
-
-            # Features (Student Features)
-            anchor_feat = preds[i]["semantics"] # 1, 256, 64, 64
-
-            # Confidence (Student Confidence) - Necessaria ora per l'inizializzazione
-            anchor_conf = preds[i]["sem_conf"] # 1, 1, 64, 64
-
-            # --- UNITE PAPER LOGIC: ACCUMULATORS ---
-            # POINT 2 IMPLEMENTATO: Inizializziamo con l'Anchor stesso.
-            # Il target sarà la media di (Anchor + Vicini).
-            sum_weighted_feat = anchor_feat * anchor_conf
-            sum_conf = anchor_conf
-            
-            # Maschera per tracciare i pixel che hanno trovato almeno un match valido ALTRUI
-            # (Utile per sapere dove abbiamo effettivamente overlap multi-view)
-            has_matches_mask = torch.zeros((B, H_sem, W_sem), device=anchor_feat.device, dtype=torch.bool)
-            
-            # Loop over other views to find correspondences
-            for j in range(n_views):
-                if i == j: continue
-
-                # Target Data (Student Features)
-                tgt_feat = preds[j]["semantics"] # 1, 256, 64, 64
-                tgt_conf = preds[j]["sem_conf"] # 1, 1, 512, 512
-                if tgt_conf.shape[2:] != img_size_sem:
-                    tgt_conf = F.interpolate(tgt_conf, size=img_size_sem, mode='bilinear', align_corners=False) # 1, 1, 64, 64
-                
-                # 1. Project Anchor (GT) -> Target View j
-                grid, z_proj, fov_mask = self.project_to_view(
-                    anchor_pts_world, # 1, 64, 64, 3
-                    batch[j]["camera_pose"],  # 1, 4, 4
-                    batch[j]["camera_intrinsics"], # 1, 3, 3
-                    img_size_orig # 512, 512
+            if compute_cons:
+                gt_pts_world_high = batch[i]["pts3d"].permute(0, 3, 1, 2)
+                anchor_pts_world = F.interpolate(
+                    gt_pts_world_high, size=img_size_sem, mode="nearest"
+                ).permute(0, 2, 3, 1)
+    
+                anchor_feat = pred_sem
+                if "sem_conf" in preds[i]:
+                    anchor_conf = preds[i]["sem_conf"]
+                    if anchor_conf.shape[2:] != img_size_sem:
+                        anchor_conf = F.interpolate(
+                            anchor_conf, size=img_size_sem, mode="bilinear", align_corners=False
+                        )
+                else:
+                    anchor_conf = torch.ones(
+                        (B, 1, H_sem, W_sem), device=anchor_feat.device, dtype=anchor_feat.dtype
+                    )
+                anchor_conf = anchor_conf.clamp_min(self.min_conf)
+    
+                sum_weighted_feat = anchor_feat * anchor_conf
+                sum_conf = anchor_conf
+    
+                has_matches_mask = torch.zeros(
+                    (B, H_sem, W_sem), device=anchor_feat.device, dtype=torch.bool
                 )
-                # grid -> 1, 64, 64, 2 -> se il punto nella view 0 si trova in coordinate 0,0 e nella view 1 si trova in coordinate 32, 32, grid in 0,0 conterrà 32,32 (per semplificare non considero normalizzazione)
-                # z_proj -> 1, 1, 64, 64 -> le profondità dei punti visti dalla camera j, se > 0 sono davanti alla camera, altrimenti dietro
-                # fov_mask -> 1, 1, 64, 64 -> maschera booleana che indica se il punto proiettato cade all'interno del FOV della camera j e se è davanti alla camera
-                
-                # 2. Sample Features
-                sampled_feat = F.grid_sample(tgt_feat, grid, align_corners=True, padding_mode="border") # 1, 256, 64, 64 -> campioniamo le feature della view j nei punti proiettati dalla view i
-                sampled_conf = F.grid_sample(tgt_conf, grid, align_corners=True, padding_mode="border") # 1, 1, 64, 64 -> campioniamo le confidence della view j nei punti proiettati dalla view i
-
-                # 3. Occlusion Check (GT Depth)
-                gt_pts_cam_j_high = batch[j]["pts3d_cam"].permute(0, 3, 1, 2)
-                gt_pts_cam_j_low = F.interpolate(gt_pts_cam_j_high, size=img_size_sem, mode='nearest').permute(0, 2, 3, 1)
-                tgt_depth_map = gt_pts_cam_j_low[..., 2].unsqueeze(1).permute(0, 1, 2, 3) # 1, 1, 64, 64 -> profondità dei punti nella view j
-                # tgt_depth_map rappresenta la profondità dei punti nella view j, riorganizzata per il campionamento
-                sampled_tgt_depth = F.grid_sample(tgt_depth_map, grid, align_corners=True, padding_mode="border") # 1, 1, 64, 64 -> profondità campionata nei punti proiettati dalla view i
-                
-                # Soglia 0.5m
-                occ_mask = torch.abs(z_proj - sampled_tgt_depth) < 0.5 # 1, 1, 64, 64 -> maschera booleana che indica se il punto non è occluso (differenza di profondità < soglia)
-                
-                valid_mask = fov_mask & occ_mask # 1, 1, 64, 64 -> maschera booleana finale che indica se il punto è valido (dentro FOV e non occluso)
-                
-                # Update global match mask (traccia solo i vicini validi)
-                has_matches_mask = has_matches_mask | valid_mask.squeeze(1) # 1, 64, 64 -> aggiorniamo la maschera globale
-                
-                # Accumulate
-                s_feat = sampled_feat * valid_mask.float() # 1, 256, 64, 64 -> azzeriamo le feature non valide
-                s_conf = sampled_conf * valid_mask.float() # 1, 1, 64, 64 -> azzeriamo le confidence non valide
-                
-                sum_weighted_feat = sum_weighted_feat + (s_feat * s_conf) # Weighted Sum
-                sum_conf = sum_conf + s_conf # Sum of Confidences
-
-            # --- CALCOLO TARGET E LOSS ---
-            
-            # Mean Consensus (Weighted Average of Anchor + Neighbors)
-            mean_feat = sum_weighted_feat / (sum_conf + 1e-6) # 1, 256, 64, 64 -> media pesata delle feature
-            mean_feat = F.normalize(mean_feat, p=2, dim=1) # Normalizziamo
-            
-            # STOP GRADIENT
-            target_feat = mean_feat.detach() # 1, 256, 64, 64 -> nograd come nella formula
-
-            # Consistency Loss
-            sim_i = torch.sum(F.normalize(anchor_feat, p=2, dim=1) * target_feat, dim=1) # 1, 64, 64 - cosine similarity
-            loss_i = 1.0 - sim_i # 1, 64, 64 - per pixel loss
-            
-            # Filtering Finale
-            # Calcoliamo la loss SOLO su pixel che hanno overlap multi-view.
-            # Se calcolassimo la loss anche dove has_matches_mask è False,
-            # staremmo confrontando l'Anchor con se stesso (Target = Anchor), Loss = 0.
-            final_mask = has_matches_mask # 1, 64, 64 - manteniamo solo pixel con match validi
-            
-            # print(f"[DEBUG] View {i} - Consistency Valid Pixels: {final_mask.sum().item()}/{final_mask.numel()} ({final_mask.sum()/final_mask.numel():.2%})")
-
-            loss_i = loss_i[final_mask]
-
-            if loss_i.numel() > 0:
-                cons_mean = loss_i.mean() # per view consistency loss 
-                consistency_losses.append(cons_mean)
-                # print(f"[DEBUG] View {i} - Consistency Loss: {cons_mean.item():.4f}")
-            else:
-                consistency_losses.append(torch.tensor(0.0, device=anchor_pts_world.device, requires_grad=True))
-
-        # --- AGGREGATE LOSSES ---
-        total_dist = sum(distillation_losses) / n_views      # Eq. 2
-        total_cons = sum(consistency_losses) / n_views     # Eq. 4, 5
-        
-        # print(f"[DEBUG] TOTAL Dist: {total_dist.item():.4f} | TOTAL Cons: {total_cons.item():.4f}")
-        
+    
+                for j in range(n_views):
+                    if i == j:
+                        continue
+    
+                    tgt_feat = preds[j]["semantics"]
+    
+                    if "sem_conf" in preds[j]:
+                        tgt_conf = preds[j]["sem_conf"]
+                        if tgt_conf.shape[2:] != img_size_sem:
+                            tgt_conf = F.interpolate(
+                                tgt_conf, size=img_size_sem, mode="bilinear", align_corners=False
+                            )
+                    else:
+                        tgt_conf = torch.ones(
+                            (B, 1, H_sem, W_sem), device=tgt_feat.device, dtype=tgt_feat.dtype
+                        )
+                    tgt_conf = tgt_conf.clamp_min(self.min_conf)
+    
+                    grid, z_proj, fov_mask = self.project_to_view(
+                        anchor_pts_world,
+                        batch[j]["camera_pose"],
+                        batch[j]["camera_intrinsics"],
+                        img_size_orig,
+                    )
+    
+                    sampled_feat = F.grid_sample(
+                        tgt_feat, grid, align_corners=True, padding_mode="border"
+                    )
+                    sampled_conf = F.grid_sample(
+                        tgt_conf, grid, align_corners=True, padding_mode="border"
+                    ).clamp_min(self.min_conf)
+    
+                    gt_pts_cam_j_high = batch[j]["pts3d_cam"].permute(0, 3, 1, 2)
+                    gt_pts_cam_j_low = F.interpolate(
+                        gt_pts_cam_j_high, size=img_size_sem, mode="nearest"
+                    ).permute(0, 2, 3, 1)
+                    tgt_depth_map = gt_pts_cam_j_low[..., 2].unsqueeze(1)
+                    sampled_tgt_depth = F.grid_sample(
+                        tgt_depth_map, grid, align_corners=True, padding_mode="border"
+                    )
+    
+                    occ_mask = torch.abs(z_proj - sampled_tgt_depth) < self.occ_thresh
+                    valid_mask = fov_mask & occ_mask
+    
+                    has_matches_mask = has_matches_mask | valid_mask.squeeze(1)
+    
+                    s_feat = sampled_feat * valid_mask.float()
+                    s_conf = sampled_conf * valid_mask.float()
+    
+                    sum_weighted_feat = sum_weighted_feat + (s_feat * s_conf)
+                    sum_conf = sum_conf + s_conf
+    
+                mean_feat = sum_weighted_feat / (sum_conf + 1e-6)
+                mean_feat = F.normalize(mean_feat, p=2, dim=1)
+                target_feat = mean_feat.detach()
+    
+                sim_i = torch.sum(F.normalize(anchor_feat, p=2, dim=1) * target_feat, dim=1)
+                loss_i = 1.0 - sim_i
+    
+                final_mask = has_matches_mask
+                loss_i = loss_i[final_mask]
+    
+                if loss_i.numel() > 0:
+                    consistency_losses.append(loss_i.mean())
+                else:
+                    consistency_losses.append(torch.zeros((), device=anchor_pts_world.device, dtype=anchor_feat.dtype))
+    
+        total_dist = (sum(distillation_losses) / n_views) if compute_dist else zero
+        total_cons = (sum(consistency_losses) / n_views) if compute_cons else zero
+    
         loss = (self.dist_w * total_dist) + (self.cons_w * total_cons)
-        
+    
         details["loss_sem_dist"] = total_dist
         details["loss_sem_cons"] = total_cons
-
         return loss, details
 
     def forward(self, batch, preds, **kw):
