@@ -37,3 +37,10 @@ Modifiche:
 
 Test in corso:
 - Distillazione solo con distillation loss e num_view = 1, per capire se il problema del noise è legato ad un numero di views maggiore di 1.
+
+
+## 15/04/2026
+Ho analizzato i risultati della distillazione con solo distillation loss, il problema persiste, ma credo sia dovuto ad un mio errore: ho trainato solo su 50 immagini e testato su 2, quindi è più un overfitting, e avrei dovuto visualizzare le features del teacher e dello student su quelle stesse immagini.
+
+Test in corso:
+- Resume della distillazione precedente ma con overfit = true per visualizzare le features sulle immagini su cui è stato fatto l'overfit.
