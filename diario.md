@@ -42,5 +42,13 @@ Test in corso:
 ## 15/04/2026
 Ho analizzato i risultati della distillazione con solo distillation loss, il problema persiste, ma credo sia dovuto ad un mio errore: ho trainato solo su 50 immagini e testato su 2, quindi è più un overfitting, e avrei dovuto visualizzare le features del teacher e dello student su quelle stesse immagini.
 
-Test in corso:
+Test effettuati:
 - Resume della distillazione precedente ma con overfit = true per visualizzare le features sulle immagini su cui è stato fatto l'overfit.
+
+Cose imparate:
+- Devo stare attento a non usare il dataset di test quando quello di train è molto piccolo, altrimenti è facile utilizzare dati non "corretti" per trarre conclusioni.
+
+TODO LIST:
+- Lanciare una run multi-view solo con distillation loss e overfit = true, per capire quanto sono coerenti le features della stessa scena.
+- Lanciare una run multi-view con distillation loss + consistency loss (0.1 peso) per capire come inflisce.
+- Lanciare una run con resume della prima distillazione (solo distillation loss) ma impostando un valore piu alto per il peso di consistency loss.
