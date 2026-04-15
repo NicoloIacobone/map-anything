@@ -9,7 +9,7 @@ Modifiche:
 
 Cose imparate:
 - Per quanto riguarda la risoluzione, SAM teacher fa sempre Resize((resolution, resolution)) e viene istanziato con resolution=1024, quindi bisogna usare sempre risoluzione quadrata del dataset, altrimenti bisogna capire come gestire aspect ratios diversi.
-- Negli yaml dei dataset, la dimensione del dataset viene definita come n @ {...} dove n è il numero di volte in cui viene campionata una scena, e {...} è la configurazione della scena. Per esempio 50 @ {...} se è stato impostato n_views=4, significa che vengono campionate 50 scene, ognuna da 4 views, circa 200 immagini totali.
+- Negli yaml dei dataset, la dimensione è definita come n @ {...}, dove n è il numero di sample-scena per epoca (non il numero di immagini), e {...} è la configurazione del dataset: per esempio, con n_views=4, 50 @ {...} significa 50 scene campionate per epoca (con possibili ripetizioni se le scene reali sono meno di 50), cioè circa 200 immagini totali processate nell’epoca.
 
 TODO LIST:
 - Controllare coerenza senza consistency loss
@@ -47,6 +47,7 @@ Test effettuati:
 
 Cose imparate:
 - Devo stare attento a non usare il dataset di test quando quello di train è molto piccolo, altrimenti è facile utilizzare dati non "corretti" per trarre conclusioni.
+- Il backward avviene dopo l'analisi di ogni batch, quindi più volte per epoca. In particolare avviene ogni max_imgs_per_gpu / num_views scene, quindi se max_imgs_per_gpu = 8 e num_views = 4, avviene ogni 2 scene.
 
 TODO LIST:
 - Lanciare una run multi-view solo con distillation loss e overfit = true, per capire quanto sono coerenti le features della stessa scena.
