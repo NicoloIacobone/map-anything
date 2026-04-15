@@ -51,7 +51,9 @@ echo "Starting MapAnything distillation..."
 
 export WANDB_API_KEY=$(cat "/cluster/home/niacobone/.config/wandb/wandb_api_key.txt")
 
-python distill.py machine=cluster train_params.run_name=distillation_loss_full_dataset
+python distill.py machine=cluster loss=distillation09_consistency01 train_params.run_name=resume_1_consistency_01
+# python distill.py machine=cluster loss=distillation_consistency train_params.run_name=resume_2_consistency_05
+# python distill.py machine=cluster loss=consistency_only train_params.run_name=resume_3_consistency_1
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}

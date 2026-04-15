@@ -12,11 +12,11 @@ Cose imparate:
 - Negli yaml dei dataset, la dimensione è definita come n @ {...}, dove n è il numero di sample-scena per epoca (non il numero di immagini), e {...} è la configurazione del dataset: per esempio, con n_views=4, 50 @ {...} significa 50 scene campionate per epoca (con possibili ripetizioni se le scene reali sono meno di 50), cioè circa 200 immagini totali processate nell’epoca.
 
 TODO LIST:
-- Controllare coerenza senza consistency loss
-- Rieseguire lo stesso test con consistency loss e controllare coerenza
-- Implementare grouping con HDBSCAN
-- Implementare validazione per ottenere metriche quantitative di coerenza e segmentazione
-- Implementare decoder D4RT in versione semantic segmentation
+- [x] Controllare coerenza senza consistency loss
+- [ ] Rieseguire lo stesso test con consistency loss e controllare coerenza
+- [ ] Implementare grouping con HDBSCAN
+- [ ] Implementare validazione per ottenere metriche quantitative di coerenza e segmentazione
+- [ ] Implementare decoder D4RT in versione semantic segmentation
 
 ## 14/04/2026
 Ho analizzato i risultati della distillazione con e senza consistency loss, e mi sembrano uguali.
@@ -41,6 +41,7 @@ Test in corso:
 
 ## 15/04/2026
 Ho analizzato i risultati della distillazione con solo distillation loss, il problema persiste, ma credo sia dovuto ad un mio errore: ho trainato solo su 50 immagini e testato su 2, quindi è più un overfitting, e avrei dovuto visualizzare le features del teacher e dello student su quelle stesse immagini.
+Ho anche iniziato la copia del dataset su cluster, per il quale poi eseguirò il codice per sistemare i symlinks e poi lo passerò sulla partizione /work/igp_psr/niacobone/distillation/dataset per tenerlo backuppato.
 
 Test effettuati:
 - Resume della distillazione precedente ma con overfit = true per visualizzare le features sulle immagini su cui è stato fatto l'overfit.
@@ -50,6 +51,24 @@ Cose imparate:
 - Il backward avviene dopo l'analisi di ogni batch, quindi più volte per epoca. In particolare avviene ogni max_imgs_per_gpu / num_views scene, quindi se max_imgs_per_gpu = 8 e num_views = 4, avviene ogni 2 scene.
 
 TODO LIST:
-- Lanciare una run multi-view solo con distillation loss e overfit = true, per capire quanto sono coerenti le features della stessa scena.
-- Lanciare una run multi-view con distillation loss + consistency loss (0.1 peso) per capire come inflisce.
-- Lanciare una run con resume della prima distillazione (solo distillation loss) ma impostando un valore piu alto per il peso di consistency loss.
+- [x] Lanciare una run multi-view solo con distillation loss e overfit = true, per capire quanto sono coerenti le features della stessa scena.
+    - [x] distillation_loss_full_dataset: run inizializzata da 0 con 4 views per scena --> le features sembrano abbastanza coerenti tra loro.
+    - [x] test_distillation_loss_new_resume_multiview: run resumed da train con 1 view per scena --> le features sembrano abbastanza coerenti tra loro. Nessuna differenza visibile tra le due run.
+    - [ ] Eseguire lo script di visualizzazione + HDBSCAN per vedere se la segmentazione è abbastanza buona.
+    - [ ] resume con consistency loss a 0.1 - resume_1_consistency_01
+    - [ ] resume con consistency loss a 0.5 - resume_2_consistency_05
+    - [ ] resume con consistency loss a 1.0 - resume_3_consistency_1
+- [ ] Lanciare una run multi-view con distillation loss + consistency loss (0.1 peso) per capire come influisce.
+- [ ] Da dentro /scratch2/nico/distillation/dataset eseguire il comando per copiare il dataset su cluster:
+    ```bash
+    rsync -a --info=progress2 --partial blendedmvs converted/mapanything_dataset_metadata converted/wai_data/blendedmvs niacobone@euler.ethz.ch:/cluster/scratch/niacobone/distillation/dataset
+    ``` 
+    e poi runnare lo script per sistemare i symlinks (vedi chat "correzione dei collegamenti delle immagini nel preprocessing").
+    - [ ] Step 1: Test in dry-run (sicuro, non modifica nulla)
+    ```bash
+    rsync -a --info=progress2 --partial --dry-run blendedmvs converted/mapanything_dataset_metadata converted/wai_data/blendedmvs niacobone@euler.ethz.ch:/cluster/scratch/niacobone/distillation/dataset
+    ```
+    - [ ] Step 2: Se il dry-run è ok, eseguire il comando vero (con verbose per vedere ogni operazione)
+    ```bash
+    rsync -a --info=progress2 --partial -v blendedmvs converted/mapanything_dataset_metadata converted/wai_data/blendedmvs niacobone@euler.ethz.ch:/cluster/scratch/niacobone/distillation/dataset
+    ```
