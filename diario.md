@@ -13,10 +13,11 @@ Cose imparate:
 
 TODO LIST:
 - [x] Controllare coerenza senza consistency loss
-- [ ] Rieseguire lo stesso test con consistency loss e controllare coerenza
+- [x] Rieseguire lo stesso test con consistency loss e controllare coerenza
 - [ ] Implementare grouping con HDBSCAN
 - [ ] Implementare validazione per ottenere metriche quantitative di coerenza e segmentazione
 - [ ] Implementare decoder D4RT in versione semantic segmentation
+
 
 ## 14/04/2026
 Ho analizzato i risultati della distillazione con e senza consistency loss, e mi sembrano uguali.
@@ -55,9 +56,9 @@ TODO LIST:
     - [x] distillation_loss_full_dataset: run inizializzata da 0 con 4 views per scena --> le features sembrano abbastanza coerenti tra loro.
     - [x] test_distillation_loss_new_resume_multiview: run resumed da train con 1 view per scena --> le features sembrano abbastanza coerenti tra loro. Nessuna differenza visibile tra le due run.
     - [ ] Eseguire lo script di visualizzazione + HDBSCAN per vedere se la segmentazione è abbastanza buona.
-    - [ ] resume con consistency loss a 0.1 - resume_1_consistency_01
-    - [ ] resume con consistency loss a 0.5 - resume_2_consistency_05
-    - [ ] resume con consistency loss a 1.0 - resume_3_consistency_1
+    - [x] resume con consistency loss a 0.1 - resume_1_consistency_01 - ad occhio le features sembrano coerenti
+    - [x] resume con consistency loss a 0.5 - resume_2_consistency_05 - ad occhio le features sembrano coerenti
+    - [x] resume con consistency loss a 1.0 - resume_3_consistency_1 - le features non vanno per nulla bene in quanto non c'è più supervisione del teacher e le student features diventano uniformi
 - [ ] Lanciare una run multi-view con distillation loss + consistency loss (0.1 peso) per capire come influisce.
 - [ ] Da dentro /scratch2/nico/distillation/dataset eseguire il comando per copiare il dataset su cluster:
     ```bash
@@ -72,3 +73,16 @@ TODO LIST:
     ```bash
     rsync -a --info=progress2 --partial -v blendedmvs converted/mapanything_dataset_metadata converted/wai_data/blendedmvs niacobone@euler.ethz.ch:/cluster/scratch/niacobone/distillation/dataset
     ```
+
+
+## 16/04/2026
+Oggi preparo le visualizzazioni per il meeting (di domani).
+Ho raggruppato alcune scene che voglio utilizzare per la segmentation e che sono parte del dataset su cui ho fatto l'overfit.
+Oggi cerco anche di settare al meglio i threshold di confidence di produzione della pointcloud e i parametri di HDBSCAN per ottenere una segmentazione più pulita possibile.
+Bisogna modificare il funzionamento di HDBSCAN in quanto al momento clusterizza in single-view e non in multi-view.
+
+Ci sono due varianti pratiche:
+- Variante minima: concateni tutte le feature di tutte le view in un unico array e fai HDBSCAN una sola volta. Questo è semplice, ma non sfrutta davvero la geometria multi-view.
+- Variante completa: fuse per corrispondenza 3D, poi cluster globale. Questa è quella coerente con il training che hai descritto, perché la consistency loss ha già insegnato al modello a rendere simili le feature dello stesso punto 3D attraverso viste diverse.
+
+La consistency loss consente di avere coerenza per la semantica dello stesso punto visto da diverse viste, ma non sa quando due punti appartengono allo stesso oggetto. Me ne rendo conto vedendo come il fronte e il retro della rappresentazione della statuetta hanno colori completamente diversi, nonostante siano vicini nello spazio 3D e facciano parte dello stesso oggetto.

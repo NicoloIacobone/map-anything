@@ -8,7 +8,7 @@ Inference utilities.
 """
 
 import warnings
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -21,10 +21,11 @@ from mapanything.utils.geometry import (
     quaternion_to_rotation_matrix,
     recover_pinhole_intrinsics_from_ray_directions,
     rotation_matrix_to_quaternion,
+    depthmap_to_world_frame
 )
 from mapanything.utils.image import rgb
-
 from nico.utils import pca_visualization, pca_visualization_student_only
+
 
 # Import for semantic feature processing
 try:
@@ -38,7 +39,6 @@ try:
     )
     # Keep clustering tractable at inference time.
     MAX_HDBSCAN_POINTS = 30000
-    HDBSCAN_PCA_DIM = 32
 except ImportError:
     SKLEARN_AVAILABLE = False
     warnings.warn("sklearn and/or hdbscan not available. Semantic feature processing will be disabled.")
@@ -482,6 +482,45 @@ def postprocess_model_outputs_for_inference(
             
             # Convert to HWC format for alignment with pts3d
             semantic_features = feat_8x_upsampled.permute(0, 2, 3, 1).contiguous()  # (B, H, W, 256)
+
+            # ===== COMPUTE COMMON PCA BASIS FROM ALL BATCH ELEMENTS =====
+            all_feats_list = []
+            for b_idx in range(B):
+                feat_b = semantic_features[b_idx].cpu().numpy()  # (H, W, 256)
+                H, W, feat_dim = feat_b.shape
+                feat_flat = feat_b.reshape(-1, feat_dim).astype(np.float32, copy=False)
+                all_feats_list.append(feat_flat)
+
+            all_feats_combined = np.concatenate(all_feats_list, axis=0)  # (H*W*B, 256)
+
+            # Compute common PCA basis and global normalization bounds
+            common_pca_basis = None
+            try:
+                pca_common = PCA(n_components=3)
+                pca_common.fit(all_feats_combined)
+                
+                # Project all features to compute global min/max
+                all_proj_list = []
+                for b_idx in range(B):
+                    feat_b = semantic_features[b_idx].cpu().numpy()
+                    H, W, feat_dim = feat_b.shape
+                    feat_flat = feat_b.reshape(-1, feat_dim).astype(np.float32, copy=False)
+                    feat_centered = feat_flat - pca_common.mean_
+                    feat_pca = feat_centered @ pca_common.components_.T
+                    all_proj_list.append(feat_pca)
+                
+                all_proj_combined = np.concatenate(all_proj_list, axis=0)
+                global_min = all_proj_combined.min(axis=0, keepdims=True)
+                global_max = all_proj_combined.max(axis=0, keepdims=True)
+                
+                common_pca_basis = {
+                    "mean": pca_common.mean_,
+                    "components": pca_common.components_.T,
+                    "global_min": global_min,
+                    "global_max": global_max,
+                }
+            except Exception as e:
+                warnings.warn(f"Common PCA fitting failed: {e}")
             
             # Store raw semantic features
             processed_output["semantic_features"] = semantic_features
@@ -497,42 +536,36 @@ def postprocess_model_outputs_for_inference(
                 # Reshape to (N, 256) for processing
                 feat_flat = feat_b.reshape(-1, C)  # (H*W, 256)
                 
-                # ===== PCA: Reduce 256D → 3D (RGB) for visualization =====
+                # ===== GLOBAL PCA PROJECTION: 256D → 3D =====
                 try:
-                    pca = PCA(n_components=3)
-                    feat_pca = pca.fit_transform(feat_flat)  # (H*W, 3)
+                    feat_b = semantic_features[b].cpu().numpy()  # (H, W, 256)
+                    H, W, C = feat_b.shape
+                    feat_flat = feat_b.reshape(-1, C).astype(np.float32, copy=False)
                     
-                    # Normalize to [0, 1] for RGB visualization
-                    feat_pca_min = feat_pca.min(axis=0, keepdims=True)
-                    feat_pca_max = feat_pca.max(axis=0, keepdims=True)
-                    feat_pca_norm = (feat_pca - feat_pca_min) / (feat_pca_max - feat_pca_min + 1e-8)
+                    # Project using common basis
+                    if common_pca_basis is not None:
+                        feat_centered = feat_flat - common_pca_basis["mean"]
+                        feat_pca = feat_centered @ common_pca_basis["components"]  # (H*W, 3)
+                        
+                        # Normalize to [0, 1] using global bounds
+                        feat_pca_norm = (feat_pca - common_pca_basis["global_min"]) / (common_pca_basis["global_max"] - common_pca_basis["global_min"] + 1e-8)
+                        pca_rgb = feat_pca_norm.reshape(H, W, 3)
+                    else:
+                        pca_rgb = np.zeros((H, W, 3))
                     
-                    # Reshape back to (H, W, 3)
-                    pca_rgb = feat_pca_norm.reshape(H, W, 3)
                     semantic_pca_rgb_list.append(torch.from_numpy(pca_rgb).float())
                 except Exception as e:
-                    warnings.warn(f"PCA failed for batch {b}: {e}")
-                    # Fallback: zeros
+                    warnings.warn(f"PCA projection failed for batch {b}: {e}")
                     semantic_pca_rgb_list.append(torch.zeros(H, W, 3))
                 
                 # ===== HDBSCAN: Cluster semantic features =====
                 try:
                     total_points = H * W
                     stride = max(1, int(np.ceil(np.sqrt(total_points / MAX_HDBSCAN_POINTS))))
-                    feat_small = feat_b[::stride, ::stride, :]
+                    # Use only globally-aligned PCA representation as clustering input.
+                    feat_small = pca_rgb[::stride, ::stride, :]
                     hs, ws, _ = feat_small.shape
-                    feat_small_flat = feat_small.reshape(-1, C).astype(np.float32, copy=False)
-
-                    cluster_dim = min(HDBSCAN_PCA_DIM, C, feat_small_flat.shape[0])
-                    if cluster_dim >= 2:
-                        pca_cluster = PCA(
-                            n_components=cluster_dim,
-                            svd_solver="randomized",
-                            random_state=0,
-                        )
-                        feat_small_cluster = pca_cluster.fit_transform(feat_small_flat)
-                    else:
-                        feat_small_cluster = feat_small_flat
+                    feat_small_cluster = feat_small.reshape(-1, 3).astype(np.float32, copy=False)
 
                     clusterer = hdbscan.HDBSCAN(
                         min_cluster_size=50,  # Adjust based on image size
@@ -676,3 +709,270 @@ def postprocess_model_outputs_for_inference(
         processed_outputs.append(processed_output)
 
     return processed_outputs
+
+
+def add_global_semantic_pca_rgb(
+    processed_outputs: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Compute global semantic PCA visualization across all views and add to outputs.
+    
+    Aligns with distillation visualization: computes a common PCA basis from all
+    feature maps (feat_8x, 64x64x256) concatenated, then projects and normalizes
+    each view using global bounds.
+    
+    Args:
+        processed_outputs: List of output dicts from postprocess_model_outputs_for_inference
+    
+    Returns:
+        List of output dicts with added 'semantic_pca_rgb_global' field (H, W, 3) [0, 1]
+    """
+    # === STEP 1: Collect all feat_8x from all views ===
+    all_feats_list = []
+    all_shapes = []
+    
+    for view_idx, output in enumerate(processed_outputs):
+        if "feat_8x" not in output:
+            continue
+        
+        feat_8x = output["feat_8x"]  # (B, C, H, W), typically (1, 256, 64, 64)
+        if feat_8x.dim() == 4:
+            feat_8x = feat_8x[0]  # Take first batch element: (C, 64, 64)
+        
+        # Convert to (H, W, C) then flatten to (H*W, C)
+        feats = feat_8x.permute(1, 2, 0).contiguous()  # (H, W, 256)
+        H, W, C = feats.shape
+        all_shapes.append((H, W, C))
+        feats_flat = feats.reshape(-1, C).float()  # (H*W, 256)
+        all_feats_list.append(feats_flat)
+    
+    if not all_feats_list:
+        # No feat_8x available, return unchanged
+        return processed_outputs
+    
+    # === STEP 2: Compute common PCA basis from all concatenated features ===
+    all_feats_combined = torch.cat(all_feats_list, dim=0).cpu()  # (H*W*N, 256)
+    all_feats_combined = all_feats_combined.float()
+    
+    # PCA reduction: 256D -> 3D using torch.pca_lowrank
+    U, S, V = torch.pca_lowrank(all_feats_combined, q=3, center=True)
+    common_mean = all_feats_combined.mean(0)  # (256,)
+    pca_basis = V[:, :3]  # (256, 3)
+    
+    # === STEP 3: Project all features and compute global bounds ===
+    all_proj_list = []
+    for feats_flat in all_feats_list:
+        feats_flat = feats_flat.cpu().float()
+        feats_centered = feats_flat - common_mean
+        proj = feats_centered @ pca_basis  # (H*W, 3)
+        all_proj_list.append(proj)
+    
+    all_proj_combined = torch.cat(all_proj_list, dim=0)  # (H*W*N, 3)
+    global_min = all_proj_combined.min(dim=0)[0]  # (3,)
+    global_max = all_proj_combined.max(dim=0)[0]  # (3,)
+    eps = 1e-8
+    global_range = global_max - global_min + eps
+    
+    # === STEP 4: Project each view and normalize with global bounds ===
+    proj_idx = 0
+    for view_idx, output in enumerate(processed_outputs):
+        if "feat_8x" not in output:
+            processed_outputs[view_idx]["semantic_pca_rgb_global"] = None
+            continue
+        
+        feat_8x = output["feat_8x"]
+        if feat_8x.dim() == 4:
+            feat_8x = feat_8x[0]
+        
+        # Get original shape
+        H, W, C = all_shapes[proj_idx]
+        
+        # Project
+        feats = feat_8x.permute(1, 2, 0).contiguous().reshape(-1, C)
+        feats = feats.cpu().float()
+        feats_centered = feats - common_mean
+        proj = feats_centered @ pca_basis  # (H*W, 3)
+        
+        # Normalize with global bounds
+        proj_norm = (proj - global_min) / global_range
+        proj_norm = torch.clamp(proj_norm, 0.0, 1.0)
+        
+        # Reshape to (H, W, 3) and move to device
+        pca_rgb = proj_norm.reshape(H, W, 3).to(feat_8x.device)
+        processed_outputs[view_idx]["semantic_pca_rgb_global"] = pca_rgb
+        
+        proj_idx += 1
+    
+    return processed_outputs
+
+
+def compute_global_semantic_clusters(
+    outputs: List[Dict[str, Any]],
+    conf_percentile: Optional[float] = None,
+    voxel_divisor: float = 200.0,
+    min_voxel_size: float = 0.02,
+) -> List:
+    """
+    Cluster semantic features across all views in one scene-level pass.
+    
+    Computes voxel-based clustering of semantic features in 3D space using
+    HDBSCAN on globally-aligned PCA features (shared basis across views).
+    
+    Args:
+        outputs: List of model predictions with semantic_pca_rgb_global (preferred),
+            or semantic_pca_rgb as fallback, plus depth_z, intrinsics, camera_poses, mask
+        conf_percentile: Confidence percentile threshold (0-100) for filtering points
+        voxel_divisor: Divides scene extent to determine voxel size
+        min_voxel_size: Minimum voxel size
+    
+    Returns:
+        List of cluster label maps (H, W) for each view, or None if clustering fails
+    """
+    if not SKLEARN_AVAILABLE:
+        warnings.warn("sklearn and/or hdbscan not available. Returning None for clusters.")
+        return [None for _ in outputs]
+    
+    def _l2_normalize(features: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+        """L2 normalization for feature vectors."""
+        norms = np.linalg.norm(features, axis=1, keepdims=True)
+        return features / (norms + eps)
+    
+    scene_samples = []
+
+    for view_idx, pred in enumerate(outputs):
+        required_keys = {"depth_z", "intrinsics", "camera_poses", "mask"}
+        if not required_keys.issubset(pred.keys()):
+            scene_samples.append(None)
+            continue
+
+        if "semantic_pca_rgb_global" in pred and pred["semantic_pca_rgb_global"] is not None:
+            semantic_features = pred["semantic_pca_rgb_global"]
+        elif "semantic_pca_rgb" in pred and pred["semantic_pca_rgb"] is not None:
+            warnings.warn(
+                "semantic_pca_rgb_global not found; falling back to semantic_pca_rgb for clustering.",
+                RuntimeWarning,
+            )
+            semantic_features = pred["semantic_pca_rgb"]
+        else:
+            warnings.warn(
+                f"Missing semantic_pca_rgb_global for view {view_idx}; skipping this view in global clustering.",
+                RuntimeWarning,
+            )
+            scene_samples.append(None)
+            continue
+
+        depthmap_torch = pred["depth_z"][0].squeeze(-1)
+        intrinsics_torch = pred["intrinsics"][0]
+        camera_pose_torch = pred["camera_poses"][0]
+
+        pts3d_world, valid_mask = depthmap_to_world_frame(
+            depthmap_torch, intrinsics_torch, camera_pose_torch
+        )
+
+        mask = pred["mask"][0].squeeze(-1).cpu().numpy().astype(bool)
+        mask = mask & valid_mask.cpu().numpy()
+
+        if torch.is_tensor(semantic_features):
+            semantic_features = semantic_features.detach().cpu().numpy()
+        if semantic_features.ndim == 4:
+            semantic_features = semantic_features[0]
+
+        # Ensure semantic features match mask resolution.
+        if semantic_features.shape[:2] != mask.shape:
+            sem_tensor = torch.from_numpy(semantic_features).permute(2, 0, 1).unsqueeze(0).float()
+            sem_resized = torch.nn.functional.interpolate(
+                sem_tensor,
+                size=mask.shape,
+                mode="bilinear",
+                align_corners=False,
+            )
+            semantic_features = sem_resized.squeeze(0).permute(1, 2, 0).cpu().numpy()
+
+        if conf_percentile is not None and "conf" in pred:
+            conf_np = pred["conf"][0].squeeze().cpu().numpy()
+            finite_conf = conf_np[np.isfinite(conf_np)]
+            if finite_conf.size > 0:
+                conf_threshold = np.nanpercentile(conf_np.reshape(-1), conf_percentile)
+                mask = mask & np.isfinite(conf_np) & (conf_np >= conf_threshold)
+
+        flat_mask = mask.reshape(-1)
+        if not flat_mask.any():
+            scene_samples.append(
+                {
+                    "shape": mask.shape,
+                    "points": None,
+                    "features": None,
+                    "flat_mask": flat_mask,
+                }
+            )
+            continue
+
+        points = pts3d_world.cpu().numpy().reshape(-1, 3)
+        features = semantic_features.reshape(-1, semantic_features.shape[-1])
+
+        scene_samples.append(
+            {
+                "shape": mask.shape,
+                "points": points[flat_mask],
+                "features": features[flat_mask].astype(np.float32, copy=False),
+                "flat_mask": flat_mask,
+            }
+        )
+
+    valid_samples = [sample for sample in scene_samples if sample and sample["points"] is not None and len(sample["points"]) > 0]
+    if not valid_samples:
+        return [None for _ in outputs]
+
+    points = np.concatenate([sample["points"] for sample in valid_samples], axis=0)
+    features = np.concatenate([sample["features"] for sample in valid_samples], axis=0)
+
+    scene_extent = np.linalg.norm(points.max(axis=0) - points.min(axis=0))
+    voxel_size = max(scene_extent / voxel_divisor, min_voxel_size)
+    origin = points.min(axis=0, keepdims=True)
+
+    voxel_keys = np.floor((points - origin) / voxel_size).astype(np.int32)
+    _, inverse = np.unique(voxel_keys, axis=0, return_inverse=True)
+    num_voxels = int(inverse.max()) + 1
+
+    voxel_feature_sum = np.zeros((num_voxels, features.shape[1]), dtype=np.float32)
+    voxel_counts = np.bincount(inverse, minlength=num_voxels).astype(np.float32)
+    np.add.at(voxel_feature_sum, inverse, features)
+    voxel_features = voxel_feature_sum / np.maximum(voxel_counts[:, None], 1.0)
+    voxel_features = _l2_normalize(voxel_features)
+
+    # No local PCA here: clustering runs directly on globally-aligned PCA features.
+    cluster_input = voxel_features
+
+    if cluster_input.shape[0] <= 1:
+        voxel_labels = np.full(cluster_input.shape[0], -1, dtype=np.int32)
+    else:
+        min_cluster_size = max(8, min(40, cluster_input.shape[0] // 200))
+        clusterer = hdbscan.HDBSCAN(
+            min_cluster_size=min_cluster_size,
+            min_samples=max(1, min(min_cluster_size // 2, 5)),
+            metric="euclidean",
+            cluster_selection_method="leaf",
+            cluster_selection_epsilon=0.0,
+        )
+        voxel_labels = clusterer.fit_predict(cluster_input).astype(np.int32, copy=False)
+
+    sample_labels = voxel_labels[inverse]
+
+    global_clusters_by_view = []
+    cursor = 0
+    for sample in scene_samples:
+        if sample is None:
+            global_clusters_by_view.append(None)
+            continue
+
+        h, w = sample["shape"]
+        labels_view = np.full(h * w, -1, dtype=np.int32)
+
+        if sample["points"] is not None and len(sample["points"]) > 0:
+            count = len(sample["points"])
+            labels_view[sample["flat_mask"]] = sample_labels[cursor : cursor + count]
+            cursor += count
+
+        global_clusters_by_view.append(labels_view.reshape(h, w))
+
+    return global_clusters_by_view

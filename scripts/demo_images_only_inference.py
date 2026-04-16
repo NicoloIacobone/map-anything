@@ -22,6 +22,7 @@ import torch
 from mapanything.models import MapAnything
 from mapanything.utils.geometry import depthmap_to_world_frame
 from mapanything.utils.image import load_images
+from mapanything.utils.inference import add_global_semantic_pca_rgb, compute_global_semantic_clusters
 from mapanything.utils.viz import (
     predictions_to_glb,
     script_add_rerun_args,
@@ -119,13 +120,31 @@ def load_encoder_checkpoint(
     
     return start_epoch, best_val_loss
 
+
 def log_data_to_rerun(
-    image, depthmap, pose, intrinsics, pts3d, mask, base_name, pts_name, viz_mask=None,
-    semantic_pca_rgb=None, semantic_clusters=None, log_semantic_pointcloud=False
+    image,
+    depthmap,
+    pose,
+    intrinsics,
+    pts3d,
+    mask,
+    base_name,
+    view_idx,
+    viz_mask=None,
+    semantic_pca_rgb=None,
+    semantic_clusters_local=None,
+    semantic_clusters_global=None,
+    log_semantic_pointcloud=False,
 ):
     """Log visualization data to Rerun"""
     # Log camera info and loaded data
     height, width = image.shape[0], image.shape[1]
+    scene_root = "mapanything/mapanything"
+    pointcloud_root = f"{scene_root}/pointclouds"
+    semantic_pca_root = f"{scene_root}/semantic_pca"
+    cluster_local_root = f"{scene_root}/cluster_local"
+    cluster_global_root = f"{scene_root}/cluster_global"
+
     rr.log(
         base_name,
         rr.Transform3D(
@@ -156,18 +175,24 @@ def log_data_to_rerun(
             f"{base_name}/pinhole/mask",
             rr.SegmentationImage(viz_mask.astype(int)),
         )
-    
+
     # Log semantic visualizations if available
     if semantic_pca_rgb is not None:
         rr.log(
-            f"{base_name}/pinhole/semantic_pca",
+            f"{semantic_pca_root}/semantic_{view_idx}",
             rr.Image(semantic_pca_rgb),
         )
-    
-    if semantic_clusters is not None:
+
+    if semantic_clusters_local is not None:
         rr.log(
-            f"{base_name}/pinhole/semantic_clusters",
-            rr.SegmentationImage(semantic_clusters.astype(np.int32)),
+            f"{cluster_local_root}/cluster_local_{view_idx}",
+            rr.SegmentationImage(semantic_clusters_local.astype(np.int32)),
+        )
+
+    if semantic_clusters_global is not None:
+        rr.log(
+            f"{cluster_global_root}/cluster_global_{view_idx}",
+            rr.SegmentationImage(semantic_clusters_global.astype(np.int32)),
         )
 
     # Log points in 3D with RGB colors
@@ -175,35 +200,35 @@ def log_data_to_rerun(
     filtered_pts_col = image[mask]
 
     rr.log(
-        pts_name,
+        f"{pointcloud_root}/pointcloud_view_{view_idx}",
         rr.Points3D(
             positions=filtered_pts.reshape(-1, 3),
             colors=filtered_pts_col.reshape(-1, 3),
         ),
     )
-    
+
     # Log semantic point clouds if requested
     if log_semantic_pointcloud:
         if semantic_pca_rgb is not None:
             filtered_semantic_pca = semantic_pca_rgb[mask]
             rr.log(
-                f"{pts_name}_semantic_pca",
+                f"{semantic_pca_root}/semantic_{view_idx}/pointcloud",
                 rr.Points3D(
                     positions=filtered_pts.reshape(-1, 3),
                     colors=filtered_semantic_pca.reshape(-1, 3),
                 ),
             )
-        
-        if semantic_clusters is not None:
-            filtered_clusters = semantic_clusters[mask]
+
+        if semantic_clusters_local is not None:
+            filtered_clusters = semantic_clusters_local[mask]
             # Convert cluster IDs to colors
             unique_labels = np.unique(filtered_clusters)
             n_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
-            
+
             # Simple colormap for clusters
             from matplotlib import cm
-            cmap = cm.get_cmap('tab20', n_clusters + 1)
-            
+            cmap = cm.get_cmap("tab20", n_clusters + 1)
+
             cluster_colors = np.zeros((len(filtered_clusters), 3))
             for label in unique_labels:
                 cluster_mask = filtered_clusters == label
@@ -212,9 +237,34 @@ def log_data_to_rerun(
                 else:
                     color_idx = label % 20
                     cluster_colors[cluster_mask] = cmap(color_idx)[:3]
-            
+
             rr.log(
-                f"{pts_name}_semantic_clusters",
+                f"{cluster_local_root}/cluster_local_{view_idx}/pointcloud",
+                rr.Points3D(
+                    positions=filtered_pts.reshape(-1, 3),
+                    colors=cluster_colors,
+                ),
+            )
+
+        if semantic_clusters_global is not None:
+            filtered_clusters = semantic_clusters_global[mask]
+            unique_labels = np.unique(filtered_clusters)
+            n_clusters = len(unique_labels) - (1 if -1 in unique_labels else 0)
+
+            from matplotlib import cm
+
+            cmap = cm.get_cmap("tab20", max(n_clusters + 1, 1))
+            cluster_colors = np.zeros((len(filtered_clusters), 3))
+            for label in unique_labels:
+                cluster_mask = filtered_clusters == label
+                if label == -1:
+                    cluster_colors[cluster_mask] = [0.5, 0.5, 0.5]
+                else:
+                    color_idx = int(label) % 20
+                    cluster_colors[cluster_mask] = cmap(color_idx)[:3]
+
+            rr.log(
+                f"{cluster_global_root}/cluster_global_{view_idx}/pointcloud",
                 rr.Points3D(
                     positions=filtered_pts.reshape(-1, 3),
                     colors=cluster_colors,
@@ -232,6 +282,27 @@ def get_parser():
         type=str,
         required=True,
         help="Path to folder containing images for reconstruction",
+    )
+    parser.add_argument(
+        "--number_of_views",
+        type=int,
+        default=None,
+        help="Number of views to process (default: all)",
+    )
+    parser.add_argument(
+        "--checkpoint_path",
+        type=str,
+        # default="/scratch2/nico/distillation/output/distillation_loss_full_dataset/checkpoints/checkpoint_encoder_10000.pth",
+        default="/scratch2/nico/distillation/output/resume_1_consistency_01/checkpoints/checkpoint_encoder_11000.pth",
+        # default="/scratch2/nico/distillation/output/resume_2_consistency_05/checkpoints/checkpoint_encoder_11000.pth",
+        # default="/scratch2/nico/distillation/output/resume_3_consistency_1/checkpoints/checkpoint_encoder_11000.pth",
+        help="Path to encoder checkpoint (optional, for loading trained encoder weights)",
+    )
+    parser.add_argument(
+        "--input_size",
+        type=int,
+        default=224,
+        help="Square input resolution used for preprocessing",
     )
     parser.add_argument(
         "--memory_efficient_inference",
@@ -274,6 +345,12 @@ def get_parser():
         default="output.glb",
         help="Output path for GLB file (default: output.glb)",
     )
+    parser.add_argument(
+        "--conf_percentile",
+        type=float,
+        default=50.0,
+        help="Confidence percentile threshold (0-100). Points below threshold are filtered out.",
+    )
 
     return parser
 
@@ -285,6 +362,9 @@ def main():
         parser
     )  # Options: --headless, --connect, --serve, --addr, --save, --stdout
     args = parser.parse_args()
+
+    if args.conf_percentile is not None and not (0.0 <= args.conf_percentile <= 100.0):
+        raise ValueError("--conf_percentile must be in [0, 100]")
 
     # Get inference device
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -306,14 +386,34 @@ def main():
 
     _, _ = load_encoder_checkpoint(
             model_without_ddp=model,
-            # checkpoint_path="/scratch2/nico/distillation/output/overfit_1000_img/checkpoints/checkpoint_encoder_epoch1500.pth",
-            checkpoint_path="/scratch2/nico/distillation/output/SV_03_new/checkpoints/checkpoint_epoch17.pth",
+            checkpoint_path=args.checkpoint_path,
             device=device,
         )
 
     # Load images
     print(f"Loading images from: {args.image_folder}")
-    views = load_images(args.image_folder)
+    if args.number_of_views is not None:
+        print(f"Limiting to first {args.number_of_views} views")
+        supported_extensions = (".jpg", ".jpeg", ".png", ".heic", ".heif")
+        image_names = sorted(
+            name
+            for name in os.listdir(args.image_folder)
+            if name.lower().endswith(supported_extensions)
+        )
+        views = [
+            os.path.join(args.image_folder, name)
+            for name in image_names[: args.number_of_views]
+        ]
+    else:
+        views = args.image_folder
+
+    # views = load_images(views)
+    views = load_images(
+        views,
+        resize_mode="square",
+        size=args.input_size,
+        norm_type="dinov2",
+    )
     print(f"Loaded {len(views)} views")
 
     # Run model inference
@@ -322,6 +422,19 @@ def main():
         views, memory_efficient_inference=args.memory_efficient_inference
     )
     print("Inference complete!")
+
+    global_semantic_clusters = None
+    if args.viz_semantic:
+        print("Adding global semantic PCA basis to outputs (distillation-aligned)...")
+        outputs = add_global_semantic_pca_rgb(outputs)
+        print("Global semantic PCA computation complete!")
+        
+        print("Computing scene-level semantic clusters...")
+        global_semantic_clusters = compute_global_semantic_clusters(
+            outputs,
+            conf_percentile=args.conf_percentile,
+        )
+        print("Scene-level semantic clustering complete!")
 
     # Prepare lists for GLB export if needed
     world_points_list = []
@@ -351,23 +464,62 @@ def main():
         # Convert to numpy arrays
         mask = pred["mask"][0].squeeze(-1).cpu().numpy().astype(bool)
         mask = mask & valid_mask.cpu().numpy()  # Combine with valid depth mask
+
+        # Apply confidence percentile filtering (same logic as Gradio visualization)
+        if args.conf_percentile is not None and "conf" in pred:
+            conf_np = pred["conf"][0].squeeze().cpu().numpy()
+            finite_conf = conf_np[np.isfinite(conf_np)]
+            if finite_conf.size == 0:
+                print(
+                    f"[WARN] View {view_idx}: no finite confidence values found; skipping confidence filter"
+                )
+            else:
+                conf_threshold = np.nanpercentile(conf_np.reshape(-1), args.conf_percentile)
+                conf_mask = np.isfinite(conf_np) & (conf_np >= conf_threshold)
+                kept_points = int(conf_mask.sum())
+                total_points = int(conf_mask.size)
+                print(
+                    f"[CONF] View {view_idx}: percentile={args.conf_percentile:.2f}, "
+                    f"threshold={conf_threshold:.6f}, kept={kept_points}/{total_points}"
+                )
+                mask = mask & conf_mask
+
         pts3d_np = pts3d_computed.cpu().numpy()
         image_np = pred["img_no_norm"][0].cpu().numpy()
         
         # Extract semantic features if available and requested
         semantic_pca_rgb_np = None
-        semantic_clusters_np = None
+        semantic_clusters_local_np = None
+        semantic_clusters_global_np = None
         
         if args.viz_semantic:
-            if "semantic_pca_rgb" in pred:
+            # Use global PCA basis (aligned with distillation) if available
+            if "semantic_pca_rgb_global" in pred and pred["semantic_pca_rgb_global"] is not None:
+                semantic_pca_rgb_np = pred["semantic_pca_rgb_global"].cpu().numpy()
+                # Upsample to image resolution (64x64 -> image_h x image_w)
+                if semantic_pca_rgb_np.shape[:2] != image_np.shape[:2]:
+                    pca_tensor = torch.from_numpy(semantic_pca_rgb_np).permute(2, 0, 1).unsqueeze(0).float()  # (1, 3, H, W)
+                    img_h, img_w = image_np.shape[:2]
+                    pca_upsampled = torch.nn.functional.interpolate(
+                        pca_tensor,
+                        size=(img_h, img_w),
+                        mode='bilinear',
+                        align_corners=False
+                    )
+                    semantic_pca_rgb_np = pca_upsampled.squeeze(0).permute(1, 2, 0).cpu().numpy()
+            elif "semantic_pca_rgb" in pred:
+                # Fallback to per-view PCA from model prediction
                 semantic_pca_rgb_np = pred["semantic_pca_rgb"][0].cpu().numpy()
             else:
-                print(f"Warning: semantic_pca_rgb not available in predictions for view {view_idx}")
+                print(f"Warning: semantic_pca_rgb not available for view {view_idx}")
             
             if "semantic_clusters" in pred:
-                semantic_clusters_np = pred["semantic_clusters"][0].cpu().numpy()
+                semantic_clusters_local_np = pred["semantic_clusters"][0].cpu().numpy()
             else:
                 print(f"Warning: semantic_clusters not available in predictions for view {view_idx}")
+
+            if global_semantic_clusters is not None and global_semantic_clusters[view_idx] is not None:
+                semantic_clusters_global_np = global_semantic_clusters[view_idx]
 
         # Store data for GLB export if needed
         if args.save_glb:
@@ -385,21 +537,25 @@ def main():
                 pts3d=pts3d_np,
                 mask=mask,
                 base_name=f"mapanything/view_{view_idx}",
-                pts_name=f"mapanything/pointcloud_view_{view_idx}",
+                view_idx=view_idx,
                 viz_mask=mask,
                 semantic_pca_rgb=semantic_pca_rgb_np,
-                semantic_clusters=semantic_clusters_np,
+                semantic_clusters_local=semantic_clusters_local_np,
+                semantic_clusters_global=semantic_clusters_global_np,
                 log_semantic_pointcloud=args.viz_semantic_pointcloud,
             )
 
     if args.viz:
         print("Visualization complete! Check the Rerun viewer.")
         if args.viz_semantic:
-            print("  - Semantic PCA visualization: mapanything/view_*/pinhole/semantic_pca")
-            print("  - Semantic clusters: mapanything/view_*/pinhole/semantic_clusters")
+            print("  - Semantic PCA visualization: mapanything/mapanything/semantic_pca/semantic_*")
+            print("  - Local semantic clusters: mapanything/mapanything/cluster_local/cluster_local_*")
+            print("  - Global semantic clusters: mapanything/mapanything/cluster_global/cluster_global_*")
         if args.viz_semantic_pointcloud:
-            print("  - Semantic PCA point cloud: mapanything/pointcloud_view_*_semantic_pca")
-            print("  - Semantic cluster point cloud: mapanything/pointcloud_view_*_semantic_clusters")
+            print("  - Point clouds: mapanything/mapanything/pointclouds/pointcloud_view_*")
+            print("  - Semantic PCA point cloud: mapanything/mapanything/semantic_pca/semantic_*/pointcloud")
+            print("  - Local semantic cluster point cloud: mapanything/mapanything/cluster_local/cluster_local_*/pointcloud")
+            print("  - Global semantic cluster point cloud: mapanything/mapanything/cluster_global/cluster_global_*/pointcloud")
 
     # Export GLB if requested
     if args.save_glb:
