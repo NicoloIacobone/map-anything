@@ -1,7 +1,7 @@
-run_name: "test"
+run_name: "test_full_dataset"
 use_wandb: false
-epochs: 11000
-start_epoch: 10000
+epochs: 2
+start_epoch: 0
 batch_size: null
 accum_iter: 1
 max_num_of_imgs_per_gpu: 8
@@ -45,7 +45,7 @@ overwrite_scheduler_t_max: null # for cosine
 override_scheduler: null
 
 # ========== RESUME CHECKPOINTS (string) ==========
-resume_encoder_ckpt: "/cluster/work/igp_psr/niacobone/distillation/output/distillation_loss_full_dataset/checkpoints/checkpoint_encoder_10000.pth"
+resume_encoder_ckpt: null
 resume_decoder_ckpt: null
 resume_trainer_ckpt: null
 # ========== SAVE CHECKPOINTS (boolean) ==========
@@ -67,12 +67,12 @@ num_dino_layers_unfreeze: 0
 # amg_points_per_side: null
 
 # ========== OVERFIT STRATEGY ===========
-overfit: true
+overfit: false
 save_pca_visualization_every: 100
 
 # ========== TESTING STRATEGY ===========
 eval_freq: 50
-save_pca_visualization: true
+save_pca_visualization: false
 freeze_val_samples_across_all_epochs: false # Freeze the validation samples across all epochs (always use the same val samples)
 
 # =============== OTHER ===============
