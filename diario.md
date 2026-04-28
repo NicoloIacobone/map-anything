@@ -9,16 +9,29 @@ TODO:
     - [ ] Fare reprojection delle maschere sulla pointcloud generata da MapAnything
 - [ ] Lettura papers
     - [ ] D4RT
-    - [ ] DETR
+    - [x] DETR
     - [ ] AnyRecon
     - [ ] GenReg
     - [ ] SimCLR
 - [ ] Creare un quantitative test coerente
 - [ ] Sistemare HDBSCAN sulla versione di test di MapAnything
 
+
 ## 16/04/2026
+Oggi preparo le visualizzazioni per il meeting (di domani).
+Ho raggruppato alcune scene che voglio utilizzare per la segmentation e che sono parte del dataset su cui ho fatto l'overfit.
+Oggi cerco anche di settare al meglio i threshold di confidence di produzione della pointcloud e i parametri di HDBSCAN per ottenere una segmentazione più pulita possibile.
+Bisogna modificare il funzionamento di HDBSCAN in quanto al momento clusterizza in single-view e non in multi-view.
 
+Ci sono due varianti pratiche:
+- Variante minima: concateni tutte le feature di tutte le view in un unico array e fai HDBSCAN una sola volta. Questo è semplice, ma non sfrutta davvero la geometria multi-view.
+- Variante completa: fuse per corrispondenza 3D, poi cluster globale. Questa è quella coerente con il training che hai descritto, perché la consistency loss ha già insegnato al modello a rendere simili le feature dello stesso punto 3D attraverso viste diverse.
 
+La consistency loss consente di avere coerenza per la semantica dello stesso punto visto da diverse viste, ma non sa quando due punti appartengono allo stesso oggetto. Me ne rendo conto vedendo come il fronte e il retro della rappresentazione della statuetta hanno colori completamente diversi, nonostante siano vicini nello spazio 3D e facciano parte dello stesso oggetto.
+
+    ```bash
+    rsync -a --info=progress2 --partial -v blendedmvs converted/mapanything_dataset_metadata converted/wai_data/blendedmvs niacobone@euler.ethz.ch:/cluster/scratch/niacobone/distillation/dataset
+    ```
 
 
 ## 15/04/2026
@@ -51,20 +64,7 @@ TODO LIST:
     rsync -a --info=progress2 --partial --dry-run blendedmvs converted/mapanything_dataset_metadata converted/wai_data/blendedmvs niacobone@euler.ethz.ch:/cluster/scratch/niacobone/distillation/dataset
     ```
     - [ ] Step 2: Se il dry-run è ok, eseguire il comando vero (con verbose per vedere ogni operazione)
-Oggi preparo le visualizzazioni per il meeting (di domani).
-Ho raggruppato alcune scene che voglio utilizzare per la segmentation e che sono parte del dataset su cui ho fatto l'overfit.
-Oggi cerco anche di settare al meglio i threshold di confidence di produzione della pointcloud e i parametri di HDBSCAN per ottenere una segmentazione più pulita possibile.
-Bisogna modificare il funzionamento di HDBSCAN in quanto al momento clusterizza in single-view e non in multi-view.
 
-Ci sono due varianti pratiche:
-- Variante minima: concateni tutte le feature di tutte le view in un unico array e fai HDBSCAN una sola volta. Questo è semplice, ma non sfrutta davvero la geometria multi-view.
-- Variante completa: fuse per corrispondenza 3D, poi cluster globale. Questa è quella coerente con il training che hai descritto, perché la consistency loss ha già insegnato al modello a rendere simili le feature dello stesso punto 3D attraverso viste diverse.
-
-La consistency loss consente di avere coerenza per la semantica dello stesso punto visto da diverse viste, ma non sa quando due punti appartengono allo stesso oggetto. Me ne rendo conto vedendo come il fronte e il retro della rappresentazione della statuetta hanno colori completamente diversi, nonostante siano vicini nello spazio 3D e facciano parte dello stesso oggetto.
-
-    ```bash
-    rsync -a --info=progress2 --partial -v blendedmvs converted/mapanything_dataset_metadata converted/wai_data/blendedmvs niacobone@euler.ethz.ch:/cluster/scratch/niacobone/distillation/dataset
-    ```
 
 ## 14/04/2026
 Ho analizzato i risultati della distillazione con e senza consistency loss, e mi sembrano uguali.

@@ -292,9 +292,9 @@ def get_parser():
     parser.add_argument(
         "--checkpoint_path",
         type=str,
-        # default="/scratch2/nico/distillation/output/distillation_loss_full_dataset/checkpoints/checkpoint_encoder_10000.pth",
+        default="/scratch2/nico/distillation/output/distillation_loss_full_dataset/checkpoints/checkpoint_encoder_10000.pth",
         # default="/scratch2/nico/distillation/output/resume_1_consistency_01/checkpoints/checkpoint_encoder_11000.pth",
-        default="/scratch2/nico/distillation/output/resume_2_consistency_05/checkpoints/checkpoint_encoder_11000.pth",
+        # default="/scratch2/nico/distillation/output/resume_2_consistency_05/checkpoints/checkpoint_encoder_11000.pth",
         # default="/scratch2/nico/distillation/output/resume_3_consistency_1/checkpoints/checkpoint_encoder_11000.pth",
         help="Path to encoder checkpoint (optional, for loading trained encoder weights)",
     )
