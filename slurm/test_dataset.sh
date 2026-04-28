@@ -1,19 +1,19 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=distillation_blendedmvs
+#SBATCH --job-name=test_dataset_and_distillation
 #
 # Specify output file.
-#SBATCH --output=distillation_blendedmvs_%j.log
+#SBATCH --output=test_dataset_and_distillation_%j.log
 #
 # Specify error file.
-#SBATCH --error=distillation_blendedmvs_%j.err
+#SBATCH --error=test_dataset_and_distillation_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=24:00:00
+#SBATCH --time=01:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -30,9 +30,6 @@
 # Specify disk limit on local scratch.
 #SBATCH --tmp=500000
 #
-# Specify email notifications.
-# #SBATCH --mail-type=BEGIN,END,FAIL
-# #SBATCH --mail-user=niacobone@student.ethz.ch
 
 echo "=== Job starting on $(hostname) at $(date) ==="
 # DATE_VAR=$(date +%Y%m%d%H%M%S)
@@ -59,20 +56,10 @@ cp "$DATASET_SRC" "$LOCAL_TAR"
 END_COPY=$(date +%s)
 COPY_TIME=$((END_COPY - START_COPY))
 echo "Tempo impiegato per la copia: ${COPY_TIME}s"
+
+# Validazione copia
 if [ ! -f "$LOCAL_TAR" ]; then
 	echo "Errore: copia del file fallita: $LOCAL_TAR" >&2
-	exit 1
-fi
-
-# Determina directory principale nell'archivio
-echo "Listing archive top-level entries to determine extraction path"
-START_LIST=$(date +%s)
-TOP_DIR=$(tar -tzf "$LOCAL_TAR" | sed -e 's@/.*@@' | uniq | head -n1)
-END_LIST=$(date +%s)
-LIST_TIME=$((END_LIST - START_LIST))
-echo "Tempo impiegato per determinare la directory principale: ${LIST_TIME}s"
-if [ -z "$TOP_DIR" ]; then
-	echo "Errore: impossibile determinare la directory principale nell'archivio" >&2
 	exit 1
 fi
 
@@ -83,24 +70,23 @@ tar -xzf "$LOCAL_TAR" -C "$TMPDIR"
 END_EXTRACT=$(date +%s)
 EXTRACT_TIME=$((END_EXTRACT - START_EXTRACT))
 echo "Tempo impiegato per l'estrazione: ${EXTRACT_TIME}s"
-EXTRACT_PATH="$TMPDIR/$TOP_DIR"
 
-if [ ! -d "$EXTRACT_PATH" ]; then
-	echo "Errore: directory estratta non trovata: $EXTRACT_PATH" >&2
-	exit 1
+# Validazione estrazione
+if [ ! -d "$TMPDIR/blendedmvs" ]; then
+    echo "Errore: directory estratta non trovata: $TMPDIR/blendedmvs" >&2
+    exit 1
 fi
 
-# Conteggio
-echo "Conteggio delle cartelle e delle immagini in: $EXTRACT_PATH"
-START_COUNT=$(date +%s)
-TOTAL_DIRS=$(find "$EXTRACT_PATH" -type d | wc -l)
-TOTAL_IMAGES=$(find "$EXTRACT_PATH" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.bmp' -o -iname '*.tif' -o -iname '*.tiff' \) | wc -l)
-END_COUNT=$(date +%s)
-COUNT_TIME=$((END_COUNT - START_COUNT))
-echo "Tempo impiegato per il conteggio: ${COUNT_TIME}s"
+echo "=== Dataset copied and extracted successfully ==="
 
-echo "Numero totale di cartelle: $TOTAL_DIRS"
-echo "Numero totale di immagini: $TOTAL_IMAGES"
+# echo "Starting MapAnything distillation..."
 
-exit 0
+# export WANDB_API_KEY=$(cat "/cluster/home/niacobone/.config/wandb/wandb_api_key.txt")
 
+# python distill.py machine=cluster train_params.run_name=test_dataset_and_distillation
+
+# echo "=== Job finished at $(date) ==="
+# start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
+# end_time=$(date +%s)
+# elapsed=$((end_time - start_time))
+# echo "Total execution time: $(printf '%02d:%02d:%02d\n' $((elapsed/3600)) $(( (elapsed%3600)/60 )) $((elapsed%60))) (hh:mm:ss)"
