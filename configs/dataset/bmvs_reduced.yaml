@@ -23,8 +23,8 @@ resolution_val_blendedmvs: ${dataset.resolution_options.224_1_00_ar}
 
 # Training Set - num_scene @ dataset_setting - es. if num_views = 4 -> 2 @ 4 = 8 tot imgs
 train_dataset:
-  "+ 1_000 @ ${dataset.blendedmvs_wai.train.dataset_str}"
+  "+ 10_000 @ ${dataset.blendedmvs_wai.train.dataset_str}"
 
 # Validation Set
 test_dataset:
-  "+ 100 @ ${dataset.blendedmvs_wai.val.dataset_str}"
+  "+ 10_000 @ ${dataset.blendedmvs_wai.val.dataset_str}"

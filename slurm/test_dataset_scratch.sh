@@ -63,14 +63,19 @@ fi
 
 echo "=== Dataset copied and extracted successfully ==="
 
-# echo "Starting MapAnything distillation..."
+echo "Starting MapAnything distillation..."
 
-# export WANDB_API_KEY=$(cat "/cluster/home/niacobone/.config/wandb/wandb_api_key.txt")
+export WANDB_API_KEY=$(cat "/cluster/home/niacobone/.config/wandb/wandb_api_key.txt")
 
-# python distill.py machine=cluster train_params.run_name=test_dataset_and_distillation
+python distill.py \
+  machine=cluster \
+  machine.base_dir="$TMPDIR" \
+  machine.root_data_dir="$TMPDIR/converted/wai_data" \
+  machine.mapanything_dataset_metadata_dir="$TMPDIR/converted/mapanything_dataset_metadata" \
+  train_params.run_name=test_dataset_and_distillation
 
-# echo "=== Job finished at $(date) ==="
-# start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
-# end_time=$(date +%s)
-# elapsed=$((end_time - start_time))
-# echo "Total execution time: $(printf '%02d:%02d:%02d\n' $((elapsed/3600)) $(( (elapsed%3600)/60 )) $((elapsed%60))) (hh:mm:ss)"
+echo "=== Job finished at $(date) ==="
+start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
+end_time=$(date +%s)
+elapsed=$((end_time - start_time))
+echo "Total execution time: $(printf '%02d:%02d:%02d\n' $((elapsed/3600)) $(( (elapsed%3600)/60 )) $((elapsed%60))) (hh:mm:ss)"
