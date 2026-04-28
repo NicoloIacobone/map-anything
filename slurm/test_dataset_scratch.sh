@@ -44,37 +44,21 @@ echo "Activated Python venv: $(which python)"
 
 # Execute
 cd /cluster/scratch/niacobone/map-anything
- 
-# Copia dataset nella cartella temporanea del job, lo decomprime e conta cartelle e immagini
-DATASET_SRC="/cluster/work/igp_psr/niacobone/distillation/dataset/backup/blendedmvs_dataset.tar.gz"
-LOCAL_TAR="$TMPDIR/$(basename "$DATASET_SRC")"
 
-# Copia
-echo "Copying dataset from $DATASET_SRC to $LOCAL_TAR"
-START_COPY=$(date +%s)
-cp "$DATASET_SRC" "$LOCAL_TAR"
-END_COPY=$(date +%s)
-COPY_TIME=$((END_COPY - START_COPY))
-echo "Tempo impiegato per la copia: ${COPY_TIME}s"
+DATASET_SRC=/cluster/scratch/niacobone/distillation/dataset/backup/blendedmvs_dataset.tar.gz
 
-# Validazione copia
-if [ ! -f "$LOCAL_TAR" ]; then
-	echo "Errore: copia del file fallita: $LOCAL_TAR" >&2
-	exit 1
-fi
-
-# Estrazione
-echo "Extracting $LOCAL_TAR to $TMPDIR"
+# Extract dataset to local scratch
+echo "Extracting $DATASET_SRC to $TMPDIR"
 START_EXTRACT=$(date +%s)
-tar -xzf "$LOCAL_TAR" -C "$TMPDIR"
+tar -xzf "$DATASET_SRC" -C "$TMPDIR"
 END_EXTRACT=$(date +%s)
 EXTRACT_TIME=$((END_EXTRACT - START_EXTRACT))
 echo "Tempo impiegato per l'estrazione: ${EXTRACT_TIME}s"
 
 # Validazione estrazione
 if [ ! -d "$TMPDIR/blendedmvs" ]; then
-    echo "Errore: directory estratta non trovata: $TMPDIR/blendedmvs" >&2
-    exit 1
+echo "Errore: directory estratta non trovata: $TMPDIR/blendedmvs" >&2
+exit 1
 fi
 
 echo "=== Dataset copied and extracted successfully ==="
