@@ -1,3 +1,33 @@
+## 28/04/2026
+Testato il dataset completo su workspace.
+Zippato e copiato su /work come backup e copiato su /scratch per essere utilizzato sul nodo.
+Creato e testato script per copiare da /scratch alla cartella temporanea $TMPDIR sul nodo che non ha limiti di spazio o numero di file (gestito da parametro --tmp).
+
+Cose imparate:
+- Quando avvio un job slurm viene creata una cartella temporanea sotto /scratch/tmp.[numero_job].niacobone che è diversa da /cluster/scratch/niacobone/tmp.
+
+Idea:
+
+
+TODO aggiornata:
+- [x] Dataset funzionante
+    - [x] Zippare dataset completo su pf-pc20
+    - [x] Copiarlo su cluster sotto /work/igp_psr/niacobone/distillation/dataset
+    - [x] Copiarlo su cluster sotto /scratch/niacobone/distillation/dataset
+    - [x] Creare script copia dataset in $TMP
+- [ ] Script SAM2 mask multi-view
+    - [ ] Usare la video mode di SAM2 per produrre maschere di segmentazione coerenti per ogni frame
+    - [ ] Fare reprojection delle maschere sulla pointcloud generata da MapAnything
+- [ ] Lettura papers
+    - [ ] D4RT
+    - [x] DETR
+    - [ ] AnyRecon
+    - [ ] GenReg
+    - [ ] SimCLR
+- [ ] Creare un quantitative test coerente
+- [ ] Sistemare HDBSCAN sulla versione di test di MapAnything
+    - Probabilmente non va sistemato, ma fallisce in quanto la nube di punti della feature pointcloud è troppo poco densa per poter essere facilmente clusterizzata.
+
 ## 27/04/2026
 TODO:
 - [ ] Dataset funzionante

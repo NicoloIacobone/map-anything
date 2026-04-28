@@ -1,7 +1,7 @@
 defaults:
   - default
-  - override blendedmvs_wai/train: distillation_overfit
-  - override blendedmvs_wai/val: distillation_overfit
+  - override blendedmvs_wai/train: distillation
+  - override blendedmvs_wai/val: distillation
 
 # Number of views parameter for the multi-view datasets
 num_views: 4
@@ -27,4 +27,4 @@ train_dataset:
 
 # Validation Set
 test_dataset:
-  "+ 10_000 @ ${dataset.blendedmvs_wai.val.dataset_str}"
+  "+ 500 @ ${dataset.blendedmvs_wai.val.dataset_str}"
