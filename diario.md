@@ -6,7 +6,11 @@ Creato e testato script per copiare da /scratch alla cartella temporanea $TMPDIR
 Cose imparate:
 - Quando avvio un job slurm viene creata una cartella temporanea sotto /scratch/tmp.[numero_job].niacobone che è diversa da /cluster/scratch/niacobone/tmp.
 
-Idea:
+Idea: usare una loss leggermente diversa, più simile a una contrastive (InfoNCE) ma con le seguenti caratteristiche (check):
+- Il check della semantica avviene solo nei punti coperti da una maschera valida prodotta da SAM2
+- Aumentare il peso del negativo in base alla distanza tra i due punti presi (es. lungo il raggio di una circonferenza) in quanto teoricamente due punti distanti appartengono a due oggetti separati.
+- Aumentare il peso del negativo in base al valore delle features es. delta(feat_target_1, feat_target_2) in quanto presuppongo che SAM2 produca features simili per oggetti simili quindi se le features sono diverse può essere che gli oggetti siano diversi.
+- Definizione standard di InfoNCE per separare le features di punti diversi (sembra controintuitivo perché la loss è minimizzata se due punti dello stesso oggetto hanno features contrastanti, ma comunque va considerato che c'è anche la feature loss con un peso maggiore).
 
 
 TODO aggiornata:

@@ -1,7 +1,7 @@
 defaults:
   - machine: local
   - model: mapanything_distillation
-  - dataset: bmvs_reduced
+  - dataset: bmvs_distillation_full
   - loss: distillation_only
   - train_params: distillation
   - distributed: disabled
