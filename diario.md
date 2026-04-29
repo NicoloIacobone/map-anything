@@ -3,6 +3,8 @@ Testato il dataset completo su workspace.
 Zippato e copiato su /work come backup e copiato su /scratch per essere utilizzato sul nodo.
 Creato e testato script per copiare da /scratch alla cartella temporanea $TMPDIR sul nodo che non ha limiti di spazio o numero di file (gestito da parametro --tmp).
 
+Individuato un mismatch logico tra train e inference: in fase di train faccio interpolazione per ridurre la shape delle informazioni geometriche a quelle semantiche es 224x224 -> 64x64, mentre in fase di inference interpolo le features semantiche per matchare shape immagini 64x64 -> 224x224.
+
 Cose imparate:
 - Quando avvio un job slurm viene creata una cartella temporanea sotto /scratch/tmp.[numero_job].niacobone che è diversa da /cluster/scratch/niacobone/tmp.
 
@@ -31,6 +33,7 @@ TODO aggiornata:
 - [ ] Creare un quantitative test coerente
 - [ ] Sistemare HDBSCAN sulla versione di test di MapAnything
     - Probabilmente non va sistemato, ma fallisce in quanto la nube di punti della feature pointcloud è troppo poco densa per poter essere facilmente clusterizzata.
+- [ ] Capire il ruolo della confidence e come viene addestrata
 
 ## 27/04/2026
 TODO:

@@ -76,6 +76,7 @@ def loss_of_one_batch_multi_view(
     teacher_features=None,
     save_pca_visualization_path=None,
     epoch=None,
+    batch_idx=0,
 ):
     """
     Calculate loss for a batch with multiple views.
@@ -196,7 +197,7 @@ def loss_of_one_batch_multi_view(
                 device = preds[i]["semantics"].device
                 preds[i]["sem_conf"] = torch.ones(B, 1, H, W, device=device)
     # ==============================================================================
-    if save_pca_visualization_path is not None:
+    if save_pca_visualization_path is not None and batch_idx == 0:
         pca_visualization(batch, preds, epoch=epoch, output_dir=save_pca_visualization_path)
         pca_visualization_student_only(batch, preds, epoch, save_pca_visualization_path)
     

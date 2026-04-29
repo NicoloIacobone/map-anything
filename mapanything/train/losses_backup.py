@@ -5199,10 +5199,6 @@ class SemanticConsistencyLoss(BaseCriterion):
             - 'semantics': (B, C, H, W)
             - 'sem_conf': (B, 1, H, W)
             - 'pts3d_cam': (B, H, W, 3) (Camera Coordinates) - REQUIRED for Occlusion Check
-        
-        IMPORTANTE: La multi-view consistency loss è computata a RISOLUZIONE ORIGINALE.
-        Le feature map vengono upsampate dalla loro risoluzione nativa a quella originale.
-        Questo sincronizza il training con l'inference dove le feature vengono upsampate.
         """
         n_views = len(batch)
         details = {}
@@ -5227,6 +5223,7 @@ class SemanticConsistencyLoss(BaseCriterion):
             return torch.tensor(0.0, device=device, requires_grad=True), {}
     
         B, C, H_sem, W_sem = preds[0]["semantics"].shape
+        img_size_sem = (H_sem, W_sem)
         H_orig, W_orig = preds[0]["pts3d"].shape[1:3]
         img_size_orig = (H_orig, W_orig)
     
@@ -5234,8 +5231,8 @@ class SemanticConsistencyLoss(BaseCriterion):
         consistency_losses = []
     
         for i in range(n_views):
-            pred_sem = preds[i]["semantics"]  # (B, C, H_sem, W_sem)
-            gt_sem = batch[i]["semantics"]    # (B, C, H_sem, W_sem)
+            pred_sem = preds[i]["semantics"]  # (B, 256, 64, 64)
+            gt_sem = batch[i]["semantics"]    # (B, 256, 64, 64)
     
             # ==========================
             # PART 1: 2D Distillation
@@ -5243,88 +5240,96 @@ class SemanticConsistencyLoss(BaseCriterion):
             if compute_dist:
                 pred_norm = F.normalize(pred_sem, dim=1)
                 gt_norm = F.normalize(gt_sem, dim=1)
-                loss_2d = 1.0 - torch.sum(pred_norm * gt_norm, dim=1)  # (B, H_sem, W_sem)
+                loss_2d = 1.0 - torch.sum(pred_norm * gt_norm, dim=1)  # (B, H, W)
                 if loss_2d.numel() > 0:
                     distillation_losses.append(loss_2d.mean())
                 else:
                     distillation_losses.append(torch.zeros((), device=pred_sem.device, dtype=pred_sem.dtype))
     
             # ==========================
-            # PART 2: Multi-View Consistency (a RISOLUZIONE ORIGINALE)
+            # PART 2: Multi-View Consistency
             # ==========================
             # Questo blocco calcola la consistenza multi-view: i punti 3D della vista anchor
             # vengono proiettati su tutte le altre viste e confrontate le loro feature semantiche.
             # Obiettivo: le stesse coordinate 3D devono produrre feature simili quando viste da angoli diversi.
-            # 
-            # SINCRONIZZAZIONE TRAINING-INFERENCE: La consistency loss è computata a risoluzione originale.
-            # Le feature map vengono UPSAMPATE dalla loro risoluzione nativa alla risoluzione originale,
-            # esattamente come avviene in inference. I punti 3D rimangono a risoluzione originale.
             if compute_cons:
-                # STEP 1: Punti 3D world a RISOLUZIONE ORIGINALE (nessun downsampling)
-                # batch[i]["pts3d"] ha shape (B, H_orig, W_orig, 3)
-                gt_pts_world_high = batch[i]["pts3d"].permute(0, 3, 1, 2)  # (B, 3, H_orig, W_orig)
-                anchor_pts_world = gt_pts_world_high.permute(0, 2, 3, 1)  # (B, H_orig, W_orig, 3)
+                # STEP 1: Prepara i punti 3D world della vista anchor a bassa risoluzione (64×64)
+                # batch[i]["pts3d"] ha shape (B, H_orig, W_orig, 3) es. (2, 512, 512, 3)
+                gt_pts_world_high = batch[i]["pts3d"].permute(0, 3, 1, 2)  # → (2, 3, 512, 512) per F.interpolate
                 
-                # STEP 2: Upsample delle feature semantiche dalla loro risoluzione alla risoluzione originale
-                # BILINEAR perché le feature sono mappe continue, non coordinate discrete
-                anchor_feat_upsampled = F.interpolate(
-                    pred_sem, size=img_size_orig, mode="bilinear", align_corners=False
-                )  # (B, C, H_orig, W_orig)
-                anchor_feat = anchor_feat_upsampled
+                # Downsampling a 64×64 con NEAREST interpolation
+                # NOTA: Usiamo NEAREST per i punti 3D perché rappresentano coordinate geometriche DISCRETE
+                # Ogni pixel ha UNA sola coordinata 3D. Con nearest evitamo di "inventare" coordinate intermedie.
+                anchor_pts_world = F.interpolate(
+                    gt_pts_world_high, size=img_size_sem, mode="nearest"
+                ).permute(0, 2, 3, 1)  # → (2, 64, 64, 3)
+    
+                anchor_feat = pred_sem
                 
-                # STEP 3: Upsample della confidence map
+                # STEP 2: Prepara la confidence map della vista anchor
+                # La confidence indica quanto il modello è sicuro di quella feature
+                # Può avere shape diverso dalle feature (es. 256×256 mentre semantics è 64×64)
                 if "sem_conf" in preds[i]:
-                    anchor_conf = preds[i]["sem_conf"]  # (B, 1, H_conf, W_conf)
-                    if anchor_conf.shape[2:] != img_size_orig:
-                        # BILINEAR per confidence (è una mappa continua di valori [0,1])
+                    anchor_conf = preds[i]["sem_conf"]  # (B, 1, H_sem?, W_sem?)
+                    if anchor_conf.shape[2:] != img_size_sem:
+                        # Se risoluzione ≠ 64×64, resample con BILINEAR
+                        # NOTA: Usiamo BILINEAR per confidence perché è una MAP CONTINUA di valori [0,1]
+                        # Non è una coordinata discreta, ma un "valore di fiducia" che varia smoothly
                         anchor_conf = F.interpolate(
-                            anchor_conf, size=img_size_orig, mode="bilinear", align_corners=False
+                            anchor_conf, size=img_size_sem, mode="bilinear", align_corners=False
                         )
                 else:
                     # Se non ci sono confidence, assumi confidence=1 ovunque
                     anchor_conf = torch.ones(
-                        (B, 1, H_orig, W_orig), device=anchor_feat.device, dtype=anchor_feat.dtype
+                        (B, 1, H_sem, W_sem), device=anchor_feat.device, dtype=anchor_feat.dtype
                     )
-                anchor_conf = anchor_conf.clamp_min(self.min_conf)
+                anchor_conf = anchor_conf.clamp_min(self.min_conf)  # Garantisci conf ≥ min_conf
     
-                # STEP 4: Inizializza accumulatori per la media ponderata multi-view
-                sum_weighted_feat = anchor_feat * anchor_conf
-                sum_conf = anchor_conf
+                # STEP 3: Inizializza accumulatori per la media ponderata multi-view
+                # Idea: vedremo i punti dell'anchor da più angoli diversi (altre viste),
+                # e faremo una media ponderata delle loro feature semantiche
+                sum_weighted_feat = anchor_feat * anchor_conf  # Feature pesate per confidence
+                sum_conf = anchor_conf  # Somma dei pesi di confidence
                 
+                # Maschera binaria: quali pixel hanno almeno una corrispondenza valida da altre viste?
                 has_matches_mask = torch.zeros(
-                    (B, H_orig, W_orig), device=anchor_feat.device, dtype=torch.bool
+                    (B, H_sem, W_sem), device=anchor_feat.device, dtype=torch.bool
                 )
     
-                # STEP 5: Ciclo su tutte le altre viste (j ≠ i)
+                # STEP 4: Ciclo su tutte le altre viste (j ≠ i)
+                # Per ogni vista j, proiettiamo i punti dell'anchor e accumuliamo le loro feature
                 for j in range(n_views):
                     if i == j:
                         continue
                     
-                    # Upsample della feature semantica della vista target j
-                    tgt_feat = preds[j]["semantics"]  # (B, C, H_sem, W_sem)
-                    tgt_feat_upsampled = F.interpolate(
-                        tgt_feat, size=img_size_orig, mode="bilinear", align_corners=False
-                    )  # (B, C, H_orig, W_orig)
+                    # Estrai feature semantica della vista target j
+                    tgt_feat = preds[j]["semantics"]  # (B, 256, 64, 64)
     
-                    # Upsample della confidence della vista target j
+                    # Estrai confidence della vista target j
+                    # Come per l'anchor, se ha risoluzione diversa, resample con BILINEAR
                     if "sem_conf" in preds[j]:
-                        tgt_conf = preds[j]["sem_conf"]  # (B, 1, H_conf, W_conf)
-                        if tgt_conf.shape[2:] != img_size_orig:
+                        tgt_conf = preds[j]["sem_conf"]  # (B, 1, H_conf?, W_conf?)
+                        if tgt_conf.shape[2:] != img_size_sem:
+                            # BILINEAR per confidence (è una mappa continua, non coordinate)
                             tgt_conf = F.interpolate(
-                                tgt_conf, size=img_size_orig, mode="bilinear", align_corners=False
+                                tgt_conf, size=img_size_sem, mode="bilinear", align_corners=False
                             )
                     else:
+                        # Se nessuna confidence, assumi 1 ovunque
                         tgt_conf = torch.ones(
-                            (B, 1, H_orig, W_orig), device=tgt_feat_upsampled.device, dtype=tgt_feat_upsampled.dtype
+                            (B, 1, H_sem, W_sem), device=tgt_feat.device, dtype=tgt_feat.dtype
                         )
                     tgt_conf = tgt_conf.clamp_min(self.min_conf)
     
-                    # STEP 6: PROIEZIONE - Trasforma i punti 3D dell'anchor nel sistema di coordinate della vista j
-                    # anchor_pts_world: (B, H_orig, W_orig, 3) - punti 3D world a risoluzione originale
+                    # STEP 5: PROIEZIONE - Trasforma i punti 3D dell'anchor nel sistema di coordinate della vista j
+                    # anchor_pts_world: (B, 64, 64, 3) - punti 3D world della vista anchor
+                    # batch[j]["camera_pose"]: posa della camera j (Camera-to-World)
+                    # batch[j]["camera_intrinsics"]: matrice K della camera j
+                    # img_size_orig: risoluzione originale per normalizzare le coordinate immagine
                     # OUTPUT:
-                    #   grid: (B, H_orig, W_orig, 2) - coordinate [-1,1] per grid_sample
-                    #   z_proj: (B, 1, H_orig, W_orig) - profondità proiettata nella vista j
-                    #   fov_mask: (B, 1, H_orig, W_orig) - maschera FOV della camera j
+                    #   grid: (B, 64, 64, 2) - coordinate [-1,1] dove campionare in vista j
+                    #   z_proj: (B, 1, 64, 64) - profondità proiettata nella vista j
+                    #   fov_mask: (B, 1, 64, 64) - maschera: punto è dentro il FOV della camera j?
                     grid, z_proj, fov_mask = self.project_to_view(
                         anchor_pts_world,
                         batch[j]["camera_pose"],
@@ -5332,53 +5337,77 @@ class SemanticConsistencyLoss(BaseCriterion):
                         img_size_orig,
                     )
                     
-                    # STEP 7: CAMPIONAMENTO - Estrai le feature della vista j nei punti proiettati
+                    # STEP 6: CAMPIONAMENTO - Estrai le feature della vista j dove i punti vengono proiettati
+                    # grid_sample usa il grid normalizzato per campionare tgt_feat
+                    # Il risultato è: per ogni pixel dell'anchor, qual è la feature nel punto proiettato di j?
                     sampled_feat = F.grid_sample(
-                        tgt_feat_upsampled, grid, align_corners=True, padding_mode="border"
-                    )  # (B, C, H_orig, W_orig)
+                        tgt_feat, grid, align_corners=True, padding_mode="border"
+                    )  # (B, 256, 64, 64)
+                    # Analogamente, estrai la confidence nel punto proiettato
                     sampled_conf = F.grid_sample(
                         tgt_conf, grid, align_corners=True, padding_mode="border"
-                    ).clamp_min(self.min_conf)  # (B, 1, H_orig, W_orig)
+                    ).clamp_min(self.min_conf)  # (B, 1, 64, 64)
     
-                    # STEP 8: OCCLUSION CHECK - Verifica che il punto non sia occluded
-                    # Ottieni la profondità GT della vista j a risoluzione originale
+                    # STEP 7: OCCLUSION CHECK - Verifica che il punto non sia dietro ad altri oggetti
+                    # Ottieni la profondità GT della vista j nella posizione proiettata
                     gt_pts_cam_j_high = batch[j]["pts3d_cam"].permute(0, 3, 1, 2)  # (B, 3, H_orig, W_orig)
-                    tgt_depth_map = gt_pts_cam_j_high[:, 2:3, :, :]  # (B, 1, H_orig, W_orig)
+                    # Downsample a bassa risoluzione per velocità computazionale
+                    # NOTA: Usiamo NEAREST per i punti 3D (sono coordinate geometriche discrete)
+                    gt_pts_cam_j_low = F.interpolate(
+                        gt_pts_cam_j_high, size=img_size_sem, mode="nearest"
+                    ).permute(0, 2, 3, 1)  # (B, 64, 64, 3)
+                    # Estrai il componente Z (profondità lungo l'asse camera Z)
+                    tgt_depth_map = gt_pts_cam_j_low[..., 2].unsqueeze(1)  # (B, 1, 64, 64)
                     # Campiona la profondità GT nei punti proiettati
                     sampled_tgt_depth = F.grid_sample(
                         tgt_depth_map, grid, align_corners=True, padding_mode="border"
-                    )  # (B, 1, H_orig, W_orig)
+                    )  # (B, 1, 64, 64)
                     
-                    # Z-buffer check
-                    occ_mask = torch.abs(z_proj - sampled_tgt_depth) < self.occ_thresh  # (B, 1, H_orig, W_orig)
+                    # Z-buffer check: se la differenza tra profondità proiettata e GT è piccola,
+                    # il punto non è occluded. Se è grande, c'è un oggetto davanti.
+                    occ_mask = torch.abs(z_proj - sampled_tgt_depth) < self.occ_thresh  # (B, 1, 64, 64)
                     
-                    # Combinazione di maschere
-                    valid_mask = fov_mask & occ_mask  # (B, 1, H_orig, W_orig)
+                    # Combinazione di maschere: il pixel è valido se è IN FOV E NON OCCLUDED
+                    valid_mask = fov_mask & occ_mask  # (B, 1, 64, 64)
     
-                    # STEP 9: ACCUMULO - Aggiungi la feature di vista j alla media ponderata
+                    # STEP 8: ACCUMULO - Aggiungi la feature di vista j alla media ponderata
+                    # Aggiorna la maschera: un pixel ha match se è valido da almeno una vista j
                     has_matches_mask = has_matches_mask | valid_mask.squeeze(1)
                     
-                    s_feat = sampled_feat * valid_mask.float()  # (B, C, H_orig, W_orig)
-                    s_conf = sampled_conf * valid_mask.float()  # (B, 1, H_orig, W_orig)
+                    # Zero-out feature e confidence dove non valide
+                    # Questo garantisce che solo i pixel validi contribuiscono alla media
+                    s_feat = sampled_feat * valid_mask.float()  # (B, 256, 64, 64)
+                    s_conf = sampled_conf * valid_mask.float()  # (B, 1, 64, 64)
                     
-                    sum_weighted_feat = sum_weighted_feat + (s_feat * s_conf)
-                    sum_conf = sum_conf + s_conf
+                    # Accumula feature pesate per confidence
+                    sum_weighted_feat = sum_weighted_feat + (s_feat * s_conf)  # Somma numeratore
+                    sum_conf = sum_conf + s_conf  # Somma denominatore (pesi)
     
-                # STEP 10: CALCOLO DELLA MEDIA PONDERATA
-                mean_feat = sum_weighted_feat / (sum_conf + 1e-6)  # (B, C, H_orig, W_orig)
+                # STEP 9: CALCOLO DELLA MEDIA PONDERATA
+                # Media = Somma(feature * confidence) / Somma(confidence)
+                # Questo rappresenta la feature "consensus" della coordinata 3D vista da più angoli
+                mean_feat = sum_weighted_feat / (sum_conf + 1e-6)  # (B, 256, 64, 64)
+                # Normalizza in L2 per similarity coseno
                 mean_feat = F.normalize(mean_feat, p=2, dim=1)
+                # Detach: non vogliamo che la loss sulla media backprop sui parametri
+                # (vogliamo solo che anchor_feat si avvicini a questa media)
                 target_feat = mean_feat.detach()
                 
-                # STEP 11: CALCOLO DELLA LOSS - Similarità coseno
-                sim_i = torch.sum(F.normalize(anchor_feat, p=2, dim=1) * target_feat, dim=1)  # (B, H_orig, W_orig)
-                loss_i = 1.0 - sim_i  # (B, H_orig, W_orig)
+                # STEP 10: CALCOLO DELLA LOSS - Similarità coseno tra prediction e target
+                # Più sono simili, più piccola è la loss (perché coseno varia [0,2])
+                sim_i = torch.sum(F.normalize(anchor_feat, p=2, dim=1) * target_feat, dim=1)  # (B, 64, 64)
+                # Loss = 1 - cosine_similarity (range [0,2], 0 è perfetto, 2 è anti-correlato)
+                loss_i = 1.0 - sim_i  # (B, 64, 64)
                 
                 # Applica la maschera: solo pixel con almeno una corrispondenza valida
-                loss_i = loss_i[has_matches_mask]
+                final_mask = has_matches_mask
+                loss_i = loss_i[final_mask]  # Flattened: N_valid_pixels
                 
+                # Media della loss sui pixel validi
                 if loss_i.numel() > 0:
                     consistency_losses.append(loss_i.mean())
                 else:
+                    # Se nessun pixel valido, loss=0
                     consistency_losses.append(torch.zeros((), device=anchor_pts_world.device, dtype=anchor_feat.dtype))
     
         total_dist = (sum(distillation_losses) / n_views) if compute_dist else zero

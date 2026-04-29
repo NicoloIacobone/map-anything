@@ -580,6 +580,7 @@ def train_one_epoch(
             teacher_features=teacher_features,
             save_pca_visualization_path=save_pca_visualization_path, # only when overfitting
             epoch=epoch,
+            batch_idx=data_iter_step,
         )
         _, loss_details = result["loss"]
 
@@ -700,7 +701,7 @@ def test_one_epoch(
     DINOV2_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
     DINOV2_STD = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
 
-    for _, batch in enumerate(
+    for data_iter_step, batch in enumerate(
         metric_logger.log_every(data_loader, args.train_params.print_freq, header)
     ):
         n_views = len(batch)
@@ -741,6 +742,7 @@ def test_one_epoch(
             teacher_features=teacher_features,
             save_pca_visualization_path=save_pca_visualization_path,
             epoch=epoch,
+            batch_idx=data_iter_step,
         )
         _, loss_details = result["loss"]
 
