@@ -1,4 +1,4 @@
-run_name: "test_full_dataset"
+run_name: "distillation_full_dataset"
 use_wandb: false
 epochs: 10
 start_epoch: 0

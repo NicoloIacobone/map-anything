@@ -101,7 +101,7 @@ def log_wandb_epoch_distill(
         "epoch": epoch + 1,
         # Encoder metrics (train)
         "per_epoch/train_semantic_loss": train_stats.get("loss_sem_dist", 0.0),
-        "per_epoch/train_consistency_loss": train_stats.get("loss_consistency", 0.0),
+        "per_epoch/train_consistency_loss": train_stats.get("loss_sem_cons", 0.0),
         # Total loss and metrics (train)
         "per_epoch/train_loss": train_stats.get("loss", 0.0),
         "per_epoch/lr": optimizer.param_groups[0]["lr"],
@@ -118,7 +118,7 @@ def log_wandb_epoch_distill(
                 np.mean([s.get("loss_sem_dist_avg", 0.0) for s in dataset_stats])
             )
             avg_test_cons = float(
-                np.mean([s.get("loss_consistency_avg", 0.0) for s in dataset_stats])
+                np.mean([s.get("loss_sem_cons_avg", 0.0) for s in dataset_stats])
             )
             avg_test_loss = float(
                 np.mean([s.get("loss_avg", 0.0) for s in dataset_stats])
@@ -153,7 +153,7 @@ def log_wandb_batch_distill(
 
         # ===== ENCODER (semantic_loss + consistency_loss) =====
         "per_batch/semantic_loss": float(loss_details.get("loss_sem_dist", 0.0)),
-        "per_batch/consistency_loss": float(loss_details.get("loss_consistency", 0.0)),
+        "per_batch/consistency_loss": float(loss_details.get("loss_sem_cons", 0.0)),
     }
     wandb.log(log_dict)
 

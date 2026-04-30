@@ -1,3 +1,31 @@
+## 30/04/2026
+Individuato un errore di coerenza tra train e validation: in train faccio downsample delle features geometriche mentre in inference faccio upsample delle features semantiche. Ho unificato i comportamenti, ora faccio sempre upsample delle features semantiche.
+
+TODO aggiornata:
+- [ ] Lanciare training full dopo le modifiche
+    - [ ] Testare visualizzazione e HDBSCAN sul nuovo checkpoint
+    distillation_full_dataset_2: distillation09_consistency01
+    distillation_full_dataset_3: distillation_only
+- [x] Dataset funzionante
+    - [x] Zippare dataset completo su pf-pc20
+    - [x] Copiarlo su cluster sotto /work/igp_psr/niacobone/distillation/dataset
+    - [x] Copiarlo su cluster sotto /scratch/niacobone/distillation/dataset
+    - [x] Creare script copia dataset in $TMP
+- [ ] Script SAM2 mask multi-view
+    - [ ] Usare la video mode di SAM2 per produrre maschere di segmentazione coerenti per ogni frame
+    - [ ] Fare reprojection delle maschere sulla pointcloud generata da MapAnything
+- [ ] Lettura papers
+    - [ ] D4RT
+    - [x] DETR
+    - [ ] AnyRecon
+    - [ ] GenReg
+    - [ ] SimCLR
+- [ ] Creare un quantitative test coerente
+- [ ] Sistemare HDBSCAN sulla versione di test di MapAnything
+    - Probabilmente non va sistemato, ma fallisce in quanto la nube di punti della feature pointcloud è troppo poco densa per poter essere facilmente clusterizzata.
+- [x] Capire il ruolo della confidence e come viene addestrata
+- [x] Sistemare consistency loss su wandb
+
 ## 28/04/2026
 Testato il dataset completo su workspace.
 Zippato e copiato su /work come backup e copiato su /scratch per essere utilizzato sul nodo.
@@ -33,7 +61,8 @@ TODO aggiornata:
 - [ ] Creare un quantitative test coerente
 - [ ] Sistemare HDBSCAN sulla versione di test di MapAnything
     - Probabilmente non va sistemato, ma fallisce in quanto la nube di punti della feature pointcloud è troppo poco densa per poter essere facilmente clusterizzata.
-- [ ] Capire il ruolo della confidence e come viene addestrata
+- [x] Capire il ruolo della confidence e come viene addestrata
+- [x] Sistemare consistency loss su wandb
 
 ## 27/04/2026
 TODO:

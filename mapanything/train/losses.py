@@ -10,6 +10,7 @@ References: DUSt3R & MASt3R
 """
 
 import math
+import os
 from copy import copy, deepcopy
 
 import einops as ein
@@ -5082,12 +5083,33 @@ class SemanticConsistencyLoss(BaseCriterion):
     References: UNITE Section 3.2
     """
 
-    def __init__(self, distillation_weight=1.0, consistency_weight=1.0, min_conf=1.0, occlusion_thresh=0.1):
+    def __init__(
+        self,
+        distillation_weight=1.0,
+        consistency_weight=1.0,
+        min_conf=1.0,
+        occlusion_thresh=0.1,
+        debug_consistency=False,
+        debug_every=500,
+        debug_stride=16,
+        debug_out_dir="/scratch2/nico/distillation/output/test_loss",
+        debug_max_pairs=1,
+        debug_max_saves=50,
+    ):
         super().__init__()
         self.dist_w = distillation_weight
         self.cons_w = consistency_weight
         self.min_conf = min_conf  # c_sem in [1, inf) as per UNITE paper
         self.occ_thresh = occlusion_thresh # Threshold for Z-buffer occlusion check
+        self.debug_consistency = debug_consistency
+        self.debug_every = debug_every
+        self.debug_stride = debug_stride
+        self.debug_out_dir = debug_out_dir
+        self.debug_max_pairs = debug_max_pairs
+        self.debug_max_saves = debug_max_saves
+        self._debug_step = 0
+        self._debug_saved = 0
+        self._debug_warned = False
 
     def get_name(self):
         return f"SemanticConsistencyLoss(dist={self.dist_w}, cons={self.cons_w})"
@@ -5192,6 +5214,120 @@ class SemanticConsistencyLoss(BaseCriterion):
             # Opzionale: fermare il codice se fallisce
             # raise ValueError("Test di proiezione fallito")
 
+    def _should_dump_debug(self):
+        if not self.debug_consistency:
+            return False
+        self._debug_step += 1
+        if self.debug_every <= 0:
+            return True
+        return (self._debug_step % self.debug_every) == 0
+
+    def _dump_consistency_debug(
+        self,
+        batch,
+        anchor_idx,
+        targets,
+        img_size_orig,
+        b_idx=0,
+    ):
+        if not targets:
+            return
+        if self._debug_saved >= self.debug_max_saves:
+            return
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            if torch.distributed.get_rank() != 0:
+                return
+        if "img" not in batch[anchor_idx]:
+            return
+        for target in targets:
+            if "img" not in batch[target["j"]]:
+                return
+        try:
+            import matplotlib.pyplot as plt
+        except Exception as exc:
+            if not self._debug_warned:
+                print(f"[DEBUG] matplotlib not available: {exc}")
+                self._debug_warned = True
+            return
+
+        from mapanything.utils.image import rgb
+
+        H_orig, W_orig = img_size_orig
+        stride = max(1, int(self.debug_stride))
+
+        target_plot_data = []
+        valid_union_ds = None
+        xx = None
+        yy = None
+
+        for target in targets:
+            grid_ds = target["grid"][b_idx, ::stride, ::stride].detach().cpu()
+            valid_ds = target["valid_mask"][b_idx, 0, ::stride, ::stride].detach().cpu()
+
+            u = (grid_ds[..., 0] + 1.0) * (W_orig - 1) / 2.0
+            v = (grid_ds[..., 1] + 1.0) * (H_orig - 1) / 2.0
+
+            if xx is None or yy is None:
+                ys = torch.arange(0, H_orig, stride)[: grid_ds.shape[0]]
+                xs = torch.arange(0, W_orig, stride)[: grid_ds.shape[1]]
+                yy, xx = torch.meshgrid(ys, xs, indexing="ij")
+
+            valid_union_ds = (
+                valid_ds if valid_union_ds is None else (valid_union_ds | valid_ds)
+            )
+            target_plot_data.append((target["j"], u, v, valid_ds))
+
+        if valid_union_ds is None:
+            return
+
+        norm_i = batch[anchor_idx].get("data_norm_type", "identity")
+        if isinstance(norm_i, (list, tuple)):
+            norm_i = norm_i[0]
+
+        img_i = rgb(batch[anchor_idx]["img"][b_idx], norm_i)
+
+        os.makedirs(self.debug_out_dir, exist_ok=True)
+        n_targets = len(target_plot_data)
+        n_panels = 1 + n_targets
+        n_cols = min(4, n_panels)
+        n_rows = math.ceil(n_panels / n_cols)
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows))
+        axes = axes.ravel().tolist() if hasattr(axes, "ravel") else [axes]
+
+        axes[0].imshow(img_i)
+        axes[0].scatter(
+            xx[valid_union_ds].numpy(),
+            yy[valid_union_ds].numpy(),
+            s=2,
+            c="lime",
+        )
+        axes[0].set_title(f"anchor view {anchor_idx}")
+        axes[0].axis("off")
+
+        for plot_idx, (target_idx, u, v, valid_ds) in enumerate(target_plot_data, 1):
+            norm_j = batch[target_idx].get("data_norm_type", "identity")
+            if isinstance(norm_j, (list, tuple)):
+                norm_j = norm_j[0]
+            img_j = rgb(batch[target_idx]["img"][b_idx], norm_j)
+
+            axes[plot_idx].imshow(img_j)
+            axes[plot_idx].scatter(
+                u[valid_ds].numpy(),
+                v[valid_ds].numpy(),
+                s=2,
+                c="lime",
+            )
+            axes[plot_idx].set_title(f"target view {target_idx}")
+            axes[plot_idx].axis("off")
+
+        for extra_idx in range(1 + n_targets, len(axes)):
+            axes[extra_idx].axis("off")
+
+        out_name = f"consistency_i{anchor_idx}_b{b_idx}_step{self._debug_step}.png"
+        fig.savefig(os.path.join(self.debug_out_dir, out_name), dpi=200)
+        plt.close(fig)
+        self._debug_saved += 1
+
     def compute_loss(self, batch, preds, **kw):
         """
         Compute Distillation (Eq. 2) and Consistency Loss (Eq. 4, 5).
@@ -5214,6 +5350,8 @@ class SemanticConsistencyLoss(BaseCriterion):
         eps = 1e-12
         compute_dist = float(self.dist_w) > eps
         compute_cons = float(self.cons_w) > eps
+        debug_this_step = self._should_dump_debug() if compute_cons else False
+        debug_pairs_done = 0
     
         # Se entrambe le loss sono spente, ritorna subito una loss scalare valida per backward
         if not compute_dist and not compute_cons:
@@ -5295,6 +5433,9 @@ class SemanticConsistencyLoss(BaseCriterion):
                     (B, H_orig, W_orig), device=anchor_feat.device, dtype=torch.bool
                 )
     
+                debug_collect = debug_this_step and debug_pairs_done < self.debug_max_pairs
+                debug_targets = []
+
                 # STEP 5: Ciclo su tutte le altre viste (j ≠ i)
                 for j in range(n_views):
                     if i == j:
@@ -5354,6 +5495,15 @@ class SemanticConsistencyLoss(BaseCriterion):
                     
                     # Combinazione di maschere
                     valid_mask = fov_mask & occ_mask  # (B, 1, H_orig, W_orig)
+
+                    if debug_collect:
+                        debug_targets.append(
+                            {
+                                "j": j,
+                                "grid": grid,
+                                "valid_mask": valid_mask,
+                            }
+                        )
     
                     # STEP 9: ACCUMULO - Aggiungi la feature di vista j alla media ponderata
                     has_matches_mask = has_matches_mask | valid_mask.squeeze(1)
@@ -5364,6 +5514,15 @@ class SemanticConsistencyLoss(BaseCriterion):
                     sum_weighted_feat = sum_weighted_feat + (s_feat * s_conf)
                     sum_conf = sum_conf + s_conf
     
+                if debug_collect and debug_targets:
+                    self._dump_consistency_debug(
+                        batch,
+                        i,
+                        debug_targets,
+                        img_size_orig,
+                    )
+                    debug_pairs_done += 1
+
                 # STEP 10: CALCOLO DELLA MEDIA PONDERATA
                 mean_feat = sum_weighted_feat / (sum_conf + 1e-6)  # (B, C, H_orig, W_orig)
                 mean_feat = F.normalize(mean_feat, p=2, dim=1)

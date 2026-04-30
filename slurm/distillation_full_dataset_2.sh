@@ -1,19 +1,19 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=test_dataset_and_distillation
+#SBATCH --job-name=distillation_full_dataset_2
 #
 # Specify output file.
-#SBATCH --output=test_dataset_and_distillation_%j.log
+#SBATCH --output=distillation_full_dataset_2_%j.log
 #
 # Specify error file.
-#SBATCH --error=test_dataset_and_distillation_%j.err
+#SBATCH --error=distillation_full_dataset_2_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=01:00:00
+#SBATCH --time=24:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -30,20 +30,13 @@
 # Specify disk limit on local scratch.
 #SBATCH --tmp=500000
 #
+# Specify email notifications.
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=niacobone@student.ethz.ch
+#
 
 echo "=== Job starting on $(hostname) at $(date) ==="
 # DATE_VAR=$(date +%Y%m%d%H%M%S)
-
-# Load modules.
-module load stack/2024-06 python/3.12 cuda/12.4 eth_proxy
-echo "Loaded modules: $(module list 2>&1)"
-
-# Activate virtual environment for sam2.
-source /cluster/scratch/niacobone/map-anything/myenv/bin/activate
-echo "Activated Python venv: $(which python)"
-
-# Execute
-cd /cluster/scratch/niacobone/map-anything/scripts
 
 DATASET_SRC=/cluster/scratch/niacobone/distillation/dataset/backup/blendedmvs_dataset.tar.gz
 
@@ -63,6 +56,17 @@ fi
 
 echo "=== Dataset copied and extracted successfully ==="
 
+# Load modules.
+module load stack/2024-06 python/3.12 cuda/12.4 eth_proxy
+echo "Loaded modules: $(module list 2>&1)"
+
+# Activate virtual environment for sam2.
+source /cluster/scratch/niacobone/map-anything/myenv/bin/activate
+echo "Activated Python venv: $(which python)"
+
+# Execute
+cd /cluster/scratch/niacobone/map-anything/scripts
+
 echo "Starting MapAnything distillation..."
 
 export WANDB_API_KEY=$(cat "/cluster/home/niacobone/.config/wandb/wandb_api_key.txt")
@@ -72,7 +76,9 @@ python distill.py \
   machine.base_dir="$TMPDIR" \
   machine.root_data_dir="$TMPDIR/converted/wai_data" \
   machine.mapanything_dataset_metadata_dir="$TMPDIR/converted/mapanything_dataset_metadata" \
-  train_params.run_name=test_dataset_and_distillation
+  loss=distillation09_consistency01 \
+  train_params.use_wandb=true \
+  train_params.run_name=distillation_full_dataset_2
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}

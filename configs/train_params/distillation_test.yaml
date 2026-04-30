@@ -45,7 +45,7 @@ overwrite_scheduler_t_max: null # for cosine
 override_scheduler: null
 
 # ========== RESUME CHECKPOINTS (string) ==========
-resume_encoder_ckpt: null
+resume_encoder_ckpt: '/scratch2/nico/distillation/output/distillation_loss_full_dataset/checkpoints/checkpoint_encoder_10000.pth'
 resume_decoder_ckpt: null
 resume_trainer_ckpt: null
 # ========== SAVE CHECKPOINTS (boolean) ==========

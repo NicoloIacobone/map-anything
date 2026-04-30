@@ -1,2 +1,4 @@
 train_criterion: "SemanticConsistencyLoss(distillation_weight=0.9, consistency_weight=0.1, min_conf=1.0)"
 test_criterion: "SemanticConsistencyLoss(distillation_weight=0.9, consistency_weight=0.1, min_conf=1.0)"
+# train_criterion: "SemanticConsistencyLoss(distillation_weight=0.9, consistency_weight=0.1, min_conf=1.0, debug_consistency=True, debug_every=1, debug_stride=8, debug_max_pairs=1)"
+# test_criterion: "SemanticConsistencyLoss(distillation_weight=0.9, consistency_weight=0.1, min_conf=1.0, debug_consistency=True, debug_every=1, debug_stride=8, debug_max_pairs=1)"
