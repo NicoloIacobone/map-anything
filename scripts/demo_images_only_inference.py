@@ -18,16 +18,38 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import numpy as np
 import rerun as rr
 import torch
+import matplotlib.pyplot as plt
 
 from mapanything.models import MapAnything
 from mapanything.utils.geometry import depthmap_to_world_frame
-from mapanything.utils.image import load_images
+from mapanything.utils.image import load_images, rgb
 from mapanything.utils.inference import add_global_semantic_pca_rgb, compute_global_semantic_clusters
 from mapanything.utils.viz import (
     predictions_to_glb,
     script_add_rerun_args,
 )
 from typing import Tuple
+
+from sam2_minimal.build_sam import build_sam2_video_predictor
+from PIL import Image
+
+def show_mask(mask, ax, obj_id=None, random_color=False):
+    if random_color:
+        color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
+    else:
+        cmap = plt.get_cmap("tab10")
+        cmap_idx = 0 if obj_id is None else obj_id
+        color = np.array([*cmap(cmap_idx)[:3], 0.6])
+    h, w = mask.shape[-2:]
+    mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+    ax.imshow(mask_image)
+
+
+def show_points(coords, labels, ax, marker_size=200):
+    pos_points = coords[labels==1]
+    neg_points = coords[labels==0]
+    ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)
+    ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white', linewidth=1.25)
 
 def load_encoder_checkpoint(
     model_without_ddp,
@@ -130,6 +152,7 @@ def log_data_to_rerun(
     mask,
     base_name,
     view_idx,
+    overlay_mask=None,
     viz_mask=None,
     semantic_pca_rgb=None,
     semantic_clusters_local=None,
@@ -207,6 +230,20 @@ def log_data_to_rerun(
         ),
     )
 
+    # Also log a full pointcloud where masked pixels are blended with an overlay color
+    pointcloud_overlay_root = f"{scene_root}/pointcloud_overlay"
+    try:
+        overlay_mask_to_use = mask if overlay_mask is None else overlay_mask
+        overlay_pts, overlay_cols = project_mask_overlay_pointcloud(
+            pts3d, image, overlay_mask_to_use, overlay_color=(1.0, 0.0, 0.0), alpha=0.6
+        )
+        rr.log(
+            f"{pointcloud_overlay_root}/pointcloud_overlay_{view_idx}",
+            rr.Points3D(positions=overlay_pts, colors=overlay_cols),
+        )
+    except Exception as e:
+        print(f"[WARN] Failed to create overlay pointcloud for view {view_idx}: {e}")
+
     # Log semantic point clouds if requested
     if log_semantic_pointcloud:
         if semantic_pca_rgb is not None:
@@ -272,6 +309,47 @@ def log_data_to_rerun(
             )
 
 
+def project_mask_overlay_pointcloud(pts3d_np, image_np, mask, overlay_color=(1.0, 0.0, 0.0), alpha=0.6):
+    """Create a point cloud where masked pixels are blended with an overlay color.
+
+    Args:
+        pts3d_np: (H, W, 3) numpy array of 3D positions per pixel
+        image_np: (H, W, 3) image colors (uint8 0-255 or float 0-1)
+        mask: (H, W) boolean mask where True indicates masked pixels
+        overlay_color: RGB tuple in 0-1 to blend onto masked pixels
+        alpha: blending weight for overlay (0..1)
+
+    Returns:
+        positions: (N,3) float32 array of valid 3D points
+        colors: (N,3) float32 array of colors in 0..1 corresponding to positions
+    """
+    h, w = image_np.shape[:2]
+    pts = pts3d_np.reshape(-1, 3).astype(np.float32)
+    cols = image_np.reshape(-1, 3).astype(np.float32)
+
+    # Normalize colors to 0..1 if needed
+    if cols.max() > 1.5:
+        cols = cols / 255.0
+
+    mask_flat = mask.reshape(-1).astype(bool)
+    overlay = np.array(overlay_color, dtype=np.float32)
+
+    # Blend overlay onto masked pixels (colors only)
+    if mask_flat.any():
+        cols[mask_flat] = (1.0 - alpha) * cols[mask_flat] + alpha * overlay
+
+    # IMPORTANT: keep only masked pixels (we want the overlay point cloud to represent the mask)
+    pts = pts[mask_flat]
+    cols = cols[mask_flat]
+
+    # Remove invalid (non-finite) 3D points from the masked set
+    valid = np.isfinite(pts).all(axis=1)
+    pts = pts[valid]
+    cols = cols[valid]
+
+    return pts, cols
+
+
 def get_parser():
     """Create argument parser"""
     parser = argparse.ArgumentParser(
@@ -301,7 +379,7 @@ def get_parser():
     parser.add_argument(
         "--input_size",
         type=int,
-        default=224,
+        default=448,
         help="Square input resolution used for preprocessing",
     )
     parser.add_argument(
@@ -311,27 +389,28 @@ def get_parser():
         help="Use memory efficient inference for reconstruction (trades off speed)",
     )
     parser.add_argument(
-        "--apache",
-        action="store_true",
-        help="Use Apache 2.0 licensed model (facebook/map-anything-apache)",
-    )
-    parser.add_argument(
         "--viz",
         action="store_true",
-        default=False,
+        default=True,
         help="Enable visualization with Rerun",
     )
     parser.add_argument(
         "--viz_semantic",
         action="store_true",
-        default=False,
+        default=True,
         help="Enable semantic feature visualization (PCA and clustering)",
     )
     parser.add_argument(
         "--viz_semantic_pointcloud",
         action="store_true",
-        default=False,
+        default=True,
         help="Enable semantic point cloud visualization (requires --viz_semantic)",
+    )
+    parser.add_argument(
+        "--viz_sam2_masks",
+        action="store_true",
+        default=True,
+        help="Visualize SAM2 masks in Rerun (requires --viz)",
     )
     parser.add_argument(
         "--save_glb",
@@ -370,25 +449,29 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    # Initialize model from HuggingFace
-    if args.apache:
-        model_name = "facebook/map-anything-apache"
-        print("Loading Apache 2.0 licensed MapAnything model...")
-    else:
-        model_name = "facebook/map-anything"
-        print("Loading CC-BY-NC 4.0 licensed MapAnything model...")
-    # model = MapAnything.from_pretrained(model_name).to(device)
+    # Load model
+    model_name = "facebook/map-anything"
+    print("Loading CC-BY-NC 4.0 licensed MapAnything model...")
+
     model = MapAnything.from_pretrained(
             model_name,
             revision="562de9ff7077addd5780415661c5fb031eb8003e",
             strict=False,
         ).to(device)
 
+    # Load checkpoint for the additiona DPT head of MapAnything
     _, _ = load_encoder_checkpoint(
             model_without_ddp=model,
             checkpoint_path=args.checkpoint_path,
             device=device,
         )
+    
+    # Load SAM2 + video predictor
+    if args.viz_sam2_masks:
+        sam2_checkpoint = "/scratch2/nico/sam2/checkpoints/sam2.1_hiera_large.pt"
+        model_cfg = "sam2.1/sam2.1_hiera_l"
+
+        predictor = build_sam2_video_predictor(model_cfg, sam2_checkpoint, device=device, hydra_overrides_extra=["++model.image_size=448"])
 
     # Load images
     print(f"Loading images from: {args.image_folder}")
@@ -415,13 +498,88 @@ def main():
         norm_type="dinov2",
     )
     print(f"Loaded {len(views)} views")
+    # Save original views for model inference
+    original_views = views
+
+    # Save preprocessed views for SAM2 masks production in a temporary directory (SAM2 predictor will load from disk)
+    if args.viz_sam2_masks:
+        temp_dir = "/scratch2/nico/distillation/dataset/sam2_temp_dir"
+        os.makedirs(temp_dir, exist_ok=True)
+        print(f"[DEBUG] Saving SAM2 inputs to: {os.path.abspath(temp_dir)}")
+        sam2_input_paths = []
+        sam2_input_shapes = []
+        for idx, view in enumerate(views):
+            input_path = os.path.join(temp_dir, f"{idx}.jpg")
+            view_rgb = rgb(view['img'][0], norm_type=view['data_norm_type'][0])
+            sam2_input_shapes.append(view_rgb.shape)
+            view_uint8 = (view_rgb * 255).astype(np.uint8)
+            Image.fromarray(view_uint8).save(input_path, format='JPEG')
+            sam2_input_paths.append(input_path)
+        # views = sam2_input_paths
+
+        # initialize the inference state for SAM2 video predictor
+        inference_state = predictor.init_state(video_path=temp_dir)
+        # Print basic info about the SAM2 inference state images
+        try:
+            print(f"[SAM2] num images in inference_state: {len(inference_state['images'])}")
+            print(f"[SAM2] inference_state image[0] shape: {inference_state['images'][0].shape}")
+        except Exception as e:
+            print(f"[WARN] Could not print inference_state images: {e}")
+
+        ann_frame_idx = 0  # the frame index we interact with
+        ann_obj_id = 1  # give a unique id to each object we interact with (it can be any integers)
+
+        points = np.array([[272, 82], [142, 70], [245, 158], [230, 267], [372, 166], [22, 142], [429, 384], [397, 350]], dtype=np.float32)
+        labels = np.array([1, 1, 1, 1, 1, 1, 1, 1], np.int32)
+
+        _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
+            inference_state=inference_state,
+            frame_idx=ann_frame_idx,
+            obj_id=ann_obj_id,
+            points=points,
+            labels=labels,
+        )
+
+        output_path = os.path.join(temp_dir, f"sam2_preview_{ann_frame_idx}.png")
+        fig, ax = plt.subplots(figsize=(9, 6))
+        ax.set_title(f"frame {ann_frame_idx}")
+        img = Image.open(os.path.join(temp_dir, f"{ann_frame_idx}.jpg"))
+        ax.imshow(img)
+        show_points(points, labels, ax)
+        show_mask((out_mask_logits[0] > 0.0).cpu().numpy(), ax, obj_id=out_obj_ids[0])
+        fig.savefig(output_path, dpi=200, bbox_inches='tight', pad_inches=0)
+        plt.close(fig)
+        print(f"[SAVE] Saved preview to {output_path}")
+
+        video_segments = {}  # video_segments contains the per-frame segmentation results
+        for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state):
+            video_segments[out_frame_idx] = {
+                out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+                for i, out_obj_id in enumerate(out_obj_ids)
+            }
 
     # Run model inference
     print("Running inference...")
     outputs = model.infer(
-        views, memory_efficient_inference=args.memory_efficient_inference
+        original_views, memory_efficient_inference=args.memory_efficient_inference
     )
     print("Inference complete!")
+
+    # Debug: compare SAM2 inputs / inference state with model outputs ordering
+    if args.viz_sam2_masks:
+        try:
+            num_sam_images = len(inference_state.get('images', []))
+        except Exception:
+            num_sam_images = 0
+        print(f"[CHECK] num_sam_input_paths={len(sam2_input_paths)}, num_sam_state_images={num_sam_images}, num_model_outputs={len(outputs)}")
+        # Print a small sample of lists to manually verify ordering
+        print(f"[CHECK] sam2_input_paths (first 5): {sam2_input_paths[:5]}")
+        try:
+            # inference_state images may be tensors/arrays; just print shapes for first 5
+            state_shapes = [img.shape for img in inference_state.get('images', [])[:5]]
+            print(f"[CHECK] inference_state['images'] shapes (first 5): {state_shapes}")
+        except Exception as e:
+            print(f"[WARN] Could not read inference_state image shapes: {e}")
 
     global_semantic_clusters = None
     if args.viz_semantic:
@@ -456,14 +614,30 @@ def main():
         intrinsics_torch = pred["intrinsics"][0]  # (3, 3)
         camera_pose_torch = pred["camera_poses"][0]  # (4, 4)
 
+        # DEBUG: print shapes and types for this view
+        try:
+            print(f"[VIEW {view_idx}] image type={type(pred.get('img_no_norm')[0].cpu().numpy())} image_shape={pred['img_no_norm'][0].cpu().numpy().shape}")
+        except Exception:
+            print(f"[VIEW {view_idx}] could not print image_np shape")
+        try:
+            print(f"[VIEW {view_idx}] mask shape/type: {pred['mask'][0].squeeze(-1).cpu().numpy().shape}/{type(pred['mask'][0].squeeze(-1).cpu().numpy())}")
+        except Exception:
+            print(f"[VIEW {view_idx}] could not print mask shape")
+        try:
+            print(f"[VIEW {view_idx}] depthmap shape: {depthmap_torch.shape}, intrinsics shape: {intrinsics_torch.shape}, camera_pose shape: {camera_pose_torch.shape}")
+        except Exception:
+            pass
+
         # Compute new pts3d using depth, intrinsics, and camera pose
         pts3d_computed, valid_mask = depthmap_to_world_frame(
             depthmap_torch, intrinsics_torch, camera_pose_torch
         )
 
         # Convert to numpy arrays
-        mask = pred["mask"][0].squeeze(-1).cpu().numpy().astype(bool)
-        mask = mask & valid_mask.cpu().numpy()  # Combine with valid depth mask
+        recon_mask = pred["mask"][0].squeeze(-1).cpu().numpy().astype(bool)
+        valid_mask_np = valid_mask.cpu().numpy()
+        recon_mask = recon_mask & valid_mask_np  # Combine with valid depth mask
+        conf_mask = None
 
         # Apply confidence percentile filtering (same logic as Gradio visualization)
         if args.conf_percentile is not None and "conf" in pred:
@@ -482,7 +656,35 @@ def main():
                     f"[CONF] View {view_idx}: percentile={args.conf_percentile:.2f}, "
                     f"threshold={conf_threshold:.6f}, kept={kept_points}/{total_points}"
                 )
-                mask = mask & conf_mask
+                recon_mask = recon_mask & conf_mask
+
+        # Build SAM2 overlay mask per frame/object when available.
+        sam2_mask = None
+        if args.viz_sam2_masks:
+            frame_segments = video_segments.get(view_idx, {})
+            if len(frame_segments) == 0:
+                print(f"[WARN] No SAM2 segments for view {view_idx}; fallback to reconstruction mask")
+            else:
+                sam2_obj_id = ann_obj_id if ann_obj_id in frame_segments else next(iter(frame_segments))
+                if sam2_obj_id != ann_obj_id:
+                    print(
+                        f"[WARN] SAM2 object id {ann_obj_id} not found at view {view_idx}; "
+                        f"using object id {sam2_obj_id}"
+                    )
+
+                sam2_mask_candidate = np.squeeze(frame_segments[sam2_obj_id]).astype(bool)
+                if sam2_mask_candidate.shape != recon_mask.shape:
+                    print(
+                        f"[WARN] SAM2 mask shape mismatch at view {view_idx}: "
+                        f"sam2={sam2_mask_candidate.shape}, recon={recon_mask.shape}; "
+                        "fallback to reconstruction mask"
+                    )
+                else:
+                    sam2_mask = sam2_mask_candidate & valid_mask_np
+                    if conf_mask is not None:
+                        sam2_mask = sam2_mask & conf_mask
+
+        overlay_mask = sam2_mask if sam2_mask is not None else recon_mask
 
         pts3d_np = pts3d_computed.cpu().numpy()
         image_np = pred["img_no_norm"][0].cpu().numpy()
@@ -525,20 +727,28 @@ def main():
         if args.save_glb:
             world_points_list.append(pts3d_np)
             images_list.append(image_np)
-            masks_list.append(mask)
+            masks_list.append(recon_mask)
 
         # Log to Rerun if visualization is enabled
         if args.viz:
+            # Additional checks comparing SAM2 preprocessed input shape and current view shapes
+            if args.viz_sam2_masks:
+                try:
+                    sam_shape = sam2_input_shapes[view_idx] if len(sam2_input_shapes) > view_idx else None
+                    print(f"[COMPARE] view_idx={view_idx} sam2_input_shape={sam_shape} image_np_shape={image_np.shape} depthmap_shape={depthmap_torch.cpu().numpy().shape}")
+                except Exception as e:
+                    print(f"[WARN] Error comparing shapes for view {view_idx}: {e}")
             log_data_to_rerun(
                 image=image_np,
                 depthmap=depthmap_torch.cpu().numpy(),
                 pose=camera_pose_torch.cpu().numpy(),
                 intrinsics=intrinsics_torch.cpu().numpy(),
                 pts3d=pts3d_np,
-                mask=mask,
+                mask=recon_mask,
+                overlay_mask=overlay_mask,
                 base_name=f"mapanything/view_{view_idx}",
                 view_idx=view_idx,
-                viz_mask=mask,
+                viz_mask=overlay_mask,
                 semantic_pca_rgb=semantic_pca_rgb_np,
                 semantic_clusters_local=semantic_clusters_local_np,
                 semantic_clusters_global=semantic_clusters_global_np,

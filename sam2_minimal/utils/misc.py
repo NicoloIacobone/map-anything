@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
+from mapanything.utils.cropping import crop_resize_if_necessary
 
 
 def get_sdpa_settings():
@@ -91,14 +92,21 @@ def mask_to_box(masks: torch.Tensor):
 
 def _load_img_as_tensor(img_path, image_size):
     img_pil = Image.open(img_path)
-    img_np = np.array(img_pil.convert("RGB").resize((image_size, image_size)))
+    # img_np = np.array(img_pil.convert("RGB").resize((image_size, image_size)))
+    # EDITED: use crop_resize_if_necessary to mimic the resize behavior of MapAnything
+    img_pil = crop_resize_if_necessary(
+        img_pil.convert("RGB"),
+        resolution=(image_size, image_size),
+    )[0]
+    original_width, original_height = img_pil.size
+    img_np = np.array(img_pil)
     if img_np.dtype == np.uint8:  # np.uint8 is expected for JPEG images
         img_np = img_np / 255.0
     else:
         raise RuntimeError(f"Unknown image dtype: {img_np.dtype} on {img_path}")
     img = torch.from_numpy(img_np).permute(2, 0, 1)
-    video_width, video_height = img_pil.size  # the original video size
-    return img, video_height, video_width
+    # video_width, video_height = img_pil.size  # the original video size
+    return img, original_height, original_width
 
 
 class AsyncVideoFrameLoader:

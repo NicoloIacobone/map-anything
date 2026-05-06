@@ -411,7 +411,7 @@ def crop_resize_if_necessary(
         image = PIL.Image.fromarray(image)
 
     # Get width and height of image
-    original_width, original_height = image.size
+    # original_width, original_height = image.size
 
     # High-quality Lanczos down-scaling
     target_rescale_resolution = np.array(resolution)

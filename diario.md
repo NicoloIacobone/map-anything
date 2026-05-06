@@ -1,11 +1,118 @@
+## 6/05/2026
+Note meeting:
+- HDBSCAN non funziona sulle features di MapAnything perchè non funziona a prescindere nemmeno su quelle di SAM2, quindi è inutile utilizzarlo come metro di paragone per capire se la distillation sta andando nella giusta direzione.
+- Bisogna valutare attentamente se ha senso utilizzare le maschere di SAM2 come supervisione in modalità video perché ha bisogno di moltissima supervisione per quanto riguarda i prompt.
+- Ho corretto un mismatch tra la parte di training e di inferenza riguardo il downsampling e l'upsampling delle features. Ora è coerente e faccio sempre upsampling delle features semantiche prodotte da MapAnything per matchare la shape delle features geometriche.
+- Bisogna valutare un metodo per segmentare le features usando sicuramente un decoder
+- Ho moodificato lo script di visualizzazione con Rerun per integrare anche le maschere di SAM2 proiettate in 3D
+
+TODO aggiornata:
+- [x] Lanciare training full dopo le modifiche -> i risultati sembrano simili a quelli ottenuti precedentemente.
+    - [x] Testare visualizzazione e HDBSCAN sul nuovo checkpoint <- HDBSCAN non può funzionare nemmeno sulle features originali.
+    distillation_full_dataset_2 (65180240): distillation09_consistency01
+    distillation_full_dataset_3 (65233241): distillation_only
+- [x] Dataset funzionante
+    - [x] Zippare dataset completo su pf-pc20
+    - [x] Copiarlo su cluster sotto /work/igp_psr/niacobone/distillation/dataset
+    - [x] Copiarlo su cluster sotto /scratch/niacobone/distillation/dataset
+    - [x] Creare script copia dataset in $TMP
+- [x] Script SAM2 mask multi-view
+    - [x] Usare la video mode di SAM2 per produrre maschere di segmentazione coerenti per ogni frame
+    - [x] Importare e testare in MapAnything la versione video di SAM2
+    - [x] Implementare reprojection delle maschere di SAM2 (mask video predictor) sulla pointcloud generata da MapAnything <-- NEXT STEP
+- [ ] Lettura papers
+    - [ ] D4RT
+    - [x] DETR
+    - [ ] AnyRecon
+    - [ ] GenReg
+    - [ ] SimCLR
+- [ ] Creare un quantitative test coerente
+- [x] Sistemare HDBSCAN sulla versione di test di MapAnything
+    - Probabilmente non va sistemato, ma fallisce in quanto la nube di punti della feature pointcloud è troppo poco densa per poter essere facilmente clusterizzata.
+- [x] Capire il ruolo della confidence e come viene addestrata
+- [x] Sistemare consistency loss su wandb
+- [ ] Capire perché la consistency loss oscilla forte (wandb)
+
+## 5/05/2026
+Cose imparate:
+- A prescindere dalla "bravura" di MapAnything di creare features coerenti all'interno della stessa scena non è possibile fare segmentazione mediante HDBSCAN. Lo posso dire dopo aver provato l'algoritmo sulle SAM2 encoder features, che non ha funzionato nemmeno sulle features ridotte da PCA fino a un minimo di 1 component. Credo fortemente sia necessario un decoder per produrre segmentation.
+- SAM2 video predictor funziona molto male sulle immagini a bassa risoluzione (224x224)
+
+Procedo a creare implementazione reprojection delle maschere di SAM2 sulla pointcloud generata da MapAnything.
+- [x] Allineamento resize SAM2 e MapAnything (DA FIXARE - VEDI NOTEBOOK)
+- [x] Patch di demo_images_only_inference.py
+- [x] Test del codice
+
+TODO aggiornata:
+- [x] Lanciare training full dopo le modifiche -> i risultati sembrano simili a quelli ottenuti precedentemente.
+    - [x] Testare visualizzazione e HDBSCAN sul nuovo checkpoint <- HDBSCAN non può funzionare nemmeno sulle features originali.
+    distillation_full_dataset_2 (65180240): distillation09_consistency01
+    distillation_full_dataset_3 (65233241): distillation_only
+- [x] Dataset funzionante
+    - [x] Zippare dataset completo su pf-pc20
+    - [x] Copiarlo su cluster sotto /work/igp_psr/niacobone/distillation/dataset
+    - [x] Copiarlo su cluster sotto /scratch/niacobone/distillation/dataset
+    - [x] Creare script copia dataset in $TMP
+- [ ] Script SAM2 mask multi-view
+    - [x] Usare la video mode di SAM2 per produrre maschere di segmentazione coerenti per ogni frame
+    - [x] Importare e testare in MapAnything la versione video di SAM2
+    - [ ] Implementare reprojection delle maschere di SAM2 (mask video predictor) sulla pointcloud generata da MapAnything <-- NEXT STEP
+- [ ] Lettura papers
+    - [ ] D4RT
+    - [x] DETR
+    - [ ] AnyRecon
+    - [ ] GenReg
+    - [ ] SimCLR
+- [ ] Creare un quantitative test coerente
+- [ ] Sistemare HDBSCAN sulla versione di test di MapAnything
+    - Probabilmente non va sistemato, ma fallisce in quanto la nube di punti della feature pointcloud è troppo poco densa per poter essere facilmente clusterizzata.
+- [x] Capire il ruolo della confidence e come viene addestrata
+- [x] Sistemare consistency loss su wandb
+
+## 4/05/2026
+Fatte ripartire le due run dopo il fix della coerenza tra train e validation (upsample/downsample).
+
+Effettuati test su features SAM2 encoder + HDBSCAN sia a risoluzione standard che upsamplate. I risultati non sono soddisfacenti, le features prodotte dall'encoder non sono abbastanza dense (?) da essere raggruppate direttamente con HDBSCAN, serve necessariamente il decoder.
+Test effettuati anche su 1-2-3-4-5-10-20-50-100 componenti con PCA + HDBSCAN.
+
+Cose da tenere a mente:
+- Il Mask Video Predictor di SAM2 funziona bene ma è prompt-dependent, non è possibile creare uno script automatico che generi maschere coerenti se non tramite prompt umano.
+
+TODO aggiornata:
+- [ ] Lanciare training full dopo le modifiche
+    - [ ] Testare visualizzazione e HDBSCAN sul nuovo checkpoint
+    distillation_full_dataset_2 (65180240): distillation09_consistency01
+    distillation_full_dataset_3 (65233241): distillation_only
+- [x] Dataset funzionante
+    - [x] Zippare dataset completo su pf-pc20
+    - [x] Copiarlo su cluster sotto /work/igp_psr/niacobone/distillation/dataset
+    - [x] Copiarlo su cluster sotto /scratch/niacobone/distillation/dataset
+    - [x] Creare script copia dataset in $TMP
+- [ ] Script SAM2 mask multi-view
+    - [x] Usare la video mode di SAM2 per produrre maschere di segmentazione coerenti per ogni frame
+    - [x] Importare e testare in MapAnything la versione video di SAM2
+    - [ ] Implementare reprojection delle maschere di SAM2 (mask video predictor) sulla pointcloud generata da MapAnything <-- NEXT STEP
+- [ ] Lettura papers
+    - [ ] D4RT
+    - [x] DETR
+    - [ ] AnyRecon
+    - [ ] GenReg
+    - [ ] SimCLR
+- [ ] Creare un quantitative test coerente
+- [ ] Sistemare HDBSCAN sulla versione di test di MapAnything
+    - Probabilmente non va sistemato, ma fallisce in quanto la nube di punti della feature pointcloud è troppo poco densa per poter essere facilmente clusterizzata.
+- [x] Capire il ruolo della confidence e come viene addestrata
+- [x] Sistemare consistency loss su wandb
+
+
 ## 30/04/2026
 Individuato un errore di coerenza tra train e validation: in train faccio downsample delle features geometriche mentre in inference faccio upsample delle features semantiche. Ho unificato i comportamenti, ora faccio sempre upsample delle features semantiche.
 
 TODO aggiornata:
 - [ ] Lanciare training full dopo le modifiche
     - [ ] Testare visualizzazione e HDBSCAN sul nuovo checkpoint
-    distillation_full_dataset_2: distillation09_consistency01
-    distillation_full_dataset_3: distillation_only
+    distillation_full_dataset_2 (65180240): distillation09_consistency01
+    distillation_full_dataset_3 (65233241): distillation_only
 - [x] Dataset funzionante
     - [x] Zippare dataset completo su pf-pc20
     - [x] Copiarlo su cluster sotto /work/igp_psr/niacobone/distillation/dataset
