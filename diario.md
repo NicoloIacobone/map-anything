@@ -1,3 +1,12 @@
+## 7/05/2026
+Meeting notes:
+- Vale la pena buttarsi ad implementare direttamente la head visto che HDBSCAN non da successo in alcun modo
+- Si potrebbe pensare ad un esperimento con le CLIP features + HDBSCAN ma giusto per vedere se si riesce a replicare la baseline
+- Head con query tempo ecc come D4RT stile DETR
+    - Per farlo abbiamo bisogno dello Pseudo Labeling: detector (es. GroundingDINO, RFDETR) per creare i prompt + SAM2 video per fare masks
+- Es di prompt: il mio encoder MV tira fuori queste features, voglio un decoder che con delle queries vada a guardare queste features con questa attention, abbia anche un conditioning sul time index da cui vuoi estrarre, poi estrai la stessa query la estrai con frame index diversi in modo tale da poter applicare una qualche contrastive loss per ottenere un decoder tipo D4RT. L'obiettivo è una query che rappresenta l'oggetto insieme ad un frame ID che viene utilizzato nel decoder che fa cross attention con tutte le feature maps di tutti i frame e visto che vede tutti i frame sceglie un oggetto e mi dirà se c'è nel frame 5 ad esempio. Se questa query tira fuori una segmentation simile alla GT nel frame 5 la rafforza positivamente, altrimenti la sopprime.
+- Anche per la questione mismatch shape tra features e immagine originale guarda MaskDINO.
+
 ## 6/05/2026
 Note meeting:
 - HDBSCAN non funziona sulle features di MapAnything perchè non funziona a prescindere nemmeno su quelle di SAM2, quindi è inutile utilizzarlo come metro di paragone per capire se la distillation sta andando nella giusta direzione.
@@ -21,9 +30,9 @@ TODO aggiornata:
     - [x] Importare e testare in MapAnything la versione video di SAM2
     - [x] Implementare reprojection delle maschere di SAM2 (mask video predictor) sulla pointcloud generata da MapAnything <-- NEXT STEP
 - [ ] Lettura papers
-    - [ ] D4RT
+    - [x] D4RT
     - [x] DETR
-    - [ ] AnyRecon
+    - [x] AnyRecon
     - [ ] GenReg
     - [ ] SimCLR
 - [ ] Creare un quantitative test coerente
@@ -31,7 +40,7 @@ TODO aggiornata:
     - Probabilmente non va sistemato, ma fallisce in quanto la nube di punti della feature pointcloud è troppo poco densa per poter essere facilmente clusterizzata.
 - [x] Capire il ruolo della confidence e come viene addestrata
 - [x] Sistemare consistency loss su wandb
-- [ ] Capire perché la consistency loss oscilla forte (wandb)
+    - [ ] Capire perché la consistency loss oscilla forte (wandb)
 
 ## 5/05/2026
 Cose imparate:

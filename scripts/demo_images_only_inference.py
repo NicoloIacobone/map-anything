@@ -409,7 +409,7 @@ def get_parser():
     parser.add_argument(
         "--viz_sam2_masks",
         action="store_true",
-        default=True,
+        default=False,
         help="Visualize SAM2 masks in Rerun (requires --viz)",
     )
     parser.add_argument(
