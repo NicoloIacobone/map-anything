@@ -33,10 +33,12 @@ Frozen Segment Anything Model 2 encoder providing teacher semantic features.
 
 **Data Flow:**
 - **Input:** Same images as MapAnything, internally resized to 1024×1024
-- **Backbone (Hiera):** Multi-scale vision transformer
-- **Output:** (B, 256, H_feat, W_feat) where H_feat=1024/16=64, W_feat=64
+- **Backbone (Hiera):** Multi-scale vision transformer with FPN producing 4 stride levels
+- **Output:** (B, 256, H_feat, W_feat) at stride-4 resolution
   - Features are 256-dim semantic embeddings
-  - Resolution: 64×64 (constant regardless of input size due to SAM's fixed 1024 assumption)
+  - For 1024×1024 input: 256×256 (stride-4)
+  - For 224×224 input: 56×56 (stride-4)
+  - Dynamic resolution: H_feat=input_h/4, W_feat=input_w/4
 
 **Role:** Ground truth semantic features capturing object-level semantics (learned from billions of mask annotations)
 
@@ -55,10 +57,14 @@ Second DPT head added to MapAnything for semantic predictions, parallel to geome
   - Upsampling path: 4×, 2×, identity, 2× downsampling
   - FusionBlocks: multi-scale feature fusion via residual connections
   - Output conv: (B, 256, H_feat, W_feat)
-- **Output:** (B, 256, H_feat, W_feat) semantic feature maps
+- **Output:** (B, 256, H_feat_stride4, W_feat_stride4) semantic feature maps at stride-4 resolution
+  - Dynamically computed: H_feat_stride4 = input_h/4, W_feat_stride4 = input_w/4
+  - For 224×224 input: 56×56
+  - For 448×448 input: 112×112
+  - For 1024×1024 input: 256×256
 
 **Resolution Behavior:**
-- Training: features stay at 64×64 (downsampled from input H_orig×W_orig via 14× patch stride)
+- Training: features stay at stride-4 resolution (downsampled from input H_orig×W_orig via 4× stride)
 - Inference: features upsampled to match input resolution using bilinear interpolation
 
 #### SAM2CompatibilityLayer
@@ -84,7 +90,11 @@ Pixel-level MSE between student and teacher semantic features.
 ```
 L_distill = ||SAM2CompatibilityLayer(DPT_output) - SAM2_teacher||²
 ```
-- **Resolution:** Computed at 64×64 (feature resolution)
+- **Resolution:** Computed at stride-4 resolution
+  - For 224×224 input: 56×56
+  - For 448×448 input: 112×112
+  - For 1024×1024 input: 256×256
+  - Student and teacher both produce stride-4 features (matched resolution)
 - **Masking:** Optionally masked by confidence (min_conf threshold)
 - **Weight:** `distillation_weight` (typically 1.0)
 - **Effect:** Transfers semantic knowledge from 1B-param teacher to student
@@ -98,6 +108,7 @@ Enforces that features of the same 3D point are consistent across views.
    - Grid sampling: match each pixel in anchor to its projection in target
    - Valid mask: in-frame, depth > 0, occlusion check via Z-buffer
 2. Sample target features at projected locations: (B, 256, H_orig, W_orig)
+   - Upsampled from stride-4 to full resolution
 3. Compute weighted consistency loss:
    ```
    L_cons = ||f_anchor - CONF_weighted_mean(f_target)||²
@@ -105,7 +116,7 @@ Enforces that features of the same 3D point are consistent across views.
    - Confidence-weighted averaging of multi-view features
    - Only applies to valid correspondences
 - **Resolution:** Computed at H_orig × W_orig (image resolution)
-  - Features upsampled from 64×64 to full resolution before consistency check
+  - Features upsampled from stride-4 to full resolution before consistency check
 - **Weight:** `consistency_weight` (typically 0.1-1.0)
 - **Effect:** Leverages geometric coherence (pts3d) to supervise semantic coherence
 
@@ -123,14 +134,17 @@ L_total = dist_weight × L_distill + cons_weight × L_cons
 2. **Student Forward Pass:**
    - DINOv2 encoder → (B, 1024, 16, 16) [or 32×32]
    - Multi-view transformer fusion → (B, 1024, 16, 16)
-   - DPT head → (B, 256, 16, 16)
-   - SAM2CompatibilityLayer → (B, 256, 16, 16) student features
+   - DPT head → (B, 256, stride-4 height, stride-4 width)
+     - For 224×224: (B, 256, 56, 56)
+     - For 448×448: (B, 256, 112, 112)
+   - SAM2CompatibilityLayer → (B, 256, stride-4 h/w) student features
 3. **Teacher Forward Pass (frozen):**
-   - SAM2 encoder (fixed 1024 input) → (B, 256, 64, 64) teacher features
+   - SAM2 encoder (1024×1024 internal) → (B, 256, stride-4 h/w) teacher features at stride-4
+     - For any input: stride-4 resolution (256×256 for 1024 input, 56×56 for 224 input)
 4. **Loss Computation:**
-   - Distillation: student (16×16) vs teacher (64×64)
-     - Upsample student to 64×64 via bilinear interpolation
-     - MSE at 64×64
+   - Distillation: student (stride-4) vs teacher (stride-4)
+     - Both at same resolution (stride-4)
+     - MSE at stride-4 resolution
    - Consistency: multi-view correspondence matching
      - Sample features across views at projected locations
      - Weighted mean aggregation via confidence
@@ -162,7 +176,7 @@ checkpoint = {
 1. **Load images** → preprocess to 448×448 (norm: DINOv2 stats)
 2. **Model inference:**
    - Forward through MapAnything with loaded encoder checkpoint
-   - Returns semantic features at 64×64 (native student resolution)
+   - Returns semantic features at stride-4 resolution (112×112 for 448×448 input)
 3. **Global PCA Basis:**
    - Concatenate features across all views
    - Fit PCA on full scene (global basis, not per-view)
@@ -187,13 +201,14 @@ checkpoint = {
 ### Feature Upsampling
 ```
 Training/Validation:
-- Semantic features generated at H_feat × W_feat (64×64)
-- DPT downsamples: 1024 → 256 channels
+- Semantic features generated at stride-4 (H_feat × W_feat where stride=4)
+- DPT dynamically computes: H_feat = input_h/4, W_feat = input_w/4
 - Consistency loss requires full resolution: upsample to H_orig × W_orig
 - Upsampling mode: bilinear, align_corners=False
 
 Inference:
-- Features extracted at 64×64
+- Features extracted at stride-4 resolution
+- Upsampled to input image dimensions for full-resolution output
 - Globally PCA-reduced for visualization
 - HDBSCAN applied in feature space directly
 ```
@@ -223,12 +238,17 @@ For each pixel (u, v) in anchor view:
 | Image Input | (B, 3, H_orig, W_orig) | - | 224/448 |
 | DINOv2 Encoder | (B, 3, H_orig, W_orig) | (B, 1024, H_feat, W_feat) | 16/32 |
 | Multi-view Transformer | (B, 1024, H_feat, W_feat) | (B, 1024, H_feat, W_feat) | 16/32 |
-| DPT Head | (B, 1024, H_feat, W_feat) | (B, 256, H_feat, W_feat) | 16/32 |
-| SAM2 Compat Layer | (B, 256, H_feat, W_feat) | (B, 256, H_feat, W_feat) | 16/32 |
-| SAM2 Teacher | (B, 3, 1024, 1024) | (B, 256, 64, 64) | 64 (fixed) |
-| Upsampled Student | (B, 256, H_feat, W_feat) | (B, 256, 64, 64) | 64 |
-| Distillation Loss | L2(student_64×64, teacher_64×64) | scalar | - |
+| DPT Head | (B, 1024, H_feat, W_feat) | (B, 256, H_orig/4, W_orig/4) | stride-4 |
+| SAM2 Compat Layer | (B, 256, H_orig/4, W_orig/4) | (B, 256, H_orig/4, W_orig/4) | stride-4 |
+| SAM2 Teacher | (B, 3, 1024, 1024) | (B, 256, 256, 256) | stride-4 (256×256) |
+| Student Features (stride-4) | - | (B, 256, H_orig/4, W_orig/4) | stride-4 dynamic |
+| Distillation Loss | L2(student_stride4, teacher_stride4) | scalar | stride-4 |
 | Consistency Loss | Projected features + L2 | scalar | H_orig×W_orig |
+
+**Resolution Examples:**
+- 224×224 input → 56×56 stride-4 features
+- 448×448 input → 112×112 stride-4 features
+- 1024×1024 input → 256×256 stride-4 features
 
 ---
 
@@ -242,7 +262,18 @@ For each pixel (u, v) in anchor view:
 - ✅ SAM2 mask video prediction and reprojection on 3D scenes
 - ✅ Global semantic PCA visualization
 - ✅ HDBSCAN clustering on semantic features
+- ✅ High-resolution feature map support (distillation_higher_resolution_518 test case)
+
+**Latest Updates (Commit: 8d0c78a):**
+- **Higher Resolution Feature Maps:** Increased resolution of feature map test case via distillation_higher_resolution_518 test configuration
+- **Configuration Updates:** Modified configs/distillation.yaml and dataset/bmvs_reduced.yaml for improved resolution handling
+- **Model Refinements:** Updated mapanything/models/mapanything/model.py to support variable resolution features
+- **Loss Function Updates:** Enhanced mapanything/train/losses.py for better multi-scale feature handling
+- **SAM2 Builder Improvements:** Refined sam2_minimal/sam2_builder.py with 50+ lines of optimization
+- **Documentation:** Generated comprehensive IMPLEMENTATION_SUMMARY.md and new_features_size.md documenting feature dimensions and architecture
+- **Script Organization:** Moved demo scripts to dedicated scripts/demos/ directory for better project structure
+- **Training Infrastructure:** Added slurm/distillation_higher_resolution_518.sh for high-resolution feature map training runs
 
 **Open Research Questions:**
-- Is it possible to obtain higher-resolution features?
+- What is the optimal resolution for semantic feature maps (impact on accuracy vs. computation)?
 - Decoder design for dense object segmentation (currently feature-only)

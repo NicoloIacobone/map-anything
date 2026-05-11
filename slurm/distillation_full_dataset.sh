@@ -1,19 +1,19 @@
 #!/bin/bash
 #
 # Specify job name.
-#SBATCH --job-name=distillation_full_dataset_3
+#SBATCH --job-name=distillation_full_dataset_518
 #
 # Specify output file.
-#SBATCH --output=distillation_full_dataset_3_%j.log
+#SBATCH --output=distillation_full_dataset_518_%j.log
 #
 # Specify error file.
-#SBATCH --error=distillation_full_dataset_3_%j.err
+#SBATCH --error=distillation_full_dataset_518_%j.err
 #
 # Specify open mode for log files.
 #SBATCH --open-mode=append
 #
 # Specify time limit.
-#SBATCH --time=24:00:00
+#SBATCH --time=48:00:00
 #
 # Specify number of tasks.
 #SBATCH --ntasks=1
@@ -78,7 +78,7 @@ python distill.py \
   machine.mapanything_dataset_metadata_dir="$TMPDIR/converted/mapanything_dataset_metadata" \
   loss=distillation_only \
   train_params.use_wandb=true \
-  train_params.run_name=distillation_full_dataset_3
+  train_params.run_name=distillation_full_dataset_518
 
 echo "=== Job finished at $(date) ==="
 start_time=${SLURM_JOB_START_TIME:-$(date +%s)}
