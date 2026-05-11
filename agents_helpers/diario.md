@@ -1,3 +1,15 @@
+## 11/05/2026
+TODO aggiornata:
+- [ ] Completare distillation full con risoluzione maggiorata e analizzarne i risultati
+- [ ] Iniziare l'implementazione di un decoder stile D4RT
+- [ ] Lettura papers
+    - [x] D4RT
+    - [x] DETR
+    - [x] AnyRecon
+    - [ ] GenReg
+    - [ ] SimCLR
+- [ ] Creare un quantitative test coerente
+
 ## 7/05/2026
 Meeting notes:
 - Vale la pena buttarsi ad implementare direttamente la head visto che HDBSCAN non da successo in alcun modo

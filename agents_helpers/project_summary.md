@@ -42,6 +42,37 @@ Frozen Segment Anything Model 2 encoder providing teacher semantic features.
 
 **Role:** Ground truth semantic features capturing object-level semantics (learned from billions of mask annotations)
 
+#### Hiera Encoder Layer Details (SAM2-Large)
+
+**Backbone Configuration:**
+- embed_dim: 144, num_heads: 2
+- Stages: (2, 6, 36, 4) = 48 total blocks
+- Patch embed: kernel 7, stride 4 → 1024×1024 → 256×256 input features
+- q_stride: (2, 2) spatial downsampling at stage transitions
+- q_pool: 3 downsampling stages
+
+**Layer-by-layer progression (Hiera trunk output before FPN):**
+
+| Stage | Block Range | Spatial | Channels | Captured at Block |
+|-------|-------------|---------|----------|------------------|
+| **Stage 0** | 0-1 | 256×256 | 144 | 1: **256×256×144** |
+| **Stage 1** | 2-7* | 128×128 | 288 | 7: **128×128×288** |
+| **Stage 2** | 8-43* | 64×64 | 576 | 43: **64×64×576** |
+| **Stage 3** | 44-47* | 32×32 | 1152 | 47: **32×32×1152** |
+
+*Block at index shown applies q_stride (2×2 downsampling)
+
+**FPN Neck Processing (d_model=256):**
+- Projects all outputs to 256 channels
+- Applies top-down fusion on levels [2, 3]
+- Produces 4 resolution levels
+
+**Final output after scalp=1 (discard lowest resolution):**
+- 256×256×256 (stride-4) 
+- 128×128×256 (stride-8)
+- **64×64×256 (stride-16)** ← Used as vision_features for downstream tasks
+- (32×32×256 discarded by scalp parameter)
+
 ---
 
 ### 3. Student DPT Head + SAM2CompatibilityLayer (NEW)
@@ -276,4 +307,5 @@ For each pixel (u, v) in anchor view:
 
 **Open Research Questions:**
 - What is the optimal resolution for semantic feature maps (impact on accuracy vs. computation)?
+- Is it needed to implement a multi-layer distillation to distill more than one layer of SAM2 encoder features?
 - Decoder design for dense object segmentation (currently feature-only)
