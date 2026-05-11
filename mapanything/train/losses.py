@@ -5374,14 +5374,23 @@ class SemanticConsistencyLoss(BaseCriterion):
         for i in range(n_views):
             pred_sem = preds[i]["semantics"]  # (B, C, H_sem, W_sem)
             gt_sem = batch[i]["semantics"]    # (B, C, H_sem, W_sem)
-    
+
             # ==========================
             # PART 1: 2D Distillation
             # ==========================
             if compute_dist:
-                pred_norm = F.normalize(pred_sem, dim=1)
-                gt_norm = F.normalize(gt_sem, dim=1)
-                loss_2d = 1.0 - torch.sum(pred_norm * gt_norm, dim=1)  # (B, H_sem, W_sem)
+                # Upsample both feature maps to original resolution for fair comparison
+                # This handles the case where student and teacher have different input resolutions
+                pred_sem_upsampled = F.interpolate(
+                    pred_sem, size=img_size_orig, mode="bilinear", align_corners=False
+                )
+                gt_sem_upsampled = F.interpolate(
+                    gt_sem, size=img_size_orig, mode="bilinear", align_corners=False
+                )
+
+                pred_norm = F.normalize(pred_sem_upsampled, dim=1)
+                gt_norm = F.normalize(gt_sem_upsampled, dim=1)
+                loss_2d = 1.0 - torch.sum(pred_norm * gt_norm, dim=1)  # (B, H_orig, W_orig)
                 if loss_2d.numel() > 0:
                     distillation_losses.append(loss_2d.mean())
                 else:

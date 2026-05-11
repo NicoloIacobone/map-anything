@@ -127,10 +127,19 @@ def distillation(args):
     print(f"[INFO] Preparing teacher feature extractor...")
     teacher_extractor = None
 
+    # Keep teacher at fixed resolution (1024) for stability
+    # Hiera doesn't support arbitrary resolutions due to window-based positional embeddings
+    # The loss function already upsamples both teacher and student features to original resolution
+    teacher_resolution = 1024
+    print(f"[INFO] Using fixed teacher resolution: {teacher_resolution}×{teacher_resolution}")
+    print(f"[INFO] Note: Loss function will upsample all features to original image resolution for comparison")
+
     teacher_extractor = TeacherFeatureExtractor(
         checkpoint_path=args.sam2_path,
         device=str(device),
-        augment_cfg = None
+        augment_cfg=None,
+        use_high_res=True,
+        teacher_resolution=teacher_resolution
     )
     teacher_extractor.to(device)
 

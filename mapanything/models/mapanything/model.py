@@ -1394,7 +1394,11 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
 
             # [NICO] seconda head
             if hasattr(self, "dpt_feature_head_2"):
-                target_hw_2 = (64, 64)
+                # Compute target resolution dynamically based on input image shape
+                # Use stride 4 as the native output resolution (matches teacher's stride-4 features)
+                # img_shape is (height, width) of the target output resolution
+                dpt_stride = 4
+                target_hw_2 = (img_shape[0] // dpt_stride, img_shape[1] // dpt_stride)
 
                 # print(f"[DPT2] Input list_features shapes:")
                 # for i, feat in enumerate(dino_layer_list):
@@ -1403,21 +1407,21 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                     dpt_head_inputs = list(self._dino_4layer_features)
                 else:
                     dpt_head_inputs = dense_head_inputs # [B*V, 1024, 37, 37] con input images (518, 518)
-                
+
                 dpt_features_2 = self.dpt_feature_head_2(
                     PredictionHeadLayeredInput(
                         list_features=dpt_head_inputs,
                         target_output_shape=target_hw_2,
                     )
                 )
-                feat_8x = dpt_features_2.features_upsampled_8x  # (B*V, C, H, W), (B*V, 256, 296, 296) con input images (518, 518)
+                feat_8x = dpt_features_2.features_upsampled_8x  # (B*V, C, H, W)
                 # print(f"[DPT2] Output feat_8x shape before resize: {feat_8x.shape}")
                 # print(f"[NICO] Extracted feat2_8x with shape: {feat_8x.shape}")
 
-                # Garantisce dimensione spaziale fissa
+                # Garantisce dimensione spaziale corretta
                 if feat_8x.shape[-2:] != target_hw_2:
                     import torch.nn.functional as F
-                    feat_8x = F.interpolate( # (B*V, 256, 64, 64) con input images (518, 518)
+                    feat_8x = F.interpolate(
                         feat_8x,
                         size=target_hw_2,
                         mode="bilinear",
@@ -1429,7 +1433,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                 # Proiezione a 256 canali + 1 confidenza
                 if hasattr(self, "sam2_compat"):
                     feat_8x_raw = self.sam2_compat(feat_8x)
-                    
+
                     # [MODIFICA] Splitting: separa feature (256) e confidence (1)
                     # feat_8x_raw shape: (B*V, 257, H, W)
 
@@ -1437,7 +1441,7 @@ class MapAnything(nn.Module, PyTorchModelHubMixin):
                     # feat_8x = feat_8x_raw[:, :-1, :, :]      # Primi 256 canali: Features
                     #####################################################################
                     raw_conf = feat_8x_raw[:, -1:, :, :]     # Ultimo canale: Raw Confidence
-                    
+
                     # [MODIFICA] Attivazione Confidence: range [1, inf] come da paper UNITE
                     # Usa softplus per positività e +1 per base minima.
                     import torch.nn.functional as F

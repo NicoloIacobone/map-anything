@@ -198,12 +198,13 @@ def load_sam2_teacher_prompt_and_decoder(
 # ==================== Feature Extractor ====================
 class SAM2FeatureExtractor(nn.Module):
     """Minimal wrapper to extract SAM2 image encoder features."""
-    
-    def __init__(self, image_encoder: ImageEncoder, resolution: int = 1024):
+
+    def __init__(self, image_encoder: ImageEncoder, resolution: int = 1024, use_high_res: bool = True):
         super().__init__()
         self.image_encoder = image_encoder
         self.resolution = resolution
-        
+        self.use_high_res = use_high_res
+
         self.mean = [0.485, 0.456, 0.406]
         self.std = [0.229, 0.224, 0.225]
         self.to_tensor = ToTensor()
@@ -211,14 +212,14 @@ class SAM2FeatureExtractor(nn.Module):
             Resize((resolution, resolution)),
             Normalize(self.mean, self.std),
         )
-        
+
         for param in self.image_encoder.parameters():
             param.requires_grad = False
         self.image_encoder.eval()
-    
+
     @torch.no_grad()
     def forward(self, images):
-        """Extract image encoder features."""
+        """Extract image encoder features at stride-4 (high-res) or stride-16 (low-res)."""
         if isinstance(images, list):
             img_batch = torch.stack([
                 self.transforms(self.to_tensor(img)) for img in images
@@ -230,29 +231,42 @@ class SAM2FeatureExtractor(nn.Module):
                 img_batch = images
         else:
             img_batch = self.transforms(self.to_tensor(images)).unsqueeze(0)
-        
+
         img_batch = img_batch.to(next(self.image_encoder.parameters()).device)
         backbone_out = self.image_encoder(img_batch)
-        return backbone_out["vision_features"]
+
+        if self.use_high_res:
+            return backbone_out["backbone_fpn"][0]
+        else:
+            return backbone_out["vision_features"]
 
 
 def load_sam2_feature_extractor(
     checkpoint_path: str,
-    device: str = "cuda",
     model_size: str = "large",
+    use_high_res: bool = True,
+    resolution: int = 1024,
 ) -> SAM2FeatureExtractor:
-    """Load SAM2 feature extractor from checkpoint."""
+    """Load SAM2 feature extractor from checkpoint.
+
+    Args:
+        checkpoint_path: Path to SAM2 checkpoint
+        device: Device to load on
+        model_size: Model size (large, base, small)
+        use_high_res: If True, extract stride-4 features. If False, extract stride-16 features.
+        resolution: Input resolution to resample images to (default 1024)
+    """
     image_encoder = build_sam2_image_encoder(model_size)
-    
-    print(f"[INFO] Loading SAM2 checkpoint for teacher feature extractor")
+
+    print(f"[INFO] Loading SAM2 checkpoint for teacher feature extractor (use_high_res={use_high_res}, resolution={resolution})")
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    
+
     encoder_state = {}
     for k, v in checkpoint["model"].items():
         if k.startswith("image_encoder."):
             new_key = k.replace("image_encoder.", "")
             encoder_state[new_key] = v
-    
+
     missing, unexpected = image_encoder.load_state_dict(encoder_state, strict=False)
     if missing:
         print(f"[WARN] Image encoder missing: {len(missing)} keys (first 5:)")
@@ -262,12 +276,12 @@ def load_sam2_feature_extractor(
         print(f"[WARN] Image encoder unexpected: {len(unexpected)} keys (first 5:)")
         for k in list(unexpected)[:5]:
             print(f"      {k}")
-    
-    feature_extractor = SAM2FeatureExtractor(image_encoder, resolution=1024)
+
+    feature_extractor = SAM2FeatureExtractor(image_encoder, resolution=resolution, use_high_res=use_high_res)
     # feature_extractor = feature_extractor.to(device)
-    
+
     # # Print total number of parameters
     # total_params = sum(p.numel() for p in feature_extractor.parameters())
     # print(f"[INFO] Feature extractor total parameters: {total_params:,}")
-    
+
     return feature_extractor

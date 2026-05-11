@@ -14,3 +14,6 @@ sam2_path: ${machine.sam2_path}
 config_json_path: ${machine.config_json_path}
 root_data_dir: ${machine.root_data_dir}
 mapanything_dataset_metadata_dir: ${machine.mapanything_dataset_metadata_dir}
+
+# Feature resolution settings
+use_high_res_features: true  # Extract stride-4 SAM2 features instead of stride-16

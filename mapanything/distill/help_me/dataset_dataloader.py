@@ -137,11 +137,14 @@ class TeacherFeatureExtractor:
     TeacherFeatureExtractor è un wrapper “di alto livello” che contiene self.extractor,
     che è un SAM2FeatureExtractor, che a sua volta wrappa un ImageEncoder composto da trunk=Hiera e neck=FpnNeck.
     """
-    def __init__(self, checkpoint_path: str, device: str = "cuda", augment_cfg: Optional[dict] = None):
+    def __init__(self, checkpoint_path: str, device: str = "cuda", augment_cfg: Optional[dict] = None, use_high_res: bool = True, teacher_resolution: int = 1024):
         # extractor è un'istanza di SAM2FeatureExtractor che è a sua volta un wrapper che contiene image_encoder (trunk + neck)
-        self.extractor = load_sam2_feature_extractor(checkpoint_path, device) 
+        self.extractor = load_sam2_feature_extractor(checkpoint_path, use_high_res=use_high_res, resolution=teacher_resolution)
         self.device = device
-        print(f"[INFO] Loaded SAM2 feature extractor on {device}")
+        self.use_high_res = use_high_res
+        self.teacher_resolution = teacher_resolution
+        feature_res = "stride-4 (high-res)" if use_high_res else "stride-16 (low-res)"
+        print(f"[INFO] Loaded SAM2 feature extractor on {device} with {feature_res} features at {teacher_resolution}×{teacher_resolution} input")
 
     def _build_augment_pipelines(self):
         """Costruisce le pipeline di augmentation IDENTICHE a MapAnything ufficiale."""

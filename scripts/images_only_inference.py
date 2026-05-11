@@ -3,6 +3,8 @@
 # This source code is licensed under the Apache License, Version 2.0
 # found in the LICENSE file in the root directory of this source tree.
 
+# This is the inference script used in this project
+
 """
 MapAnything Demo: Images-Only Inference with Visualization
 
@@ -698,7 +700,7 @@ def main():
             # Use global PCA basis (aligned with distillation) if available
             if "semantic_pca_rgb_global" in pred and pred["semantic_pca_rgb_global"] is not None:
                 semantic_pca_rgb_np = pred["semantic_pca_rgb_global"].cpu().numpy()
-                # Upsample to image resolution (64x64 -> image_h x image_w)
+                # Upsample to image resolution (stride-4 -> image_h x image_w)
                 if semantic_pca_rgb_np.shape[:2] != image_np.shape[:2]:
                     pca_tensor = torch.from_numpy(semantic_pca_rgb_np).permute(2, 0, 1).unsqueeze(0).float()  # (1, 3, H, W)
                     img_h, img_w = image_np.shape[:2]
