@@ -572,6 +572,7 @@ def train_one_epoch(
         # ========== EXTRACT TEACHER FEATURES ==========
         with torch.no_grad():
             teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
+            # print(f"Extracted teacher features shape: {teacher_features.shape}")
         # ==============================================================================================
 
         save_pca_visualization_path = None
@@ -734,6 +735,7 @@ def test_one_epoch(
 
         # ========== EXTRACT TEACHER FEATURES ==========
         teacher_features = teacher_extractor(pil_images).to(device, non_blocking=True)
+        # print(f"Extracted teacher features shape: {teacher_features.shape}")
         # ==============================================================================================
 
         if args.train_params.save_pca_visualization:

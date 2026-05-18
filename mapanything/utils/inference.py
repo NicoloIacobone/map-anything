@@ -143,6 +143,8 @@ def loss_of_one_batch_multi_view(
         if hasattr(base_model, "dpt_feature_head_2"):
             # Estrai le feature (256 canali)
             student_features = getattr(base_model, "_last_feat2_8x", None)
+            # print(f"Student features shape: {student_features.shape if student_features is not None else 'None'}")
+            # raise Exception
             # for i in range(student_features.shape[0]):
                 # pca_visualization(student_features[i], student_features[i])
             
