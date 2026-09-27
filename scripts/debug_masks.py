@@ -38,7 +38,7 @@ from torchvision.ops.boxes import batched_nms
 from nico.utils import convert_maskdecoder_to_showable, show_anns
 
 # Aggiungi root al path per importare moduli locali
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 def pca_visualize_masks(
     t_masks: torch.Tensor,

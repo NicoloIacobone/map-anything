@@ -51,7 +51,7 @@ echo "Starting MapAnything distillation..."
 
 export WANDB_API_KEY=$(cat "/cluster/home/niacobone/.config/wandb/wandb_api_key.txt")
 
-python distillation_backup.py \
+python old/distillation_backup.py \
   --use_wandb \
   --wandb_name "overfit_1_img" \
   --dataset coco2017 \

@@ -1,3 +1,8 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import torch
 from sam2_minimal.modeling.sam.mask_decoder import MaskDecoder
 from sam2_minimal.modeling.sam.transformer import TwoWayTransformer

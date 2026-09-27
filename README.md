@@ -1,3 +1,188 @@
+## My contributions
+
+This is a fork of [facebookresearch/map-anything](https://github.com/facebookresearch/map-anything).
+All credit for MapAnything, its training and its published results goes to the original authors
+(Nikhil Keetha et al., Meta / Carnegie Mellon). Everything below is what I added on top; the rest of
+this README is theirs.
+
+**What the project is.** MapAnything reconstructs metric 3D geometry from multiple views, but it
+carries no semantics. I added a second prediction head that is **distilled from SAM 2's image
+encoder**, so that the same forward pass produces geometry *and* a semantic feature map that is
+consistent across views. The intended downstream use is multi-view 3D instance segmentation by
+clustering those features in the reconstructed point cloud. The rationale for distilling SAM 2 rather
+than CLIP (pixel-level mask supervision versus image-level contrastive training, and so sharper
+instance boundaries) is written up in [`docs/research_status.md`](docs/research_status.md).
+
+### Architecture changes
+
+- **[`mapanything/models/mapanything/model.py`](mapanything/models/mapanything/model.py)** - added a
+  **second DPT head** (`dpt_feature_head_2`) running in parallel with the existing geometric head, fed
+  by four intermediate DINOv2 layers (indices `[5, 11, 17, 23]`) pulled out of the encoder as BCHW
+  tensors. Its output resolution is no longer hardcoded: the target is computed from the input image
+  shape at stride 4, so it matches the teacher's resolution at any input size.
+- **`SAM2CompatibilityLayer`** in [`nico/utils.py`](nico/utils.py) - a LayerNorm plus 1x1 convolution
+  that projects the head's output into SAM 2's 256-channel feature space, with one extra channel for a
+  predicted confidence that is split off afterwards.
+- **[`mapanything/train/losses.py`](mapanything/train/losses.py)** - added `SemanticConsistencyLoss`,
+  which combines a **distillation** term against the frozen SAM 2 teacher features with a **multi-view
+  consistency** term. The consistency term projects one view's predicted 3D points into another view
+  to find correspondences, validates them with a field-of-view check and a Z-buffer occlusion check,
+  builds a confidence-weighted consensus feature per point, and pulls each view's features towards it
+  under a stop-gradient. The two terms are weighted independently, which is what the loss configs
+  select between.
+- **[`mapanything/utils/inference.py`](mapanything/utils/inference.py)** - extended to carry the
+  semantic features through inference.
+
+### Teacher side
+
+- **[`sam2_minimal/`](sam2_minimal/)** - a vendored, self-contained subset of SAM 2 (Hiera backbone,
+  FPN neck, position encoding, prompt encoder, mask decoder, transformer, image and video predictors,
+  automatic mask generator, AMG utilities), so the teacher can be built without taking a dependency on
+  the full SAM 2 package.
+- **[`sam2_minimal/sam2_builder.py`](sam2_minimal/sam2_builder.py)** - constructs the SAM 2 components **without Hydra
+  or YAML**: `build_sam2_image_encoder()`, `build_sam_prompt_encoder()`, `build_sam_mask_decoder()`,
+  `load_sam2_feature_extractor()` and the `SAM2FeatureExtractor` inference wrapper.
+- **[`mapanything/distill/help_me/dataset_dataloader.py`](mapanything/distill/help_me/dataset_dataloader.py)** -
+  `TeacherFeatureExtractor`, with a `use_high_res` switch selecting stride-4 features
+  (`backbone_fpn[0]`) over the stride-16 `vision_features` the encoder normally exposes. This is a 4x
+  resolution increase on the distillation target; the full set of changes that made it work end to end
+  is written up in [`docs/higher_resolution_features.md`](docs/higher_resolution_features.md).
+
+### Training
+
+- **[`mapanything/distill/distillation.py`](mapanything/distill/distillation.py)** - the distillation
+  training loop: `distillation()`, `build_dataset()`, `train_one_epoch()`, `test_one_epoch()`.
+- **[`scripts/distill.py`](scripts/distill.py)** - the Hydra entry point.
+- **[`configs/`](configs/)** - the configuration tree for this work:
+  - [`configs/distillation.yaml`](configs/distillation.yaml) - the top-level composition.
+  - [`configs/model/mapanything_distillation.yaml`](configs/model/mapanything_distillation.yaml) and
+    [`configs/model/pred_head/dpt_pose_scale_dpt2.yaml`](configs/model/pred_head/dpt_pose_scale_dpt2.yaml) -
+    the two-head model, plus a variant that feeds the head from encoder features.
+  - [`configs/loss/`](configs/loss/) - the four weightings of the new loss:
+    [`distillation_only`](configs/loss/distillation_only.yaml) (1.0 / 0.0),
+    [`consistency_only`](configs/loss/consistency_only.yaml) (0.0 / 1.0),
+    [`distillation_consistency`](configs/loss/distillation_consistency.yaml) (0.5 / 0.5) and
+    [`distillation09_consistency01`](configs/loss/distillation09_consistency01.yaml) (0.9 / 0.1).
+  - [`configs/train_params/distillation.yaml`](configs/train_params/distillation.yaml) - per-submodule
+    learning rates (head and compatibility layer at `5e-4`, student mask decoder at `5e-3`, the
+    multi-view transformer at `2.5e-4`, DINOv2 at `5e-5`), bf16 AMP, and the unfreeze knobs
+    `num_dino_layers_unfreeze` / `num_info_sharing_blocks_unfreeze`.
+  - [`configs/machine/`](configs/machine/), [`configs/distributed/`](configs/distributed/) - local
+    versus cluster paths, DDP on or off.
+  - [`configs/dataset/`](configs/dataset/) - BlendedMVS splits for distillation, including reduced and
+    overfit variants.
+- **[`slurm/`](slurm/)** - the cluster drivers. The active ones
+  ([`distillation_full_dataset.sh`](slurm/distillation_full_dataset.sh),
+  [`distillation_full_dataset_2.sh`](slurm/distillation_full_dataset_2.sh)) extract the dataset tarball
+  onto node-local scratch before training, which was measurably faster than reading from shared
+  storage. [`slurm/old/`](slurm/old/) preserves the experiment series: overfit at 1 / 10 / 100 / 1000
+  images, single-view versus multi-view, augmentation, normalisation, progressive unfreezing
+  (2 / 4 blocks), a deeper head, and learning-rate decay sweeps.
+  [`slurm/wai_processing/`](slurm/wai_processing/) preprocesses BlendedMVS and ETH3D into WAI format.
+
+### Inference and visualisation
+
+- **[`scripts/images_only_inference.py`](scripts/images_only_inference.py)** - inference from an image
+  folder with the trained semantic head loaded from a checkpoint. Options cover PCA and clustering
+  visualisation of the semantic features (`--viz_semantic`), a semantic point cloud
+  (`--viz_semantic_pointcloud`), SAM 2 masks overlaid on the reconstruction (`--viz_sam2_masks`), GLB
+  export (`--save_glb`), input resolution (`--input_size`) and confidence filtering
+  (`--conf_percentile`), all streamed to Rerun.
+- **[`scripts/save_student_embeddings.py`](scripts/save_student_embeddings.py)** - a minimal script that loads only `dpt_feature_head_2` from a
+  checkpoint and dumps student embeddings for a list of images.
+- **[`nico/utils.py`](nico/utils.py)** - the shared library behind all of it (about 2200 lines): PCA
+  projection of feature maps to RGB, student-only and student/teacher/original side-by-side figures,
+  student grids, semantic PCA with Sobel-based geometry validation, heatmap sanity checks, freeze and
+  unfreeze strategy setup, trainable-parameter reporting, frozen-block verification, and the
+  checkpoint save/load paths for trainer, encoder and decoder.
+- **[`scripts/save_embeddings.py`](scripts/save_embeddings.py)**,
+  **[`scripts/generate_plots.py`](scripts/generate_plots.py)**,
+  **[`scripts/debug_masks.py`](scripts/debug_masks.py)**,
+  **[`notebooks/hdbscan_experiments.ipynb`](notebooks/hdbscan_experiments.ipynb)** - the clustering side, exploring HDBSCAN
+  over the distilled features.
+- **[`notebooks/semantic_consistency_loss_debug.ipynb`](notebooks/semantic_consistency_loss_debug.ipynb)** -
+  step-by-step debugging of the multi-view consistency term.
+
+### Evaluation and data
+
+- **[`benchmarking/3d_instance_segmentation/`](benchmarking/3d_instance_segmentation/)** - the start of
+  a 3D instance-segmentation benchmark. [`bench.py`](benchmarking/3d_instance_segmentation/bench.py) is
+  the ScanNet semantic-instance evaluator (itself adapted from the CityScapes evaluation),
+  [`segmentation.py`](benchmarking/3d_instance_segmentation/segmentation.py) drives MapAnything over an
+  image folder, [`subsample.py`](benchmarking/3d_instance_segmentation/subsample.py) thins the inputs.
+- **[`data_processing/`](data_processing/)** - BlendedMVS scene split
+  ([`blendedmvs_scene_split.txt`](data_processing/blendedmvs_scene_split.txt)) and integrity check
+  ([`check_blendedmvs_folders.py`](data_processing/check_blendedmvs_folders.py)), a ScanNet downloader,
+  a TartanAirV2 downloader, and [`fix_symlinks.py`](data_processing/wai_processing/scripts/fix_symlinks.py)
+  for repairing WAI-processed trees after a move.
+- **[`mapanything/datasets/wai/blendedmvs.py`](mapanything/datasets/wai/blendedmvs.py)** - adapted for
+  the distillation setup.
+
+### Write-ups
+
+- [`docs/research_status.md`](docs/research_status.md) - the research framing: the gap, the comparison
+  against UNITE and PanSt3R, the loss formulations, and the finding that unfreezing DINOv2 encoder
+  blocks moves the loss far more than unfreezing multi-view transformer blocks.
+- [`docs/project_summary.md`](docs/project_summary.md) - the architecture and data
+  flow in full, layer by layer, with tensor shapes.
+- [`docs/diario.md`](docs/diario.md) - the working log.
+- [`docs/higher_resolution_features.md`](docs/higher_resolution_features.md), [`docs/new_features_size.md`](docs/new_features_size.md),
+  [`docs/dpt_head_notes.txt`](docs/dpt_head_notes.txt), [`docs/thesis_draft.md`](docs/thesis_draft.md).
+
+### Fix
+
+- **[`README.md`](README.md)** - the Rerun demo command used `rerun --serve`, which is no longer the
+  correct flag; changed to `rerun --serve-web`.
+
+### Repository layout
+
+The root holds only upstream's files. Everything of mine is under:
+
+| path | what it is |
+|---|---|
+| [`mapanything/`](mapanything/) | the model and training changes, inside upstream's package |
+| [`sam2_minimal/`](sam2_minimal/), [`nico/utils.py`](nico/utils.py) | the SAM 2 teacher and the shared helper library |
+| [`configs/`](configs/) | the Hydra tree for the distillation runs |
+| [`scripts/`](scripts/) | entry points: training, inference, embedding dumps, plots, mask debugging |
+| [`tests/`](tests/) | standalone check scripts, not a pytest suite. See [`tests/README.md`](tests/README.md) |
+| [`notebooks/`](notebooks/) | HDBSCAN clustering, feature inspection, consistency-loss debugging |
+| [`slurm/`](slurm/) | cluster drivers; `slurm/old/` keeps the experiment series |
+| [`benchmarking/`](benchmarking/) | the 3D instance-segmentation benchmark scaffolding |
+| [`data_processing/`](data_processing/) | dataset download, checks and WAI conversion |
+| [`docs/`](docs/) | the write-ups and working notes |
+| [`old/`](old/) | code not used by the current version. See [`old/README.md`](old/README.md) |
+
+### How to run my part
+
+```bash
+# Distillation training (Hydra; see configs/ for the axes).
+python scripts/distill.py \
+  machine=cluster \
+  machine.base_dir=/path/to/dataset \
+  machine.root_data_dir=/path/to/dataset/converted/wai_data \
+  machine.mapanything_dataset_metadata_dir=/path/to/dataset/converted/mapanything_dataset_metadata \
+  loss=distillation_only \
+  train_params.use_wandb=true \
+  train_params.run_name=my_run
+
+# Swap the loss to change the objective:
+#   loss=consistency_only | distillation_consistency | distillation09_consistency01
+# Progressive unfreezing:
+#   train_params.num_dino_layers_unfreeze=4 train_params.num_info_sharing_blocks_unfreeze=2
+
+# On the cluster:
+sbatch slurm/distillation_full_dataset.sh
+
+# Inference with semantic visualisation (Rerun on port 2004/2006):
+rerun --serve-web --port 2004 --web-viewer-port 2006
+python scripts/images_only_inference.py \
+  --image_folder /path/to/images \
+  --checkpoint_path /path/to/checkpoint_encoder_10000.pth \
+  --input_size 448 --viz --viz_semantic --viz_semantic_pointcloud
+```
+
+---
+
 <div align="center">
 <h1>MapAnything: Universal Feed-Forward Metric <br>3D Reconstruction</h1>
 <a href="https://map-anything.github.io/assets/MapAnything.pdf"><img src="https://img.shields.io/badge/Paper-blue" alt="Paper"></a>

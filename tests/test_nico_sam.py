@@ -1,9 +1,14 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import os
 import numpy as np
 import torch
 from PIL import Image
 
-from sam2_builder import (
+from sam2_minimal.sam2_builder import (
     load_sam2_feature_extractor,
     load_sam2_teacher_prompt_and_decoder,
     build_sam_mask_decoder,
