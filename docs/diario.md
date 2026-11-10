@@ -1,3 +1,12 @@
+Elvis
+
+
+Recap:
+- HDBSCAN not working even on SAM2 feature maps
+- D4RT: an encoder produces the global scene representation and the decoder uses this representation using queries to perform different tasks such as point tracking, production of pointcloud and depthmaps
+- Queries answer this question: which is the 3D POSITION of this 2D POINT seen into this FRAME if projected into that FRAME in another TIMESTAMP?
+- The new Idea: florence2 for object detection -> sam3 for segmentation and pseudo-labels generation -> vggt-omega as backbone -> ad additional D4RT style decoder to perform segmentation across different views
+
 ## 11/05/2026
 TODO aggiornata:
 - [ ] Completare distillation full con risoluzione maggiorata e analizzarne i risultati
