@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/banner-dark.svg">
+  <img src="docs/banner-light.svg" alt="MapAnything: the name as feature patches, and the same feature map at two resolutions" width="100%">
+</picture>
+
 ## My contributions
 
 This is a fork of [facebookresearch/map-anything](https://github.com/facebookresearch/map-anything).
